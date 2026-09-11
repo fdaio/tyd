@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"os"
 	"os/signal"
@@ -8,42 +9,61 @@ import (
 	"syscall"
 	"text/tabwriter"
 
+	"tyd/internal/auth"
 	"tyd/internal/client"
 	"tyd/internal/paths"
 	"tyd/internal/server"
 	"tyd/internal/session"
 )
 
+type options struct {
+	socket   string
+	identity string
+	trust    string
+	cmd      string
+	rest     []string
+}
+
 func main() {
-	socket, cmd, rest, err := parseArgs(os.Args[1:])
+	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		usage()
 		os.Exit(2)
 	}
-	if cmd == "" || cmd == "help" || cmd == "-h" || cmd == "--help" {
+	if opts.cmd == "" || opts.cmd == "help" || opts.cmd == "-h" || opts.cmd == "--help" {
 		usage()
 		return
 	}
-	if err := run(socket, cmd, rest); err != nil {
+	if err := run(opts); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func run(socket, cmd string, rest []string) error {
-	switch cmd {
+func run(opts options) error {
+	switch opts.cmd {
+	case "keygen":
+		return runKeygen(opts)
 	case "serve":
-		return runServe(socket)
+		return runServe(opts)
 	case "create":
-		info, err := client.Create(socket, client.CreateOpts{})
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		info, err := client.Create(opts.socket, key, client.CreateOpts{})
 		if err != nil {
 			return err
 		}
 		fmt.Println(info.ID)
 		return nil
 	case "list":
-		items, err := client.List(socket)
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		items, err := client.List(opts.socket, key)
 		if err != nil {
 			return err
 		}
@@ -54,28 +74,71 @@ func run(socket, cmd string, rest []string) error {
 		}
 		return tw.Flush()
 	case "attach":
-		if len(rest) != 1 {
+		if len(opts.rest) != 1 {
 			return fmt.Errorf("usage: tyd attach <session_id>")
 		}
-		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", rest[0])
-		return client.Attach(socket, rest[0], os.Stdin, os.Stdout)
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", opts.rest[0])
+		return client.Attach(opts.socket, key, opts.rest[0], os.Stdin, os.Stdout)
 	case "close":
-		if len(rest) != 1 {
+		if len(opts.rest) != 1 {
 			return fmt.Errorf("usage: tyd close <session_id>")
 		}
-		return client.CloseSession(socket, rest[0])
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		return client.CloseSession(opts.socket, key, opts.rest[0])
 	default:
-		return fmt.Errorf("unknown command %q", cmd)
+		return fmt.Errorf("unknown command %q", opts.cmd)
 	}
 }
 
-func runServe(socket string) error {
+func loadIdentity(path string) (ed25519.PrivateKey, error) {
+	key, err := auth.LoadIdentity(path)
+	if err != nil {
+		return nil, fmt.Errorf("load identity %s: %w (run 'tyd keygen')", path, err)
+	}
+	return key, nil
+}
+
+func runKeygen(opts options) error {
+	if _, err := os.Stat(opts.identity); err == nil {
+		return fmt.Errorf("identity already exists: %s", opts.identity)
+	}
+	_, priv, err := auth.Generate()
+	if err != nil {
+		return err
+	}
+	if err := auth.WriteIdentity(opts.identity, priv); err != nil {
+		return err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	fmt.Fprintf(os.Stderr, "wrote %s\n", opts.identity)
+	if _, err := os.Stat(opts.trust); os.IsNotExist(err) {
+		if err := auth.WriteBootstrapTrust(opts.trust, "local", pub); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "wrote %s (list+create for this key)\n", opts.trust)
+	}
+	fmt.Println(auth.EncodePublic(pub))
+	return nil
+}
+
+func runServe(opts options) error {
+	trust, err := auth.LoadStore(opts.trust)
+	if err != nil {
+		return fmt.Errorf("load trust %s: %w (run 'tyd keygen')", opts.trust, err)
+	}
 	mgr := session.NewManager()
-	srv := server.New(socket, mgr)
+	srv := server.New(opts.socket, mgr, trust)
 	if err := srv.Start(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "tyd listening on %s\n", socket)
+	fmt.Fprintf(os.Stderr, "tyd listening on %s\n", opts.socket)
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
@@ -83,45 +146,71 @@ func runServe(socket string) error {
 	return srv.Close()
 }
 
-func parseArgs(args []string) (socket, cmd string, rest []string, err error) {
-	socket = paths.DefaultSocket()
+func parseArgs(args []string) (options, error) {
+	opts := options{
+		socket:   paths.DefaultSocket(),
+		identity: paths.DefaultIdentity(),
+		trust:    paths.DefaultTrust(),
+	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
-			return socket, "help", nil, nil
+			opts.cmd = "help"
+			return opts, nil
 		case a == "--socket" || a == "-socket":
 			if i+1 >= len(args) {
-				return "", "", nil, fmt.Errorf("%s requires a path", a)
+				return options{}, fmt.Errorf("%s requires a path", a)
 			}
 			i++
-			socket = args[i]
+			opts.socket = args[i]
 		case strings.HasPrefix(a, "--socket="):
-			socket = strings.TrimPrefix(a, "--socket=")
+			opts.socket = strings.TrimPrefix(a, "--socket=")
+		case a == "--identity":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.identity = args[i]
+		case strings.HasPrefix(a, "--identity="):
+			opts.identity = strings.TrimPrefix(a, "--identity=")
+		case a == "--trust":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.trust = args[i]
+		case strings.HasPrefix(a, "--trust="):
+			opts.trust = strings.TrimPrefix(a, "--trust=")
 		case strings.HasPrefix(a, "-"):
-			return "", "", nil, fmt.Errorf("unknown flag %s", a)
+			return options{}, fmt.Errorf("unknown flag %s", a)
 		default:
 			positional = append(positional, a)
 		}
 	}
 	if len(positional) == 0 {
-		return socket, "", nil, nil
+		return opts, nil
 	}
-	return socket, positional[0], positional[1:], nil
+	opts.cmd = positional[0]
+	opts.rest = positional[1:]
+	return opts, nil
 }
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `tyd - persistent terminal session daemon
 
 Usage:
-  tyd [--socket PATH] serve
-  tyd [--socket PATH] create
-  tyd [--socket PATH] list
-  tyd [--socket PATH] attach <session_id>
-  tyd [--socket PATH] close  <session_id>
+  tyd [--socket PATH] [--identity PATH] [--trust PATH] keygen
+  tyd [--socket PATH] [--trust PATH] serve
+  tyd [--socket PATH] [--identity PATH] create
+  tyd [--socket PATH] [--identity PATH] list
+  tyd [--socket PATH] [--identity PATH] attach <session_id>
+  tyd [--socket PATH] [--identity PATH] close  <session_id>
 
-Default socket: %s
+Default socket:   %s
+Default identity: %s
+Default trust:    %s
 While attached, press Ctrl-\ to detach. The shell keeps running.
-`, paths.DefaultSocket())
+`, paths.DefaultSocket(), paths.DefaultIdentity(), paths.DefaultTrust())
 }

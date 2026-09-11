@@ -20,15 +20,17 @@ const (
 	TypeResize Type = "resize"
 	TypeSignal Type = "signal"
 	TypeClose  Type = "close"
+	TypeAuth   Type = "auth"
 
-	TypeOK       Type = "ok"
-	TypeError    Type = "error"
-	TypeOutput   Type = "output"
-	TypeAttached Type = "attached"
-	TypeDetached Type = "detached"
-	TypeClosed   Type = "closed"
-	TypeExit     Type = "exit"
-	TypeSessions Type = "sessions"
+	TypeChallenge Type = "challenge"
+	TypeOK        Type = "ok"
+	TypeError     Type = "error"
+	TypeOutput    Type = "output"
+	TypeAttached  Type = "attached"
+	TypeDetached  Type = "detached"
+	TypeClosed    Type = "closed"
+	TypeExit      Type = "exit"
+	TypeSessions  Type = "sessions"
 )
 
 type Frame struct {
@@ -40,10 +42,11 @@ type Frame struct {
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 
-	Data   []byte `json:"data,omitempty"`
-	Signal string `json:"signal,omitempty"`
-	Shell  string `json:"shell,omitempty"`
-	Cwd    string `json:"cwd,omitempty"`
+	Data      []byte `json:"data,omitempty"`
+	PublicKey []byte `json:"public_key,omitempty"`
+	Signal    string `json:"signal,omitempty"`
+	Shell     string `json:"shell,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`
 
 	Session  *SessionInfo  `json:"session,omitempty"`
 	Sessions []SessionInfo `json:"sessions,omitempty"`

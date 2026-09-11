@@ -5,10 +5,22 @@ import (
 	"path/filepath"
 )
 
-func DefaultSocket() string {
+func DefaultDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "tyd.sock")
+		return filepath.Join(os.TempDir(), ".tyd")
 	}
-	return filepath.Join(home, ".tyd", "tyd.sock")
+	return filepath.Join(home, ".tyd")
+}
+
+func DefaultSocket() string {
+	return filepath.Join(DefaultDir(), "tyd.sock")
+}
+
+func DefaultIdentity() string {
+	return filepath.Join(DefaultDir(), "id_ed25519")
+}
+
+func DefaultTrust() string {
+	return filepath.Join(DefaultDir(), "trusted.json")
 }

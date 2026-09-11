@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net"
@@ -9,15 +10,20 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/auth"
 	"tyd/internal/protocol"
 	"tyd/internal/server"
 	"tyd/internal/session"
 )
 
-func startTestServer(t *testing.T) string {
+func startTestServer(t *testing.T) (string, ed25519.PrivateKey) {
 	t.Helper()
+	key, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
 	sock := fmt.Sprintf("/tmp/tyd-cli-%d-%d.sock", os.Getpid(), time.Now().UnixNano()%1_000_000)
-	srv := server.New(sock, session.NewManager())
+	srv := server.New(sock, session.NewManager(), trust)
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -25,19 +31,23 @@ func startTestServer(t *testing.T) string {
 	if err := WaitSocket(sock, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	return sock
+	return sock, key
 }
 
 func TestDialMissingSocket(t *testing.T) {
-	_, err := Dial("/tmp/tyd-does-not-exist.sock")
+	key, _, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Dial("/tmp/tyd-does-not-exist.sock", key)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestCreateListClose(t *testing.T) {
-	sock := startTestServer(t)
-	info, err := Create(sock, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir(), Rows: 0, Cols: 0})
+	sock, key := startTestServer(t)
+	info, err := Create(sock, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir(), Rows: 0, Cols: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +58,7 @@ func TestCreateListClose(t *testing.T) {
 		t.Fatalf("default size %dx%d", info.Cols, info.Rows)
 	}
 
-	listed, err := List(sock)
+	listed, err := List(sock, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +72,10 @@ func TestCreateListClose(t *testing.T) {
 		t.Fatal("created session not listed")
 	}
 
-	if err := CloseSession(sock, info.ID); err != nil {
+	if err := CloseSession(sock, key, info.ID); err != nil {
 		t.Fatal(err)
 	}
-	listed, err = List(sock)
+	listed, err = List(sock, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +87,11 @@ func TestCreateListClose(t *testing.T) {
 }
 
 func TestCreateWithoutServer(t *testing.T) {
-	_, err := Create("/tmp/tyd-no-server.sock", CreateOpts{})
+	key, _, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Create("/tmp/tyd-no-server.sock", key, CreateOpts{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -91,8 +105,8 @@ func TestWaitSocketTimeout(t *testing.T) {
 }
 
 func TestAttachWriteAndDetach(t *testing.T) {
-	sock := startTestServer(t)
-	info, err := Create(sock, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	sock, key := startTestServer(t)
+	info, err := Create(sock, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +122,7 @@ func TestAttachWriteAndDetach(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Attach(sock, info.ID, inR, outW)
+		errCh <- Attach(sock, key, info.ID, inR, outW)
 	}()
 
 	if _, err := inW.Write([]byte("echo attach-client-ok\n")); err != nil {
@@ -152,7 +166,7 @@ func TestAttachWriteAndDetach(t *testing.T) {
 	_ = inR.Close()
 	_ = outR.Close()
 
-	if err := CloseSession(sock, info.ID); err != nil {
+	if err := CloseSession(sock, key, info.ID); err != nil {
 		t.Fatal(err)
 	}
 }
