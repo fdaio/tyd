@@ -1,6 +1,7 @@
 package client
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 
 	"golang.org/x/term"
 
+	"tyd/internal/auth"
 	"tyd/internal/protocol"
 )
 
@@ -20,12 +22,47 @@ type Conn struct {
 	wmu sync.Mutex
 }
 
-func Dial(socket string) (*Conn, error) {
+func Dial(socket string, key ed25519.PrivateKey) (*Conn, error) {
 	nc, err := net.Dial("unix", socket)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w (is 'tyd serve' running?)", socket, err)
 	}
-	return &Conn{nc: nc}, nil
+	c := &Conn{nc: nc}
+	if err := c.Authenticate(key); err != nil {
+		_ = c.Close()
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Conn) Authenticate(key ed25519.PrivateKey) error {
+	if len(key) != ed25519.PrivateKeySize {
+		return fmt.Errorf("invalid identity")
+	}
+	chal, err := c.Recv()
+	if err != nil {
+		return err
+	}
+	if chal.Type == protocol.TypeError {
+		return fmt.Errorf("%s", chal.Error)
+	}
+	if chal.Type != protocol.TypeChallenge {
+		return fmt.Errorf("expected challenge, got %q", chal.Type)
+	}
+	if err := c.Send(auth.AuthFrame(key, chal.Data)); err != nil {
+		return err
+	}
+	resp, err := c.Recv()
+	if err != nil {
+		return err
+	}
+	if resp.Type == protocol.TypeError {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	if resp.Type != protocol.TypeOK {
+		return fmt.Errorf("unexpected auth reply %q", resp.Type)
+	}
+	return nil
 }
 
 func (c *Conn) Close() error {
@@ -46,8 +83,8 @@ func (c *Conn) SetDeadline(d time.Time) error {
 	return c.nc.SetDeadline(d)
 }
 
-func rpc(socket string, req protocol.Frame) (protocol.Frame, error) {
-	c, err := Dial(socket)
+func rpc(socket string, key ed25519.PrivateKey, req protocol.Frame) (protocol.Frame, error) {
+	c, err := Dial(socket, key)
 	if err != nil {
 		return protocol.Frame{}, err
 	}
@@ -72,14 +109,14 @@ type CreateOpts struct {
 	Cwd   string
 }
 
-func Create(socket string, opts CreateOpts) (protocol.SessionInfo, error) {
+func Create(socket string, key ed25519.PrivateKey, opts CreateOpts) (protocol.SessionInfo, error) {
 	if opts.Rows == 0 {
 		opts.Rows = 24
 	}
 	if opts.Cols == 0 {
 		opts.Cols = 80
 	}
-	resp, err := rpc(socket, protocol.Frame{
+	resp, err := rpc(socket, key, protocol.Frame{
 		Type:  protocol.TypeCreate,
 		Rows:  opts.Rows,
 		Cols:  opts.Cols,
@@ -95,23 +132,23 @@ func Create(socket string, opts CreateOpts) (protocol.SessionInfo, error) {
 	return *resp.Session, nil
 }
 
-func List(socket string) ([]protocol.SessionInfo, error) {
-	resp, err := rpc(socket, protocol.Frame{Type: protocol.TypeList})
+func List(socket string, key ed25519.PrivateKey) ([]protocol.SessionInfo, error) {
+	resp, err := rpc(socket, key, protocol.Frame{Type: protocol.TypeList})
 	if err != nil {
 		return nil, err
 	}
 	return resp.Sessions, nil
 }
 
-func CloseSession(socket, id string) error {
-	_, err := rpc(socket, protocol.Frame{Type: protocol.TypeClose, SessionID: id})
+func CloseSession(socket string, key ed25519.PrivateKey, id string) error {
+	_, err := rpc(socket, key, protocol.Frame{Type: protocol.TypeClose, SessionID: id})
 	return err
 }
 
 const detachByte = 0x1c // Ctrl-\
 
-func Attach(socket, id string, stdin *os.File, stdout *os.File) error {
-	c, err := Dial(socket)
+func Attach(socket string, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
+	c, err := Dial(socket, key)
 	if err != nil {
 		return err
 	}

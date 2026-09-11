@@ -31,6 +31,7 @@ type CreateOpts struct {
 	Shell string
 	Cwd   string
 	Env   []string
+	Owner string
 }
 
 type Manager struct {
@@ -156,9 +157,11 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 		return nil, fmt.Errorf("start pty: %w", err)
 	}
 
-	owner := ""
-	if u, err := user.Current(); err == nil {
-		owner = u.Username
+	owner := opts.Owner
+	if owner == "" {
+		if u, err := user.Current(); err == nil {
+			owner = u.Username
+		}
 	}
 
 	s := &Session{

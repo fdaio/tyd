@@ -2,7 +2,7 @@
 
 tyd maintains persistent, remotely attachable terminal sessions on a machine.
 
-Step 1 is local only: one `tyd` binary, a Unix socket, and PTY sessions that survive client disconnect.
+Step 2 adds Ed25519 identity and session capabilities on the same local Unix socket.
 
 ## Build
 
@@ -13,18 +13,17 @@ make build
 ## Use
 
 ```bash
-# terminal 1
-./tyd serve
+./tyd keygen          # writes ~/.tyd/id_ed25519 and trusted.json
+./tyd serve           # trusts only keys in ~/.tyd/trusted.json
 
-# terminal 2
 id=$(./tyd create)
 ./tyd list
-./tyd attach "$id"
-# Ctrl-\ detaches; the shell keeps running
-./tyd attach "$id"
+./tyd attach "$id"    # Ctrl-\ detaches; the shell keeps running
 ./tyd close "$id"
 ```
 
-Default socket: `$HOME/.tyd/tyd.sock`. Override with `--socket PATH`.
+`attach` is not `write`. A key granted only `attach` on a session can watch output but cannot type.
 
-This step does not include TCP, TLS, authentication, or switching Unix users.
+Default socket: `$HOME/.tyd/tyd.sock`. Identity and trust paths can be overridden with `--identity` and `--trust`.
+
+This step does not include TCP, TLS, or switching Unix users.

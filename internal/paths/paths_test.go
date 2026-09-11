@@ -14,6 +14,12 @@ func TestDefaultSocketUsesHome(t *testing.T) {
 	if got != want {
 		t.Fatalf("DefaultSocket() = %q, want %q", got, want)
 	}
+	if DefaultIdentity() != filepath.Join(home, ".tyd", "id_ed25519") {
+		t.Fatalf("identity %q", DefaultIdentity())
+	}
+	if DefaultTrust() != filepath.Join(home, ".tyd", "trusted.json") {
+		t.Fatalf("trust %q", DefaultTrust())
+	}
 }
 
 func TestDefaultSocketFallsBackWhenHomeMissing(t *testing.T) {
@@ -26,7 +32,7 @@ func TestDefaultSocketFallsBackWhenHomeMissing(t *testing.T) {
 		t.Fatalf("got %q, want a tyd.sock path", got)
 	}
 	if _, err := os.UserHomeDir(); err != nil {
-		want := filepath.Join(os.TempDir(), "tyd.sock")
+		want := filepath.Join(os.TempDir(), ".tyd", "tyd.sock")
 		if got != want {
 			t.Fatalf("got %q want %q", got, want)
 		}
