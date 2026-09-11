@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     branches: [main]
 
@@ -32,3 +33,51 @@ jobs:
 
       - name: Build
         run: go build -o tyd .
+
+  dist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Package linux, darwin, and freebsd releases
+        run: make dist
+
+      - name: Upload linux release
+        uses: actions/upload-artifact@v4
+        with:
+          name: tyd-linux
+          path: dist/tyd-linux.tar.gz
+
+      - name: Upload darwin release
+        uses: actions/upload-artifact@v4
+        with:
+          name: tyd-darwin
+          path: dist/tyd-darwin.tar.gz
+
+      - name: Upload freebsd release
+        uses: actions/upload-artifact@v4
+        with:
+          name: tyd-freebsd
+          path: dist/tyd-freebsd.tar.gz
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: dist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.tar.gz
