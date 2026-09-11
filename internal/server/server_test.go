@@ -223,13 +223,22 @@ func TestAttachWithoutWriteCannotType(t *testing.T) {
 	if err := c.Send(protocol.Frame{Type: protocol.TypeWrite, Data: []byte("echo no\n")}); err != nil {
 		t.Fatal(err)
 	}
-	f, err = c.Recv()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if f.Type != protocol.TypeError || !strings.Contains(f.Error, "write") {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = c.SetDeadline(deadline)
+		f, err = c.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Type == protocol.TypeOutput {
+			continue
+		}
+		if f.Type == protocol.TypeError && strings.Contains(f.Error, "write") {
+			return
+		}
 		t.Fatalf("expected write denied, got %+v", f)
 	}
+	t.Fatal("timed out waiting for write denial")
 }
 
 func TestSessionGrantDoesNotCrossSessions(t *testing.T) {
