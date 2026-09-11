@@ -15,25 +15,54 @@ import (
 
 	"tyd/internal/auth"
 	"tyd/internal/protocol"
+	"tyd/internal/transport"
 )
 
-type Conn struct {
-	nc  net.Conn
-	wmu sync.Mutex
+type Endpoint struct {
+	Kind     transport.Kind
+	Address  string
+	CertPath string // required for TLS: pinned server cert
 }
 
-func Dial(socket string, key ed25519.PrivateKey) (*Conn, error) {
-	nc, err := net.Dial("unix", socket)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w (is 'tyd serve' running?)", socket, err)
+func (e Endpoint) String() string {
+	return transport.Endpoint{Kind: e.Kind, Address: e.Address}.String()
+}
+
+type Conn struct {
+	nc   net.Conn
+	info transport.Info
+	wmu  sync.Mutex
+}
+
+func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	var (
+		nc  transport.Conn
+		err error
+	)
+	switch ep.Kind {
+	case transport.KindUnix, "":
+		nc, err = transport.DialUnix(ep.Address)
+	case transport.KindTLS:
+		nc, err = transport.DialTLS(ep.Address, ep.CertPath)
+	default:
+		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
-	c := &Conn{nc: nc}
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w (is 'tyd serve' running?)", ep, err)
+	}
+	c := &Conn{nc: nc, info: nc.Info()}
 	if err := c.Authenticate(key); err != nil {
 		_ = c.Close()
 		return nil, err
 	}
 	return c, nil
 }
+
+func DialUnix(socket string, key ed25519.PrivateKey) (*Conn, error) {
+	return Dial(Endpoint{Kind: transport.KindUnix, Address: socket}, key)
+}
+
+func (c *Conn) Info() transport.Info { return c.info }
 
 func (c *Conn) Authenticate(key ed25519.PrivateKey) error {
 	if len(key) != ed25519.PrivateKeySize {
@@ -83,8 +112,8 @@ func (c *Conn) SetDeadline(d time.Time) error {
 	return c.nc.SetDeadline(d)
 }
 
-func rpc(socket string, key ed25519.PrivateKey, req protocol.Frame) (protocol.Frame, error) {
-	c, err := Dial(socket, key)
+func rpc(ep Endpoint, key ed25519.PrivateKey, req protocol.Frame) (protocol.Frame, error) {
+	c, err := Dial(ep, key)
 	if err != nil {
 		return protocol.Frame{}, err
 	}
@@ -109,14 +138,14 @@ type CreateOpts struct {
 	Cwd   string
 }
 
-func Create(socket string, key ed25519.PrivateKey, opts CreateOpts) (protocol.SessionInfo, error) {
+func Create(ep Endpoint, key ed25519.PrivateKey, opts CreateOpts) (protocol.SessionInfo, error) {
 	if opts.Rows == 0 {
 		opts.Rows = 24
 	}
 	if opts.Cols == 0 {
 		opts.Cols = 80
 	}
-	resp, err := rpc(socket, key, protocol.Frame{
+	resp, err := rpc(ep, key, protocol.Frame{
 		Type:  protocol.TypeCreate,
 		Rows:  opts.Rows,
 		Cols:  opts.Cols,
@@ -132,23 +161,31 @@ func Create(socket string, key ed25519.PrivateKey, opts CreateOpts) (protocol.Se
 	return *resp.Session, nil
 }
 
-func List(socket string, key ed25519.PrivateKey) ([]protocol.SessionInfo, error) {
-	resp, err := rpc(socket, key, protocol.Frame{Type: protocol.TypeList})
+func List(ep Endpoint, key ed25519.PrivateKey) ([]protocol.SessionInfo, error) {
+	resp, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeList})
 	if err != nil {
 		return nil, err
 	}
 	return resp.Sessions, nil
 }
 
-func CloseSession(socket string, key ed25519.PrivateKey, id string) error {
-	_, err := rpc(socket, key, protocol.Frame{Type: protocol.TypeClose, SessionID: id})
+func Status(ep Endpoint, key ed25519.PrivateKey) ([]protocol.ConnInfo, error) {
+	resp, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeStatus})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Connections, nil
+}
+
+func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
+	_, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeClose, SessionID: id})
 	return err
 }
 
 const detachByte = 0x1c // Ctrl-\
 
-func Attach(socket string, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
-	c, err := Dial(socket, key)
+func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
+	c, err := Dial(ep, key)
 	if err != nil {
 		return err
 	}
@@ -277,15 +314,29 @@ func copyInput(c *Conn, stdin *os.File) error {
 	}
 }
 
-func WaitSocket(socket string, timeout time.Duration) error {
+func WaitReady(ep Endpoint, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		c, err := net.Dial("unix", socket)
+		var (
+			c   transport.Conn
+			err error
+		)
+		switch ep.Kind {
+		case transport.KindTLS:
+			c, err = transport.DialTLS(ep.Address, ep.CertPath)
+		default:
+			c, err = transport.DialUnix(ep.Address)
+		}
 		if err == nil {
 			_ = c.Close()
 			return nil
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return fmt.Errorf("socket %s not ready", socket)
+	return fmt.Errorf("endpoint %s not ready", ep)
+}
+
+// WaitSocket keeps the old helper for unix-only tests.
+func WaitSocket(socket string, timeout time.Duration) error {
+	return WaitReady(Endpoint{Kind: transport.KindUnix, Address: socket}, timeout)
 }

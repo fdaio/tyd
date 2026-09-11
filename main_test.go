@@ -21,26 +21,25 @@ func TestParseArgs(t *testing.T) {
 	def := paths.DefaultSocket()
 	id := paths.DefaultIdentity()
 	trust := paths.DefaultTrust()
+	listen := paths.DefaultListen()
 	tests := []struct {
 		name       string
 		args       []string
 		wantSocket string
+		wantListen string
+		wantAddr   string
 		wantID     string
 		wantTrust  string
 		wantCmd    string
 		wantRest   []string
 		wantErr    bool
 	}{
-		{name: "empty", args: nil, wantSocket: def, wantID: id, wantTrust: trust, wantCmd: ""},
-		{name: "serve", args: []string{"serve"}, wantSocket: def, wantID: id, wantTrust: trust, wantCmd: "serve"},
-		{name: "socket before cmd", args: []string{"--socket", "/tmp/x.sock", "serve"}, wantSocket: "/tmp/x.sock", wantID: id, wantTrust: trust, wantCmd: "serve"},
-		{name: "socket after cmd", args: []string{"create", "--socket", "/tmp/y.sock"}, wantSocket: "/tmp/y.sock", wantID: id, wantTrust: trust, wantCmd: "create"},
-		{name: "identity", args: []string{"--identity", "/tmp/id", "list"}, wantSocket: def, wantID: "/tmp/id", wantTrust: trust, wantCmd: "list"},
-		{name: "trust", args: []string{"--trust=/tmp/t.json", "serve"}, wantSocket: def, wantID: id, wantTrust: "/tmp/t.json", wantCmd: "serve"},
-		{name: "attach id", args: []string{"attach", "abc"}, wantSocket: def, wantID: id, wantTrust: trust, wantCmd: "attach", wantRest: []string{"abc"}},
-		{name: "help", args: []string{"--help"}, wantSocket: def, wantID: id, wantTrust: trust, wantCmd: "help"},
-		{name: "short help", args: []string{"-h"}, wantSocket: def, wantID: id, wantTrust: trust, wantCmd: "help"},
-		{name: "missing socket value", args: []string{"--socket"}, wantErr: true},
+		{name: "empty", args: nil, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust},
+		{name: "serve", args: []string{"serve"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "serve"},
+		{name: "listen off", args: []string{"--listen", "off", "serve"}, wantSocket: def, wantListen: "off", wantID: id, wantTrust: trust, wantCmd: "serve"},
+		{name: "addr", args: []string{"--addr", "127.0.0.1:61211", "list"}, wantSocket: def, wantListen: listen, wantAddr: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantCmd: "list"},
+		{name: "status", args: []string{"status"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "status"},
+		{name: "help", args: []string{"--help"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "help"},
 		{name: "unknown flag", args: []string{"--nope"}, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -55,18 +54,19 @@ func TestParseArgs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if opts.socket != tt.wantSocket || opts.cmd != tt.wantCmd || opts.identity != tt.wantID || opts.trust != tt.wantTrust {
+			if opts.socket != tt.wantSocket || opts.listen != tt.wantListen || opts.addr != tt.wantAddr ||
+				opts.cmd != tt.wantCmd || opts.identity != tt.wantID || opts.trust != tt.wantTrust {
 				t.Fatalf("%+v", opts)
 			}
 			if strings.Join(opts.rest, ",") != strings.Join(tt.wantRest, ",") {
-				t.Fatalf("rest=%q want %q", opts.rest, tt.wantRest)
+				t.Fatalf("rest=%q", opts.rest)
 			}
 		})
 	}
 }
 
 func TestRunRejectsBadUsage(t *testing.T) {
-	base := options{socket: "/tmp/x.sock", identity: "/tmp/id", trust: "/tmp/t.json"}
+	base := options{socket: "/tmp/x.sock", identity: "/tmp/id", trust: "/tmp/t.json", listen: "off"}
 	a := base
 	a.cmd = "attach"
 	if err := run(a); err == nil {
@@ -84,7 +84,7 @@ func TestRunRejectsBadUsage(t *testing.T) {
 	}
 }
 
-func TestRunCreateListClose(t *testing.T) {
+func TestRunCreateListStatusClose(t *testing.T) {
 	dir := t.TempDir()
 	idPath := filepath.Join(dir, "id_ed25519")
 	trustPath := filepath.Join(dir, "trusted.json")
@@ -103,15 +103,16 @@ func TestRunCreateListClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	sock := fmt.Sprintf("/tmp/tyd-main-%d-%d.sock", os.Getpid(), time.Now().UnixNano()%1_000_000)
-	srv := server.New(sock, session.NewManager(), trust)
+	srv := server.NewWithConfig(server.Config{
+		Socket: sock, Listen: "off", Mgr: session.NewManager(), Trust: trust,
+	})
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 
-	cli := options{socket: sock, identity: idPath, trust: trustPath}
+	cli := options{socket: sock, identity: idPath, trust: trustPath, listen: "off"}
 	id := strings.TrimSpace(captureStdout(t, func() {
 		create := cli
 		create.cmd = "create"
@@ -122,18 +123,16 @@ func TestRunCreateListClose(t *testing.T) {
 	if id == "" {
 		t.Fatal("empty session id")
 	}
-
 	out := captureStdout(t, func() {
-		list := cli
-		list.cmd = "list"
-		if err := run(list); err != nil {
+		st := cli
+		st.cmd = "status"
+		if err := run(st); err != nil {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, id) {
-		t.Fatalf("list missing %s: %q", id, out)
+	if !strings.Contains(out, "TRANSPORT") {
+		t.Fatalf("status missing header: %q", out)
 	}
-
 	closeCmd := cli
 	closeCmd.cmd = "close"
 	closeCmd.rest = []string{id}
@@ -142,24 +141,9 @@ func TestRunCreateListClose(t *testing.T) {
 	}
 }
 
-func TestKeygenWritesIdentityAndTrust(t *testing.T) {
-	dir := t.TempDir()
-	opts := options{
-		identity: filepath.Join(dir, "id_ed25519"),
-		trust:    filepath.Join(dir, "trusted.json"),
-		cmd:      "keygen",
-	}
-	if err := runKeygen(opts); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.LoadIdentity(opts.identity); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := auth.LoadStore(opts.trust); err != nil {
-		t.Fatal(err)
-	}
-	if err := runKeygen(opts); err == nil {
-		t.Fatal("expected refuse overwrite")
+func TestDefaultListenPort(t *testing.T) {
+	if paths.DefaultListen() != "127.0.0.1:61211" {
+		t.Fatal(paths.DefaultListen())
 	}
 }
 

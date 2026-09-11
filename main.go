@@ -14,12 +14,17 @@ import (
 	"tyd/internal/paths"
 	"tyd/internal/server"
 	"tyd/internal/session"
+	"tyd/internal/transport"
 )
 
 type options struct {
 	socket   string
+	listen   string
+	addr     string
 	identity string
 	trust    string
+	cert     string
+	key      string
 	cmd      string
 	rest     []string
 }
@@ -41,6 +46,20 @@ func main() {
 	}
 }
 
+func endpoint(opts options) client.Endpoint {
+	if opts.addr != "" {
+		return client.Endpoint{
+			Kind:     transport.KindTLS,
+			Address:  opts.addr,
+			CertPath: opts.cert,
+		}
+	}
+	return client.Endpoint{
+		Kind:    transport.KindUnix,
+		Address: opts.socket,
+	}
+}
+
 func run(opts options) error {
 	switch opts.cmd {
 	case "keygen":
@@ -52,7 +71,7 @@ func run(opts options) error {
 		if err != nil {
 			return err
 		}
-		info, err := client.Create(opts.socket, key, client.CreateOpts{})
+		info, err := client.Create(endpoint(opts), key, client.CreateOpts{})
 		if err != nil {
 			return err
 		}
@@ -63,7 +82,7 @@ func run(opts options) error {
 		if err != nil {
 			return err
 		}
-		items, err := client.List(opts.socket, key)
+		items, err := client.List(endpoint(opts), key)
 		if err != nil {
 			return err
 		}
@@ -71,6 +90,22 @@ func run(opts options) error {
 		fmt.Fprintln(tw, "SESSION\tPID\tSTATE\tSIZE\tCREATED")
 		for _, it := range items {
 			fmt.Fprintf(tw, "%s\t%d\t%s\t%dx%d\t%s\n", it.ID, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
+		}
+		return tw.Flush()
+	case "status":
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		items, err := client.Status(endpoint(opts), key)
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tTRANSPORT\tREMOTE\tTLS\tSTATE\tPRINCIPAL\tSESSION\tSINCE")
+		for _, it := range items {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%s\t%s\t%s\t%s\n",
+				it.ID, it.Transport, it.RemoteAddr, it.TLS, it.State, it.Principal, it.SessionID, it.EstablishedAt)
 		}
 		return tw.Flush()
 	case "attach":
@@ -82,7 +117,7 @@ func run(opts options) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", opts.rest[0])
-		return client.Attach(opts.socket, key, opts.rest[0], os.Stdin, os.Stdout)
+		return client.Attach(endpoint(opts), key, opts.rest[0], os.Stdin, os.Stdout)
 	case "close":
 		if len(opts.rest) != 1 {
 			return fmt.Errorf("usage: tyd close <session_id>")
@@ -91,7 +126,7 @@ func run(opts options) error {
 		if err != nil {
 			return err
 		}
-		return client.CloseSession(opts.socket, key, opts.rest[0])
+		return client.CloseSession(endpoint(opts), key, opts.rest[0])
 	default:
 		return fmt.Errorf("unknown command %q", opts.cmd)
 	}
@@ -134,11 +169,21 @@ func runServe(opts options) error {
 		return fmt.Errorf("load trust %s: %w (run 'tyd keygen')", opts.trust, err)
 	}
 	mgr := session.NewManager()
-	srv := server.New(opts.socket, mgr, trust)
+	srv := server.NewWithConfig(server.Config{
+		Socket:   opts.socket,
+		Listen:   opts.listen,
+		CertPath: opts.cert,
+		KeyPath:  opts.key,
+		Mgr:      mgr,
+		Trust:    trust,
+	})
 	if err := srv.Start(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "tyd listening on %s\n", opts.socket)
+	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
+	if opts.listen != "" && opts.listen != "off" {
+		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", opts.listen, srv.TLSFingerprint())
+	}
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
@@ -149,8 +194,11 @@ func runServe(opts options) error {
 func parseArgs(args []string) (options, error) {
 	opts := options{
 		socket:   paths.DefaultSocket(),
+		listen:   paths.DefaultListen(),
 		identity: paths.DefaultIdentity(),
 		trust:    paths.DefaultTrust(),
+		cert:     paths.DefaultServerCert(),
+		key:      paths.DefaultServerKey(),
 	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -167,6 +215,22 @@ func parseArgs(args []string) (options, error) {
 			opts.socket = args[i]
 		case strings.HasPrefix(a, "--socket="):
 			opts.socket = strings.TrimPrefix(a, "--socket=")
+		case a == "--listen":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires an address or 'off'", a)
+			}
+			i++
+			opts.listen = args[i]
+		case strings.HasPrefix(a, "--listen="):
+			opts.listen = strings.TrimPrefix(a, "--listen=")
+		case a == "--addr":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires host:port", a)
+			}
+			i++
+			opts.addr = args[i]
+		case strings.HasPrefix(a, "--addr="):
+			opts.addr = strings.TrimPrefix(a, "--addr=")
 		case a == "--identity":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -183,6 +247,22 @@ func parseArgs(args []string) (options, error) {
 			opts.trust = args[i]
 		case strings.HasPrefix(a, "--trust="):
 			opts.trust = strings.TrimPrefix(a, "--trust=")
+		case a == "--tls-cert":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.cert = args[i]
+		case strings.HasPrefix(a, "--tls-cert="):
+			opts.cert = strings.TrimPrefix(a, "--tls-cert=")
+		case a == "--tls-key":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.key = args[i]
+		case strings.HasPrefix(a, "--tls-key="):
+			opts.key = strings.TrimPrefix(a, "--tls-key=")
 		case strings.HasPrefix(a, "-"):
 			return options{}, fmt.Errorf("unknown flag %s", a)
 		default:
@@ -202,15 +282,19 @@ func usage() {
 
 Usage:
   tyd [--socket PATH] [--identity PATH] [--trust PATH] keygen
-  tyd [--socket PATH] [--trust PATH] serve
-  tyd [--socket PATH] [--identity PATH] create
-  tyd [--socket PATH] [--identity PATH] list
-  tyd [--socket PATH] [--identity PATH] attach <session_id>
-  tyd [--socket PATH] [--identity PATH] close  <session_id>
+  tyd [--socket PATH] [--listen ADDR|off] [--tls-cert PATH] [--tls-key PATH] [--trust PATH] serve
+  tyd [--socket PATH | --addr HOST:PORT] [--tls-cert PATH] [--identity PATH] create
+  tyd [...same...] list
+  tyd [...same...] status
+  tyd [...same...] attach <session_id>
+  tyd [...same...] close  <session_id>
 
-Default socket:   %s
-Default identity: %s
-Default trust:    %s
+Default socket:    %s
+Default listen:    %s
+Default identity:  %s
+Default trust:     %s
+Default TLS cert:  %s
 While attached, press Ctrl-\ to detach. The shell keeps running.
-`, paths.DefaultSocket(), paths.DefaultIdentity(), paths.DefaultTrust())
+Use --addr for TLS clients; pin the server with --tls-cert.
+`, paths.DefaultSocket(), paths.DefaultListen(), paths.DefaultIdentity(), paths.DefaultTrust(), paths.DefaultServerCert())
 }

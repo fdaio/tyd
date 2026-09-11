@@ -2,7 +2,7 @@
 
 tyd maintains persistent, remotely attachable terminal sessions on a machine.
 
-Step 2 adds Ed25519 identity and session capabilities on the same local Unix socket.
+Step 3 adds a Transport layer: local Unix socket and TLS TCP (default `127.0.0.1:61211`), plus connection topology via `tyd status`.
 
 ## Build
 
@@ -13,17 +13,20 @@ make build
 ## Use
 
 ```bash
-./tyd keygen          # writes ~/.tyd/id_ed25519 and trusted.json
-./tyd serve           # trusts only keys in ~/.tyd/trusted.json
+./tyd keygen
+./tyd serve                 # unix + TLS on 127.0.0.1:61211
+# ./tyd serve --listen off  # unix only
 
 id=$(./tyd create)
-./tyd list
-./tyd attach "$id"    # Ctrl-\ detaches; the shell keeps running
+./tyd status
+./tyd attach "$id"
 ./tyd close "$id"
+
+# TLS client (pin server cert)
+./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt create
+./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt status
 ```
 
-`attach` is not `write`. A key granted only `attach` on a session can watch output but cannot type.
+`attach` is not `write`. Topology shows transport, addresses, TLS fingerprint, principal, and session.
 
-Default socket: `$HOME/.tyd/tyd.sock`. Identity and trust paths can be overridden with `--identity` and `--trust`.
-
-This step does not include TCP, TLS, or switching Unix users.
+This step does not include Tailcat/NetBird, SSH, or switching Unix users.

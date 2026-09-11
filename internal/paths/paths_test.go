@@ -20,6 +20,12 @@ func TestDefaultSocketUsesHome(t *testing.T) {
 	if DefaultTrust() != filepath.Join(home, ".tyd", "trusted.json") {
 		t.Fatalf("trust %q", DefaultTrust())
 	}
+	if DefaultListen() != "127.0.0.1:61211" {
+		t.Fatalf("listen %q", DefaultListen())
+	}
+	if DefaultServerCert() != filepath.Join(home, ".tyd", "server.crt") {
+		t.Fatalf("cert %q", DefaultServerCert())
+	}
 }
 
 func TestDefaultSocketFallsBackWhenHomeMissing(t *testing.T) {
