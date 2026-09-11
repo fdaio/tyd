@@ -24,3 +24,15 @@ func DefaultIdentity() string {
 func DefaultTrust() string {
 	return filepath.Join(DefaultDir(), "trusted.json")
 }
+
+func DefaultListen() string {
+	return "127.0.0.1:61211"
+}
+
+func DefaultServerCert() string {
+	return filepath.Join(DefaultDir(), "server.crt")
+}
+
+func DefaultServerKey() string {
+	return filepath.Join(DefaultDir(), "server.key")
+}

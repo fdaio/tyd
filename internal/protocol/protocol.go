@@ -21,16 +21,18 @@ const (
 	TypeSignal Type = "signal"
 	TypeClose  Type = "close"
 	TypeAuth   Type = "auth"
+	TypeStatus Type = "status"
 
-	TypeChallenge Type = "challenge"
-	TypeOK        Type = "ok"
-	TypeError     Type = "error"
-	TypeOutput    Type = "output"
-	TypeAttached  Type = "attached"
-	TypeDetached  Type = "detached"
-	TypeClosed    Type = "closed"
-	TypeExit      Type = "exit"
-	TypeSessions  Type = "sessions"
+	TypeChallenge   Type = "challenge"
+	TypeOK          Type = "ok"
+	TypeError       Type = "error"
+	TypeOutput      Type = "output"
+	TypeAttached    Type = "attached"
+	TypeDetached    Type = "detached"
+	TypeClosed      Type = "closed"
+	TypeExit        Type = "exit"
+	TypeSessions    Type = "sessions"
+	TypeConnections Type = "connections"
 )
 
 type Frame struct {
@@ -48,9 +50,23 @@ type Frame struct {
 	Shell     string `json:"shell,omitempty"`
 	Cwd       string `json:"cwd,omitempty"`
 
-	Session  *SessionInfo  `json:"session,omitempty"`
-	Sessions []SessionInfo `json:"sessions,omitempty"`
-	ExitCode int           `json:"exit_code,omitempty"`
+	Session     *SessionInfo  `json:"session,omitempty"`
+	Sessions    []SessionInfo `json:"sessions,omitempty"`
+	Connections []ConnInfo    `json:"connections,omitempty"`
+	ExitCode    int           `json:"exit_code,omitempty"`
+}
+
+type ConnInfo struct {
+	ID            string `json:"id"`
+	Transport     string `json:"transport"`
+	LocalAddr     string `json:"local_addr"`
+	RemoteAddr    string `json:"remote_addr"`
+	TLS           bool   `json:"tls"`
+	CertFP        string `json:"cert_fp,omitempty"`
+	State         string `json:"state"`
+	Principal     string `json:"principal,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
+	EstablishedAt string `json:"established_at"`
 }
 
 type SessionInfo struct {

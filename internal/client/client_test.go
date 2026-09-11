@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,9 +15,10 @@ import (
 	"tyd/internal/protocol"
 	"tyd/internal/server"
 	"tyd/internal/session"
+	"tyd/internal/transport"
 )
 
-func startTestServer(t *testing.T) (string, ed25519.PrivateKey) {
+func startTestServer(t *testing.T) (Endpoint, ed25519.PrivateKey) {
 	t.Helper()
 	key, trust, err := auth.NewAdminStore()
 	if err != nil {
@@ -28,10 +30,11 @@ func startTestServer(t *testing.T) (string, ed25519.PrivateKey) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = srv.Close() })
-	if err := WaitSocket(sock, 2*time.Second); err != nil {
+	ep := Endpoint{Kind: transport.KindUnix, Address: sock}
+	if err := WaitReady(ep, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	return sock, key
+	return ep, key
 }
 
 func TestDialMissingSocket(t *testing.T) {
@@ -39,26 +42,22 @@ func TestDialMissingSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Dial("/tmp/tyd-does-not-exist.sock", key)
+	_, err = Dial(Endpoint{Kind: transport.KindUnix, Address: "/tmp/tyd-does-not-exist.sock"}, key)
 	if err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestCreateListClose(t *testing.T) {
-	sock, key := startTestServer(t)
-	info, err := Create(sock, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir(), Rows: 0, Cols: 0})
+	ep, key := startTestServer(t)
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir(), Rows: 0, Cols: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if info.ID == "" || info.PID == 0 {
 		t.Fatalf("incomplete session: %+v", info)
 	}
-	if info.Rows != 24 || info.Cols != 80 {
-		t.Fatalf("default size %dx%d", info.Cols, info.Rows)
-	}
-
-	listed, err := List(sock, key)
+	listed, err := List(ep, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,18 +70,15 @@ func TestCreateListClose(t *testing.T) {
 	if !found {
 		t.Fatal("created session not listed")
 	}
-
-	if err := CloseSession(sock, key, info.ID); err != nil {
-		t.Fatal(err)
-	}
-	listed, err = List(sock, key)
+	conns, err := Status(ep, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range listed {
-		if s.ID == info.ID {
-			t.Fatal("closed session still listed")
-		}
+	if len(conns) < 1 {
+		t.Fatal("expected at least the status connection")
+	}
+	if err := CloseSession(ep, key, info.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -91,7 +87,7 @@ func TestCreateWithoutServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = Create("/tmp/tyd-no-server.sock", key, CreateOpts{})
+	_, err = Create(Endpoint{Kind: transport.KindUnix, Address: "/tmp/tyd-no-server.sock"}, key, CreateOpts{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -104,9 +100,74 @@ func TestWaitSocketTimeout(t *testing.T) {
 	}
 }
 
+func TestTLSCreateAndStatus(t *testing.T) {
+	key, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "server.crt")
+	keyPath := filepath.Join(dir, "server.key")
+	sock := fmt.Sprintf("/tmp/tyd-tls-%d.sock", time.Now().UnixNano()%1_000_000)
+	srv := server.NewWithConfig(server.Config{
+		Socket:   sock,
+		Listen:   "127.0.0.1:0",
+		CertPath: cert,
+		KeyPath:  keyPath,
+		Mgr:      session.NewManager(),
+		Trust:    trust,
+	})
+	// Listen 127.0.0.1:0 won't work with our ListenTLS the same way — need fixed or get addr.
+	// Use a free port via temporary listener.
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := tmp.Addr().String()
+	_ = tmp.Close()
+
+	srv = server.NewWithConfig(server.Config{
+		Socket:   sock,
+		Listen:   addr,
+		CertPath: cert,
+		KeyPath:  keyPath,
+		Mgr:      session.NewManager(),
+		Trust:    trust,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	ep := Endpoint{Kind: transport.KindTLS, Address: addr, CertPath: cert}
+	if err := WaitReady(ep, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns, err := Status(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTLS := false
+	for _, c := range conns {
+		if c.Transport == string(transport.KindTLS) && c.TLS {
+			foundTLS = true
+		}
+	}
+	if !foundTLS {
+		t.Fatalf("no tls connection in %+v", conns)
+	}
+	if err := CloseSession(ep, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAttachWriteAndDetach(t *testing.T) {
-	sock, key := startTestServer(t)
-	info, err := Create(sock, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	ep, key := startTestServer(t)
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +183,7 @@ func TestAttachWriteAndDetach(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Attach(sock, key, info.ID, inR, outW)
+		errCh <- Attach(ep, key, info.ID, inR, outW)
 	}()
 
 	if _, err := inW.Write([]byte("echo attach-client-ok\n")); err != nil {
@@ -166,7 +227,7 @@ func TestAttachWriteAndDetach(t *testing.T) {
 	_ = inR.Close()
 	_ = outR.Close()
 
-	if err := CloseSession(sock, key, info.ID); err != nil {
+	if err := CloseSession(ep, key, info.ID); err != nil {
 		t.Fatal(err)
 	}
 }

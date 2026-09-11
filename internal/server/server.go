@@ -1,88 +1,121 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
+	"time"
 
 	"tyd/internal/auth"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
+	"tyd/internal/transport"
 )
 
-type Server struct {
-	Socket string
-	Mgr    *session.Manager
-	Trust  *auth.Store
+type Config struct {
+	Socket   string
+	Listen   string // empty = no TLS; e.g. 127.0.0.1:61211
+	CertPath string
+	KeyPath  string
+	Mgr      *session.Manager
+	Trust    *auth.Store
+}
 
-	mu sync.Mutex
-	ln net.Listener
+type Server struct {
+	cfg Config
+
+	mu        sync.Mutex
+	listeners []net.Listener
+	conns     map[string]*connState
+	tlsCertFP string
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
-	return &Server{Socket: socket, Mgr: mgr, Trust: trust}
+	return NewWithConfig(Config{Socket: socket, Mgr: mgr, Trust: trust})
+}
+
+func NewWithConfig(cfg Config) *Server {
+	return &Server{
+		cfg:   cfg,
+		conns: make(map[string]*connState),
+	}
 }
 
 func (s *Server) Start() error {
-	if s.Trust == nil {
+	if s.cfg.Trust == nil {
 		return fmt.Errorf("trust store required")
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Socket), 0o700); err != nil {
-		return err
+	if s.cfg.Socket != "" {
+		ln, err := transport.ListenUnix(s.cfg.Socket)
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		s.listeners = append(s.listeners, ln)
+		s.mu.Unlock()
+		go s.accept(ln)
 	}
-	_ = os.Remove(s.Socket)
-	ln, err := net.Listen("unix", s.Socket)
-	if err != nil {
-		return err
-	}
-	if err := os.Chmod(s.Socket, 0o600); err != nil {
-		_ = ln.Close()
-		return err
+	if s.cfg.Listen != "" && s.cfg.Listen != "off" {
+		ln, fp, err := transport.ListenTLS(s.cfg.Listen, s.cfg.CertPath, s.cfg.KeyPath)
+		if err != nil {
+			_ = s.Close()
+			return err
+		}
+		s.mu.Lock()
+		s.listeners = append(s.listeners, ln)
+		s.tlsCertFP = transport.ShortFP(fp)
+		s.mu.Unlock()
+		go s.accept(ln)
 	}
 	s.mu.Lock()
-	s.ln = ln
+	n := len(s.listeners)
 	s.mu.Unlock()
-	go s.accept()
+	if n == 0 {
+		return fmt.Errorf("no listeners configured")
+	}
 	return nil
 }
 
-func (s *Server) accept() {
+func (s *Server) TLSFingerprint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tlsCertFP
+}
+
+func (s *Server) accept(ln net.Listener) {
 	for {
-		s.mu.Lock()
-		ln := s.ln
-		s.mu.Unlock()
-		if ln == nil {
-			return
-		}
-		conn, err := ln.Accept()
+		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go s.handle(conn)
+		go s.handle(c)
 	}
 }
 
 func (s *Server) Close() error {
 	s.mu.Lock()
-	ln := s.ln
-	s.ln = nil
+	lns := s.listeners
+	s.listeners = nil
 	s.mu.Unlock()
-	if ln != nil {
+	for _, ln := range lns {
 		_ = ln.Close()
 	}
-	_ = os.Remove(s.Socket)
-	s.Mgr.CloseAll()
+	s.cfg.Mgr.CloseAll()
 	return nil
 }
 
 type connState struct {
+	id        string
 	conn      net.Conn
 	wmu       sync.Mutex
 	att       *session.Attachment
 	sid       string
 	principal *auth.Principal
+	info      transport.Info
+	state     string
+	started   time.Time
 }
 
 func (c *connState) send(f protocol.Frame) error {
@@ -92,12 +125,32 @@ func (c *connState) send(f protocol.Frame) error {
 }
 
 func (s *Server) handle(conn net.Conn) {
-	st := &connState{conn: conn}
+	info := transport.Info{Transport: transport.KindUnix}
+	if tc, ok := conn.(transport.Conn); ok {
+		info = tc.Info()
+	} else if conn.LocalAddr() != nil {
+		info.LocalAddr = conn.LocalAddr().String()
+		info.RemoteAddr = conn.RemoteAddr().String()
+	}
+	st := &connState{
+		id:      newConnID(),
+		conn:    conn,
+		info:    info,
+		state:   "handshaking",
+		started: time.Now().UTC(),
+	}
+	s.mu.Lock()
+	s.conns[st.id] = st
+	s.mu.Unlock()
+
 	defer func() {
 		if st.att != nil {
 			st.att.Detach()
 			st.att = nil
 		}
+		s.mu.Lock()
+		delete(s.conns, st.id)
+		s.mu.Unlock()
 		_ = conn.Close()
 	}()
 
@@ -105,6 +158,7 @@ func (s *Server) handle(conn net.Conn) {
 		_ = st.send(protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		return
 	}
+	st.state = "authenticated"
 
 	for {
 		f, err := protocol.ReadFrame(conn)
@@ -115,6 +169,12 @@ func (s *Server) handle(conn net.Conn) {
 			_ = st.send(protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		}
 	}
+}
+
+func newConnID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 func (s *Server) handshake(st *connState) error {
@@ -132,7 +192,7 @@ func (s *Server) handshake(st *connState) error {
 	if f.Type != protocol.TypeAuth {
 		return fmt.Errorf("authentication required")
 	}
-	p, err := s.Trust.Authenticate(nonce, f.PublicKey, f.Data)
+	p, err := s.cfg.Trust.Authenticate(nonce, f.PublicKey, f.Data)
 	if err != nil {
 		return err
 	}
@@ -141,10 +201,35 @@ func (s *Server) handshake(st *connState) error {
 }
 
 func (s *Server) require(st *connState, cap auth.Cap, sessionID string) error {
-	if !s.Trust.Allow(st.principal, cap, sessionID) {
+	if !s.cfg.Trust.Allow(st.principal, cap, sessionID) {
 		return auth.Denied(cap)
 	}
 	return nil
+}
+
+func (s *Server) Connections() []protocol.ConnInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]protocol.ConnInfo, 0, len(s.conns))
+	for _, c := range s.conns {
+		name := ""
+		if c.principal != nil {
+			name = c.principal.Name
+		}
+		out = append(out, protocol.ConnInfo{
+			ID:            c.id,
+			Transport:     string(c.info.Transport),
+			LocalAddr:     c.info.LocalAddr,
+			RemoteAddr:    c.info.RemoteAddr,
+			TLS:           c.info.TLS,
+			CertFP:        c.info.CertFP,
+			State:         c.state,
+			Principal:     name,
+			SessionID:     c.sid,
+			EstablishedAt: c.started.Format(time.RFC3339),
+		})
+	}
+	return out
 }
 
 func (s *Server) dispatch(st *connState, f protocol.Frame) error {
@@ -153,7 +238,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
 			return err
 		}
-		sess, err := s.Mgr.Create(session.CreateOpts{
+		sess, err := s.cfg.Mgr.Create(session.CreateOpts{
 			Rows:  f.Rows,
 			Cols:  f.Cols,
 			Shell: f.Shell,
@@ -163,8 +248,8 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		if err := s.Trust.Grant(st.principal.Pub, sess.ID, auth.OwnerCaps...); err != nil {
-			_ = s.Mgr.Close(sess.ID)
+		if err := s.cfg.Trust.Grant(st.principal.Pub, sess.ID, auth.OwnerCaps...); err != nil {
+			_ = s.cfg.Mgr.Close(sess.ID)
 			return err
 		}
 		info := sess.Info()
@@ -174,7 +259,13 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapList, ""); err != nil {
 			return err
 		}
-		return st.send(protocol.Frame{Type: protocol.TypeSessions, Sessions: s.Mgr.List()})
+		return st.send(protocol.Frame{Type: protocol.TypeSessions, Sessions: s.cfg.Mgr.List()})
+
+	case protocol.TypeStatus:
+		if err := s.require(st, auth.CapList, ""); err != nil {
+			return err
+		}
+		return st.send(protocol.Frame{Type: protocol.TypeConnections, Connections: s.Connections()})
 
 	case protocol.TypeClose:
 		if f.SessionID == "" {
@@ -183,7 +274,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapClose, f.SessionID); err != nil {
 			return err
 		}
-		if err := s.Mgr.Close(f.SessionID); err != nil {
+		if err := s.cfg.Mgr.Close(f.SessionID); err != nil {
 			return err
 		}
 		return st.send(protocol.Frame{Type: protocol.TypeClosed})
@@ -198,7 +289,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if st.att != nil {
 			return fmt.Errorf("connection already attached")
 		}
-		sess, err := s.Mgr.Get(f.SessionID)
+		sess, err := s.cfg.Mgr.Get(f.SessionID)
 		if err != nil {
 			return err
 		}
@@ -206,16 +297,18 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		if f.Rows > 0 && f.Cols > 0 && s.Trust.Allow(st.principal, auth.CapResize, f.SessionID) {
+		if f.Rows > 0 && f.Cols > 0 && s.cfg.Trust.Allow(st.principal, auth.CapResize, f.SessionID) {
 			_ = att.Resize(f.Rows, f.Cols)
 		}
 		st.att = att
 		st.sid = f.SessionID
+		st.state = "attached"
 		info := sess.Info()
 		if err := st.send(protocol.Frame{Type: protocol.TypeAttached, Session: &info}); err != nil {
 			att.Detach()
 			st.att = nil
 			st.sid = ""
+			st.state = "authenticated"
 			return err
 		}
 		if len(snap) > 0 {
@@ -223,6 +316,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 				att.Detach()
 				st.att = nil
 				st.sid = ""
+				st.state = "authenticated"
 				return err
 			}
 		}
@@ -264,6 +358,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		st.att.Detach()
 		st.att = nil
 		st.sid = ""
+		st.state = "authenticated"
 		return st.send(protocol.Frame{Type: protocol.TypeDetached})
 
 	default:
