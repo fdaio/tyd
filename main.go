@@ -66,6 +66,24 @@ func run(opts options) error {
 		return runKeygen(opts)
 	case "serve":
 		return runServe(opts)
+	case "status":
+		return runStatus(opts)
+	case "session":
+		return runSession(opts)
+	case "create", "list", "attach", "close":
+		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
+	default:
+		return fmt.Errorf("unknown command %q", opts.cmd)
+	}
+}
+
+func runSession(opts options) error {
+	if len(opts.rest) == 0 {
+		return fmt.Errorf("usage: tyd session <create|list|attach|close>")
+	}
+	sub := opts.rest[0]
+	args := opts.rest[1:]
+	switch sub {
 	case "create":
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -92,44 +110,49 @@ func run(opts options) error {
 			fmt.Fprintf(tw, "%s\t%d\t%s\t%dx%d\t%s\n", it.ID, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
 		}
 		return tw.Flush()
-	case "status":
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		items, err := client.Status(endpoint(opts), key)
-		if err != nil {
-			return err
-		}
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "ID\tTRANSPORT\tREMOTE\tTLS\tSTATE\tPRINCIPAL\tSESSION\tSINCE")
-		for _, it := range items {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%s\t%s\t%s\t%s\n",
-				it.ID, it.Transport, it.RemoteAddr, it.TLS, it.State, it.Principal, it.SessionID, it.EstablishedAt)
-		}
-		return tw.Flush()
 	case "attach":
-		if len(opts.rest) != 1 {
-			return fmt.Errorf("usage: tyd attach <session_id>")
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd session attach <session_id>")
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", opts.rest[0])
-		return client.Attach(endpoint(opts), key, opts.rest[0], os.Stdin, os.Stdout)
+		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", args[0])
+		return client.Attach(endpoint(opts), key, args[0], os.Stdin, os.Stdout)
 	case "close":
-		if len(opts.rest) != 1 {
-			return fmt.Errorf("usage: tyd close <session_id>")
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd session close <session_id>")
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		return client.CloseSession(endpoint(opts), key, opts.rest[0])
+		return client.CloseSession(endpoint(opts), key, args[0])
+	case "help", "-h", "--help":
+		fmt.Fprint(os.Stderr, sessionUsage())
+		return nil
 	default:
-		return fmt.Errorf("unknown command %q", opts.cmd)
+		return fmt.Errorf("unknown session command %q\n%s", sub, sessionUsage())
 	}
+}
+
+func runStatus(opts options) error {
+	key, err := loadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	items, err := client.Status(endpoint(opts), key)
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tTRANSPORT\tREMOTE\tTLS\tSTATE\tPRINCIPAL\tSESSION\tSINCE")
+	for _, it := range items {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%s\t%s\t%s\t%s\n",
+			it.ID, it.Transport, it.RemoteAddr, it.TLS, it.State, it.Principal, it.SessionID, it.EstablishedAt)
+	}
+	return tw.Flush()
 }
 
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
@@ -277,24 +300,36 @@ func parseArgs(args []string) (options, error) {
 	return opts, nil
 }
 
+func sessionUsage() string {
+	return `tyd session commands:
+  tyd session create
+  tyd session list
+  tyd session attach <session_id>
+  tyd session close  <session_id>
+`
+}
+
 func usage() {
 	fmt.Fprintf(os.Stderr, `tyd - persistent terminal session daemon
 
 Usage:
-  tyd [--socket PATH] [--identity PATH] [--trust PATH] keygen
-  tyd [--socket PATH] [--listen ADDR|off] [--tls-cert PATH] [--tls-key PATH] [--trust PATH] serve
-  tyd [--socket PATH | --addr HOST:PORT] [--tls-cert PATH] [--identity PATH] create
-  tyd [...same...] list
-  tyd [...same...] status
-  tyd [...same...] attach <session_id>
-  tyd [...same...] close  <session_id>
+  tyd keygen
+  tyd serve
+  tyd status
+  tyd session create
+  tyd session list
+  tyd session attach <session_id>
+  tyd session close  <session_id>
 
-Default socket:    %s
-Default listen:    %s
-Default identity:  %s
-Default trust:     %s
-Default TLS cert:  %s
+Flags (global):
+  --socket PATH           unix socket (default %s)
+  --listen ADDR|off       TLS listen for serve (default %s)
+  --addr HOST:PORT        TLS client endpoint
+  --identity PATH         client identity (default %s)
+  --trust PATH            trust file (default %s)
+  --tls-cert PATH         server cert / client pin (default %s)
+  --tls-key PATH          server key
+
 While attached, press Ctrl-\ to detach. The shell keeps running.
-Use --addr for TLS clients; pin the server with --tls-cert.
 `, paths.DefaultSocket(), paths.DefaultListen(), paths.DefaultIdentity(), paths.DefaultTrust(), paths.DefaultServerCert())
 }

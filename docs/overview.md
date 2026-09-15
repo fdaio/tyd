@@ -20,7 +20,7 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
 ## Architecture
 
 ```text
-  tyd CLI (create / attach / list / status / close)
+  tyd CLI (keygen / serve / status / session …)
            │
            │  Transport: unix  |  tls (TCP+TLS)
            │  Frame protocol (length-prefixed JSON)

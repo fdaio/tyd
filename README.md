@@ -11,7 +11,7 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 | Doc | Contents |
 |-----|----------|
 | [docs/overview.md](docs/overview.md) | Positioning, architecture, boundaries |
-| [docs/guide.md](docs/guide.md) | Install, keygen, serve, attach, TLS, status |
+| [docs/guide.md](docs/guide.md) | Install, keygen, serve, session, TLS, status |
 | [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
 | [docs/roadmap.md](docs/roadmap.md) | Done (steps 1–3) and not done |
 
@@ -20,21 +20,28 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 ```bash
 make build
 ./tyd keygen
-./tyd serve                 # unix socket + TLS on 127.0.0.1:61211
+./tyd serve                          # unix socket + TLS on 127.0.0.1:61211
 
-id=$(./tyd create)
-./tyd list
+id=$(./tyd session create)
+./tyd session list
 ./tyd status
-./tyd attach "$id"          # Ctrl-\ detaches; shell keeps running
-./tyd close "$id"
+./tyd session attach "$id"           # Ctrl-\ detaches; shell keeps running
+./tyd session close "$id"
 ```
 
 TLS client (pin the server certificate):
 
 ```bash
-./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt create
+./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt session create
 ./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt status
 ```
+
+## CLI layout
+
+| Group | Commands |
+|-------|----------|
+| Root | `keygen`, `serve`, `status` |
+| `session` | `create`, `list`, `attach`, `close` |
 
 ## Defaults
 

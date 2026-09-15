@@ -45,12 +45,14 @@ Useful flags:
 
 ## Session lifecycle
 
+Session operations live under the `session` subcommand:
+
 ```bash
-id=$(./tyd create)
-./tyd list
-./tyd attach "$id"     # interactive; Ctrl-\ to detach
-./tyd attach "$id"     # reattach; shell still running
-./tyd close "$id"
+id=$(./tyd session create)
+./tyd session list
+./tyd session attach "$id"     # interactive; Ctrl-\ to detach
+./tyd session attach "$id"     # reattach; shell still running
+./tyd session close "$id"
 ```
 
 Detach keys:
@@ -59,7 +61,7 @@ Detach keys:
 |--------|--------|
 | `Ctrl-\` | Detach; PTY/shell keep running |
 | Client crash / socket drop | Same: session stays |
-| `tyd close <id>` | Kill session and shell |
+| `tyd session close <id>` | Kill session and shell |
 
 ## Connection topology
 
@@ -85,9 +87,9 @@ Requires the `list` capability.
 Copy (or share) the server’s `server.crt` to the client machine, then:
 
 ```bash
-./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt create
+./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt session create
 ./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt status
-./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt attach "$id"
+./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt session attach "$id"
 ```
 
 If `--addr` is set, the client uses TLS and ignores `--socket` for that command. The client **pins** the certificate fingerprint; a different cert is rejected (`untrusted server certificate`).
@@ -134,15 +136,24 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
     <command>
 ```
 
+### Root commands
+
 | Command | Role |
 |---------|------|
 | `keygen` | Create identity (+ bootstrap trust if missing) |
 | `serve` | Daemon |
-| `create` | Create session; print `session_id` |
-| `list` | List sessions |
 | `status` | List connection topology |
-| `attach <id>` | Attach interactive I/O |
-| `close <id>` | Destroy session |
+
+### `session` commands
+
+| Command | Role |
+|---------|------|
+| `session create` | Create session; print `session_id` |
+| `session list` | List sessions |
+| `session attach <id>` | Attach interactive I/O |
+| `session close <id>` | Destroy session |
+
+Old root forms (`tyd create`, `tyd list`, …) are rejected with a migration hint.
 
 ## Testing trust / TLS locally
 
@@ -153,7 +164,7 @@ Untrusted identity:
 ./tyd --socket /tmp/tyd.sock --trust /tmp/trust-a.json --listen off serve
 # other terminal:
 ./tyd --identity /tmp/tyd-b --trust /tmp/trust-b.json keygen
-./tyd --socket /tmp/tyd.sock --identity /tmp/tyd-b create   # expect untrusted
+./tyd --socket /tmp/tyd.sock --identity /tmp/tyd-b session create   # expect untrusted
 ```
 
 Automated coverage: `go test ./internal/auth ./internal/server ./internal/transport`.
