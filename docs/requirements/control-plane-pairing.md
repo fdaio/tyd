@@ -50,11 +50,11 @@ Self-hosted CP is supported via `--platform`. A registered daemon is addressed a
 
 | Mode | Behavior |
 |------|----------|
-| **pre** (pre-approval) | Each inbound session from C needs explicit approve |
-| **post** (post-approval) | Auto-approve; after session ends emit audit report (**log for now**) |
+| **pre** (pre-approval) | TLS (data-plane) creates enter `PENDING` until local operator `approve`; unix creates bypass |
+| **post** (post-approval) | Auto-approve like full; on session close emit local audit log (no TTY content) |
 | **full** (full approval) | **Default.** Session records only; no per-session review |
 
-Enforcement of approval modes is **not** Step 1; only declaration / persistence.
+Enforcement is Step 3 (declared at register; applied by the daemon from `peers.json`).
 
 ## Identity / daemon
 
@@ -125,11 +125,21 @@ These guide Step 2+; not implemented in Step 1.
 - `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
 - Integration test: CP + pair + publish + remote session create/list over TLS
 
-## Explicitly out of Step 1–2 (later steps)
+## Explicitly out of Step 1–3 (later steps)
 
 - Remote mesh beyond loopback advertise / data-listen
-- Approval mode enforcement
 - Session alias command
 - Peer revoke
 - Production deployment of `app.getfda.dev` (local CP is enough for tests)
 - NAT traversal / STUN
+
+## Step 3 deliverables
+
+- Daemon reads `Registration.ApprovalMode` into `server.Config` (default `full`)
+- **pre** + TLS create → `PENDING` (no PTY); attach/write/resize/signal denied; unix `approve` starts PTY → `DETACHED`; `reject` / close removes pending
+- **pre** + unix create → no pending (bypass)
+- **post**: create as full; on CLOSED emit audit line (principal, session id, created_at, closed_at, peer id if known); no TTY in log; audit stays local (not sent to CP)
+- **full**: create works without approve
+- Protocol: `approve` / `reject` (unix only); CLI `tyd session approve|reject`
+- List shows `PENDING`; alive-first sort treats PENDING as alive
+- Tests for pre/post/full and unix bypass under pre

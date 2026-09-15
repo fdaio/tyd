@@ -5,23 +5,27 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"tyd/internal/auth"
+	"tyd/internal/controlpanel"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
 
 type Config struct {
-	Socket     string
-	Listen     string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
-	DataListen string // empty/off = no data-plane TLS; e.g. 127.0.0.1:0
-	CertPath   string
-	KeyPath    string
-	Mgr        *session.Manager
-	Trust      *auth.Store
+	Socket       string
+	Listen       string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
+	DataListen   string // empty/off = no data-plane TLS; e.g. 127.0.0.1:0
+	CertPath     string
+	KeyPath      string
+	Mgr          *session.Manager
+	Trust        *auth.Store
+	ApprovalMode string          // full|pre|post; default full
+	AuditLog     func(line string) // post-mode audit sink; default stderr
 }
 
 type Server struct {
@@ -40,10 +44,42 @@ func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
 }
 
 func NewWithConfig(cfg Config) *Server {
-	return &Server{
+	mode, _ := controlpanel.NormalizeApproval(cfg.ApprovalMode)
+	cfg.ApprovalMode = mode
+	if cfg.AuditLog == nil {
+		cfg.AuditLog = func(line string) { fmt.Fprintln(os.Stderr, line) }
+	}
+	s := &Server{
 		cfg:   cfg,
 		conns: make(map[string]*connState),
 	}
+	if cfg.Mgr != nil && mode == controlpanel.ApprovalPost {
+		cfg.Mgr.SetOnClosed(func(info session.ClosedInfo) {
+			s.emitPostAudit(info)
+		})
+	}
+	return s
+}
+
+func (s *Server) emitPostAudit(info session.ClosedInfo) {
+	peer := info.PeerID
+	line := fmt.Sprintf("audit: session_id=%s principal=%s created_at=%s closed_at=%s",
+		info.SessionID, info.Principal,
+		info.CreatedAt.UTC().Format(time.RFC3339),
+		info.ClosedAt.UTC().Format(time.RFC3339))
+	if peer != "" {
+		line += " peer_id=" + peer
+	}
+	if s.cfg.AuditLog != nil {
+		s.cfg.AuditLog(line)
+	}
+}
+
+func (s *Server) approvalMode() string {
+	if s.cfg.ApprovalMode == "" {
+		return controlpanel.ApprovalFull
+	}
+	return s.cfg.ApprovalMode
 }
 
 func (s *Server) Start() error {
@@ -279,13 +315,24 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
 			return err
 		}
-		sess, err := s.cfg.Mgr.Create(session.CreateOpts{
-			Rows:  f.Rows,
-			Cols:  f.Cols,
-			Shell: f.Shell,
-			Cwd:   f.Cwd,
-			Owner: st.principal.Name,
-		})
+		opts := session.CreateOpts{
+			Rows:   f.Rows,
+			Cols:   f.Cols,
+			Shell:  f.Shell,
+			Cwd:    f.Cwd,
+			Owner:  st.principal.Name,
+			PeerID: st.principal.Name,
+		}
+		var (
+			sess *session.Session
+			err  error
+		)
+		preTLS := s.approvalMode() == controlpanel.ApprovalPre && st.info.Transport == transport.KindTLS
+		if preTLS {
+			sess, err = s.cfg.Mgr.CreatePending(opts)
+		} else {
+			sess, err = s.cfg.Mgr.Create(opts)
+		}
 		if err != nil {
 			return err
 		}
@@ -295,6 +342,38 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		}
 		info := sess.Info()
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
+
+	case protocol.TypeApprove:
+		if st.info.Transport != transport.KindUnix {
+			return fmt.Errorf("approve only allowed on unix")
+		}
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		if err := s.require(st, auth.CapCreate, ""); err != nil {
+			return err
+		}
+		sess, err := s.cfg.Mgr.Approve(f.SessionID)
+		if err != nil {
+			return err
+		}
+		info := sess.Info()
+		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
+
+	case protocol.TypeReject:
+		if st.info.Transport != transport.KindUnix {
+			return fmt.Errorf("reject only allowed on unix")
+		}
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		if err := s.require(st, auth.CapCreate, ""); err != nil {
+			return err
+		}
+		if err := s.cfg.Mgr.Reject(f.SessionID); err != nil {
+			return err
+		}
+		return st.send(protocol.Frame{Type: protocol.TypeOK})
 
 	case protocol.TypeList:
 		if err := s.require(st, auth.CapList, ""); err != nil {

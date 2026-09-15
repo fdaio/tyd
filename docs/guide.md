@@ -88,13 +88,34 @@ Session operations live under the `session` subcommand (`tyd session help` lists
 
 ```bash
 id=$(./tyd session create)
-./tyd session list                   # alive first, then CLOSED; older first within each group
+./tyd session list                   # alive first (incl. PENDING), then CLOSED
 ./tyd session attach "$id"           # interactive; Ctrl-\ to detach
 ./tyd session watch "$id"            # read-only follow; Ctrl-C / Ctrl-\ exits watch
 ./tyd session attach "$id"           # reattach; shell still running
 ./tyd session close "$id"            # kill shell; session stays listed as CLOSED
 ./tyd session watch "$id"            # dump history from ring, then end
 ```
+
+### Approval modes
+
+Declared at `tyd register --approval full|pre|post` and stored in `peers.json`.
+`tyd up` enforces the mode:
+
+| Mode | Behavior |
+|------|----------|
+| `full` (default) | Remote create starts a shell immediately (same as before) |
+| `post` | Same create as full; when a session closes, daemon logs an audit line to stderr (id, principal, timestamps; no TTY) |
+| `pre` | TLS/data-plane creates return `PENDING` without a shell; local operator must approve |
+
+```bash
+# On the machine running the daemon (unix socket):
+./tyd session list                   # PENDING sessions appear in the alive group
+./tyd session approve "$id"          # starts PTY → DETACHED
+./tyd session reject "$id"           # removes pending session
+```
+
+`approve` / `reject` are accepted only over the local unix socket (not over TLS).
+Unix-socket creates always bypass the pre gate (local admin is trusted).
 
 Detach / watch-exit keys:
 
@@ -190,10 +211,12 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 
 | Command | Role |
 |---------|------|
-| `session create` | Create session; print `session_id` |
-| `session list` | List sessions (alive first, then closed; older first) |
+| `session create` | Create session; print `session_id` (stderr notes `pending approval` if PENDING) |
+| `session list` | List sessions (alive incl. PENDING first, then closed) |
 | `session attach <id>` | Attach interactive I/O (exclusive) |
 | `session watch <id>` | Read-only follow / history dump (`attach` cap) |
+| `session approve <id>` | Approve PENDING session (local unix only) |
+| `session reject <id>` | Reject PENDING session (local unix only) |
 | `session close <id>` | Close session (kept as `CLOSED` in list) |
 
 Old root forms (`tyd create`, `tyd list`, …) are rejected with a migration hint.

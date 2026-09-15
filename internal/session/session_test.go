@@ -332,4 +332,127 @@ func TestWatchClosedDumpsRingThenEnds(t *testing.T) {
 	}
 }
 
+func TestPendingApproveReject(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+
+	s, err := m.CreatePending(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Info().State; got != string(StatePending) {
+		t.Fatalf("state=%s", got)
+	}
+	if s.Alive() {
+		t.Fatal("pending should not have a running shell")
+	}
+	if _, _, err := s.Attach(); err == nil || !strings.Contains(err.Error(), "pending approval") {
+		t.Fatalf("attach: %v", err)
+	}
+
+	list := m.List()
+	if len(list) != 1 || list[0].State != string(StatePending) {
+		t.Fatalf("list=%+v", list)
+	}
+
+	approved, err := m.Approve(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := approved.Info().State; got != string(StateDetached) {
+		t.Fatalf("after approve state=%s", got)
+	}
+	if !approved.Alive() {
+		t.Fatal("shell should run after approve")
+	}
+	att, _, err := approved.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	att.Detach()
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRejectRemovesPending(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.CreatePending(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reject(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Get(s.ID); err == nil {
+		t.Fatal("expected not found after reject")
+	}
+}
+
+func TestClosePendingRemoves(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.CreatePending(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Get(s.ID); err == nil {
+		t.Fatal("expected not found after close pending")
+	}
+}
+
+func TestPendingSortsAlive(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	closed, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(closed.ID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := m.CreatePending(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := m.List()
+	if len(list) < 2 {
+		t.Fatalf("list=%+v", list)
+	}
+	if list[0].ID != pending.ID || list[0].State != string(StatePending) {
+		t.Fatalf("pending should be first alive: %+v", list)
+	}
+	if list[len(list)-1].State != string(StateClosed) {
+		t.Fatalf("closed last: %+v", list)
+	}
+}
+
+func TestOnClosedCallback(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	ch := make(chan ClosedInfo, 1)
+	m.SetOnClosed(func(info ClosedInfo) { ch <- info })
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case info := <-ch:
+		if info.SessionID != s.ID {
+			t.Fatalf("id=%s", info.SessionID)
+		}
+		if info.CreatedAt.IsZero() || info.ClosedAt.IsZero() {
+			t.Fatalf("timestamps %+v", info)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for onClosed")
+	}
+}
 

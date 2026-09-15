@@ -47,9 +47,13 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `tyd up --data-listen auto` starts loopback data-plane TLS when registered; publishes/refreshes endpoint
 - Session targeting: `--peer <id|nickname>`; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 
-### Step 3 — Approval modes
+### Step 3 — Approval modes (done)
 
-- Enforce pre-approval / post-approval / full (default) as declared at register
+- Enforce pre / post / full from `peers.json` `Registration.ApprovalMode` on `tyd up`
+- **pre**: TLS creates stay `PENDING` until local `tyd session approve`; unix creates bypass
+- **post**: auto-create; audit line on close (stderr / `AuditLog`)
+- **full** (default): unchanged create; no per-session review
+- `approve` / `reject` protocol + CLI (unix transport only)
 
 ### Step 4 — Session alias + defaults + status UX
 

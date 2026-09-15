@@ -30,6 +30,8 @@ Maximum frame size: 1 MiB.
 | `signal` | e.g. `INT`, `TSTP` | `signal` |
 | `detach` | Leave attach/watch without killing shell | (must be attached/watching) |
 | `close` | Close session (kept until daemon restart) | `close` |
+| `approve` | Start PTY for a `PENDING` session | `create` (unix transport only) |
+| `reject` | Remove a `PENDING` session | `create` (unix transport only) |
 
 ### Server → client
 
