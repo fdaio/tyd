@@ -11,6 +11,9 @@ make test
 
 ## First-time setup
 
+Identity is created automatically on first `tyd up`, `tyd register`, or `tyd accept`.
+Optional explicit keygen:
+
 ```bash
 ./tyd keygen
 ```
@@ -26,22 +29,36 @@ Prints the public key (base64) on stdout.
 ## Start the daemon
 
 ```bash
-./tyd serve
+./tyd up
 ```
+
+(`tyd serve` remains as a deprecated alias.)
 
 By default listens on:
 
 - Unix: `~/.tyd/tyd.sock`
-- TLS: `127.0.0.1:61211` (creates `~/.tyd/server.crt` / `server.key` on first start)
+- TLS: **off** (enable with `--listen`)
 
 Useful flags:
 
 ```bash
-./tyd serve --listen off                          # unix only
-./tyd serve --listen 127.0.0.1:61211              # explicit TLS (default)
-./tyd serve --socket /tmp/tyd.sock --trust /path/trusted.json
-./tyd serve --tls-cert /path/server.crt --tls-key /path/server.key
+./tyd up                                          # unix only (default)
+./tyd up --listen 127.0.0.1:61211                 # enable TLS
+./tyd up --socket /tmp/tyd.sock --trust /path/trusted.json
+./tyd up --tls-cert /path/server.crt --tls-key /path/server.key
 ```
+
+## Control Panel pairing (skeleton)
+
+See [requirements/control-plane-pairing.md](requirements/control-plane-pairing.md) and [roadmap.md](roadmap.md).
+
+```bash
+go run ./cmd/controlpanel -listen 127.0.0.1:8080
+./tyd --platform http://127.0.0.1:8080 register
+./tyd --platform http://127.0.0.1:8080 accept <invite> --as laptop
+```
+
+Paired peer public keys are stored in `~/.tyd/peers.json`. Default platform is `https://app.getfda.dev`.
 
 ## Session lifecycle
 

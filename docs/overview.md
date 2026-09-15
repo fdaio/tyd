@@ -20,20 +20,23 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
 ## Architecture
 
 ```text
-  tyd CLI (keygen / serve / status / session …)
+  tyd CLI (keygen / up / register / accept / status / session …)
            │
-           │  Transport: unix  |  tls (TCP+TLS)
+           │  Transport: unix  |  tls (TCP+TLS, opt-in)
            │  Frame protocol (length-prefixed JSON)
            │  Ed25519 challenge-response
            ▼
         ┌─────┐
-        │ tyd │  serve
+        │ tyd │  up
         └──┬──┘
            │
      Session Manager
            │
         PTY master → PTY slave → /bin/bash (or $SHELL)
 ```
+
+Control Panel pairing (ids + peer public keys only) is documented in
+[requirements/control-plane-pairing.md](requirements/control-plane-pairing.md).
 
 Layers from bottom to top:
 

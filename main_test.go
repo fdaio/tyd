@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"tyd/internal/auth"
+	"tyd/internal/controlpanel"
 	"tyd/internal/paths"
+	"tyd/internal/peers"
 	"tyd/internal/server"
 	"tyd/internal/session"
 )
@@ -22,25 +24,29 @@ func TestParseArgs(t *testing.T) {
 	id := paths.DefaultIdentity()
 	trust := paths.DefaultTrust()
 	listen := paths.DefaultListen()
+	platform := paths.DefaultPlatform()
 	tests := []struct {
-		name       string
-		args       []string
-		wantSocket string
-		wantListen string
-		wantAddr   string
-		wantID     string
-		wantTrust  string
-		wantCmd    string
-		wantRest   []string
-		wantErr    bool
+		name         string
+		args         []string
+		wantSocket   string
+		wantListen   string
+		wantAddr     string
+		wantID       string
+		wantTrust    string
+		wantPlatform string
+		wantCmd      string
+		wantRest     []string
+		wantErr      bool
 	}{
-		{name: "empty", args: nil, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust},
-		{name: "serve", args: []string{"serve"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "serve"},
-		{name: "listen off", args: []string{"--listen", "off", "serve"}, wantSocket: def, wantListen: "off", wantID: id, wantTrust: trust, wantCmd: "serve"},
-		{name: "session list with addr", args: []string{"--addr", "127.0.0.1:61211", "session", "list"}, wantSocket: def, wantListen: listen, wantAddr: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantCmd: "session", wantRest: []string{"list"}},
-		{name: "session attach", args: []string{"session", "attach", "abc"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "session", wantRest: []string{"attach", "abc"}},
-		{name: "status", args: []string{"status"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "status"},
-		{name: "help", args: []string{"--help"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "help"},
+		{name: "empty", args: nil, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform},
+		{name: "up", args: []string{"up"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "up"},
+		{name: "serve", args: []string{"serve"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "serve"},
+		{name: "listen explicit", args: []string{"--listen", "127.0.0.1:61211", "up"}, wantSocket: def, wantListen: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "up"},
+		{name: "session list with addr", args: []string{"--addr", "127.0.0.1:61211", "session", "list"}, wantSocket: def, wantListen: listen, wantAddr: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "session", wantRest: []string{"list"}},
+		{name: "session attach", args: []string{"session", "attach", "abc"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "session", wantRest: []string{"attach", "abc"}},
+		{name: "status", args: []string{"status"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "status"},
+		{name: "register platform", args: []string{"--platform", "http://127.0.0.1:9", "register"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: "http://127.0.0.1:9", wantCmd: "register"},
+		{name: "help", args: []string{"--help"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "help"},
 		{name: "unknown flag", args: []string{"--nope"}, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -56,7 +62,8 @@ func TestParseArgs(t *testing.T) {
 				t.Fatal(err)
 			}
 			if opts.socket != tt.wantSocket || opts.listen != tt.wantListen || opts.addr != tt.wantAddr ||
-				opts.cmd != tt.wantCmd || opts.identity != tt.wantID || opts.trust != tt.wantTrust {
+				opts.cmd != tt.wantCmd || opts.identity != tt.wantID || opts.trust != tt.wantTrust ||
+				opts.platform != tt.wantPlatform {
 				t.Fatalf("%+v", opts)
 			}
 			if strings.Join(opts.rest, ",") != strings.Join(tt.wantRest, ",") {
@@ -162,8 +169,8 @@ func TestRunSessionCreateListStatusClose(t *testing.T) {
 	}
 }
 
-func TestDefaultListenPort(t *testing.T) {
-	if paths.DefaultListen() != "127.0.0.1:61211" {
+func TestDefaultListenOff(t *testing.T) {
+	if paths.DefaultListen() != "off" {
 		t.Fatal(paths.DefaultListen())
 	}
 }
@@ -185,13 +192,17 @@ func TestRootHelpPlain(t *testing.T) {
 		"session attach",
 		"session watch",
 		"session close",
-		"Identity:",
+		"Identity / pairing:",
 		"keygen",
+		"register",
+		"accept",
 		"Daemon:",
+		"up",
 		"serve",
 		"status",
 		"Flags:",
 		"--socket PATH",
+		"--platform URL",
 		"Tips:",
 		"Ctrl-\\",
 	} {
@@ -261,4 +272,101 @@ func captureStdout(t *testing.T, fn func()) string {
 	}
 	_ = r.Close()
 	return buf.String()
+}
+
+func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
+	dir := t.TempDir()
+	addr, srv, err := startTestCP(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	serverDir := filepath.Join(dir, "server")
+	clientDir := filepath.Join(dir, "client")
+	_ = os.MkdirAll(serverDir, 0o700)
+	_ = os.MkdirAll(clientDir, 0o700)
+
+	platform := "http://" + addr
+	sOpts := options{
+		identity: filepath.Join(serverDir, "id_ed25519"),
+		trust:    filepath.Join(serverDir, "trusted.json"),
+		peers:    filepath.Join(serverDir, "peers.json"),
+		platform: platform,
+		approval: "full",
+		cmd:      "register",
+	}
+	token := strings.TrimSpace(captureStdout(t, func() {
+		if err := run(sOpts); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	if token == "" {
+		t.Fatal("empty invite")
+	}
+	if _, err := os.Stat(sOpts.identity); err != nil {
+		t.Fatalf("server identity not auto-created: %v", err)
+	}
+
+	cOpts := options{
+		identity: filepath.Join(clientDir, "id_ed25519"),
+		trust:    filepath.Join(clientDir, "trusted.json"),
+		peers:    filepath.Join(clientDir, "peers.json"),
+		platform: platform,
+		as:       "box",
+		cmd:      "accept",
+		rest:     []string{token},
+	}
+	peerID := strings.TrimSpace(captureStdout(t, func() {
+		if err := run(cOpts); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	if peerID == "" {
+		t.Fatal("empty peer id")
+	}
+	if _, err := os.Stat(cOpts.identity); err != nil {
+		t.Fatalf("client identity not auto-created: %v", err)
+	}
+
+	// Sync server peers after accept.
+	sOpts.cmd = "register"
+	_ = captureStdout(t, func() {
+		if err := run(sOpts); err != nil {
+			t.Fatal(err)
+		}
+	})
+	sPeers, err := peers.Load(sOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sPeers.Registration == nil || sPeers.Registration.ID == "" {
+		t.Fatal("missing server registration")
+	}
+	if len(sPeers.Peers) != 1 {
+		t.Fatalf("server peers %+v", sPeers.Peers)
+	}
+	cPeers, err := peers.Load(cOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cPeers.Peers) != 1 || cPeers.Peers[0].Nickname != "box" {
+		t.Fatalf("client peers %+v", cPeers.Peers)
+	}
+	if cPeers.Peers[0].PublicKey == "" || sPeers.Peers[0].PublicKey == "" {
+		t.Fatal("missing exchanged public keys")
+	}
+	if cPeers.Peers[0].ID != sPeers.Registration.ID {
+		t.Fatalf("client peer id %s want %s", cPeers.Peers[0].ID, sPeers.Registration.ID)
+	}
+}
+
+func startTestCP(t *testing.T) (string, interface{ Close() error }, error) {
+	t.Helper()
+	svc := controlpanel.New()
+	addr, srv, err := controlpanel.ListenAndServe("127.0.0.1:0", svc)
+	if err != nil {
+		return "", nil, err
+	}
+	return addr.String(), srv, nil
 }
