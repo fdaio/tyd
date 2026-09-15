@@ -15,21 +15,24 @@ import (
 )
 
 type Config struct {
-	Socket   string
-	Listen   string // empty = no TLS; e.g. 127.0.0.1:61211
-	CertPath string
-	KeyPath  string
-	Mgr      *session.Manager
-	Trust    *auth.Store
+	Socket     string
+	Listen     string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
+	DataListen string // empty/off = no data-plane TLS; e.g. 127.0.0.1:0
+	CertPath   string
+	KeyPath    string
+	Mgr        *session.Manager
+	Trust      *auth.Store
 }
 
 type Server struct {
 	cfg Config
 
-	mu        sync.Mutex
-	listeners []net.Listener
-	conns     map[string]*connState
-	tlsCertFP string
+	mu            sync.Mutex
+	listeners     []net.Listener
+	conns         map[string]*connState
+	tlsCertFP     string // full hex fingerprint (shared cert)
+	tlsListenAddr string // manual --listen actual addr
+	dataPlaneAddr string // data-plane actual listen addr
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
@@ -65,7 +68,21 @@ func (s *Server) Start() error {
 		}
 		s.mu.Lock()
 		s.listeners = append(s.listeners, ln)
-		s.tlsCertFP = transport.ShortFP(fp)
+		s.tlsCertFP = fp
+		s.tlsListenAddr = ln.Addr().String()
+		s.mu.Unlock()
+		go s.accept(ln)
+	}
+	if s.cfg.DataListen != "" && s.cfg.DataListen != "off" {
+		ln, fp, err := transport.ListenTLS(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
+		if err != nil {
+			_ = s.Close()
+			return err
+		}
+		s.mu.Lock()
+		s.listeners = append(s.listeners, ln)
+		s.tlsCertFP = fp
+		s.dataPlaneAddr = ln.Addr().String()
 		s.mu.Unlock()
 		go s.accept(ln)
 	}
@@ -81,7 +98,26 @@ func (s *Server) Start() error {
 func (s *Server) TLSFingerprint() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return transport.ShortFP(s.tlsCertFP)
+}
+
+// TLSFingerprintFull returns the full SHA-256 hex fingerprint of the TLS cert.
+func (s *Server) TLSFingerprintFull() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.tlsCertFP
+}
+
+func (s *Server) ListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tlsListenAddr
+}
+
+func (s *Server) DataPlaneAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataPlaneAddr
 }
 
 func (s *Server) accept(ln net.Listener) {

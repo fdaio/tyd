@@ -41,6 +41,37 @@ func (s *Store) Add(name string, pub ed25519.PublicKey, global []Cap) *Principal
 	return p
 }
 
+// EnsurePeer upserts a peer principal by public key (preserves session grants).
+func (s *Store) EnsurePeer(name string, pub ed25519.PublicKey, caps []Cap) *Principal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := EncodePublic(pub)
+	if p, ok := s.principals[key]; ok {
+		if name != "" {
+			p.Name = name
+		}
+		for _, c := range caps {
+			p.Global[c] = true
+		}
+		out := *p
+		out.Pub = append(ed25519.PublicKey(nil), p.Pub...)
+		return &out
+	}
+	p := &Principal{
+		Name:     name,
+		Pub:      append(ed25519.PublicKey(nil), pub...),
+		Global:   make(map[Cap]bool),
+		Sessions: make(map[string]map[Cap]bool),
+	}
+	for _, c := range caps {
+		p.Global[c] = true
+	}
+	s.principals[key] = p
+	out := *p
+	out.Pub = append(ed25519.PublicKey(nil), p.Pub...)
+	return &out
+}
+
 func (s *Store) Grant(pub ed25519.PublicKey, sessionID string, caps ...Cap) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

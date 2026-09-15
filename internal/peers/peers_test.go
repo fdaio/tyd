@@ -43,3 +43,25 @@ func TestLoadSaveUpsert(t *testing.T) {
 		t.Fatalf("upsert %+v", got.Peers)
 	}
 }
+
+func TestFindAndOutbound(t *testing.T) {
+	f := &File{Peers: []Peer{
+		{ID: "aaa", PublicKey: "p1", Nickname: "lap", Direction: "outbound"},
+		{ID: "bbb", PublicKey: "p2", Direction: "inbound"},
+	}}
+	p, err := f.Find("lap")
+	if err != nil || p.ID != "aaa" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	p, err = f.Find("bbb")
+	if err != nil || p.ID != "bbb" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	out := f.Outbound()
+	if len(out) != 1 || out[0].ID != "aaa" {
+		t.Fatalf("%+v", out)
+	}
+	if !(&File{Registration: &Registration{ID: "x"}}).HasRegistration() {
+		t.Fatal("expected registration")
+	}
+}

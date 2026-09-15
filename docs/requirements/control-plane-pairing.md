@@ -107,7 +107,7 @@ These guide Step 2+; not implemented in Step 1.
 4. **Invite revoke** — Unused invites expire at TTL; established pairs are
    revoked only via an explicit revoke command (Step 5).
 
-## Step 1 deliverables (this PR)
+## Step 1 deliverables
 
 - This requirements doc + roadmap phasing
 - Minimal in-repo CP service (local runnable, testable)
@@ -115,9 +115,21 @@ These guide Step 2+; not implemented in Step 1.
 - Persist paired peer public keys locally
 - Tests for invite expiry, key exchange, auto-identity, listen default
 
-## Explicitly out of Step 1
+## Step 2 deliverables
 
-- Remote session create/attach over mesh
+- Ephemeral CP endpoint signaling (`PUT`/`GET /v1/daemons/{id}/endpoint`); default TTL ~90s; overwrite; expired ⇒ 404
+- `cpclient.PublishEndpoint` / `GetEndpoint`
+- Data-plane TLS on `tyd up` via `--data-listen auto|off|HOST:PORT` and `--advertise HOST`
+- Peer pubs from CP sync → in-memory trust (`EnsurePeer` with `list`+`create`); dynamic Add is enough for Step 2
+- Client dials peer by cert fingerprint (`DialTLSFingerprint`); session I/O never through CP
+- `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
+- Integration test: CP + pair + publish + remote session create/list over TLS
+
+## Explicitly out of Step 1–2 (later steps)
+
+- Remote mesh beyond loopback advertise / data-listen
 - Approval mode enforcement
 - Session alias command
+- Peer revoke
 - Production deployment of `app.getfda.dev` (local CP is enough for tests)
+- NAT traversal / STUN

@@ -48,7 +48,7 @@ Useful flags:
 ./tyd up --tls-cert /path/server.crt --tls-key /path/server.key
 ```
 
-## Control Panel pairing (skeleton)
+## Control Panel pairing
 
 See [requirements/control-plane-pairing.md](requirements/control-plane-pairing.md) and [roadmap.md](roadmap.md).
 
@@ -59,6 +59,28 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ```
 
 Paired peer public keys are stored in `~/.tyd/peers.json`. Default platform is `https://app.getfda.dev`.
+
+### Data plane (Step 2)
+
+After register, `tyd up` with `--data-listen auto` (default) starts a loopback TLS data-plane listener
+and publishes `HOST:port` + cert fingerprint to CP (ephemeral signaling only). Refresh every ~30s.
+
+```bash
+./tyd up --platform http://127.0.0.1:8080   # auto data-plane when registered
+./tyd up --data-listen off                  # disable data-plane
+./tyd up --data-listen 127.0.0.1:0 --advertise 127.0.0.1
+```
+
+Session commands on a paired peer (direct TLS; not through CP):
+
+```bash
+./tyd --peer laptop session create
+./tyd --peer <cp-id> session list
+```
+
+If `--peer` is omitted: use `~/.tyd/recent.json` when present; else exactly one outbound peer;
+else zero outbound → local unix socket; many outbound → error asking for `--peer`.
+`--addr` still overrides for manual TLS.
 
 ## Session lifecycle
 

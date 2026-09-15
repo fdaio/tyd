@@ -106,6 +106,101 @@ func TestAcceptExchangesPeerKeys(t *testing.T) {
 	}
 }
 
+func TestEndpointPublishFetchExpire(t *testing.T) {
+	s := New()
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	s.SetNow(func() time.Time { return now })
+
+	reg, err := s.Register(RegisterRequest{PublicKey: "pk-ep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetEndpoint(reg.ID); err != ErrNotFound {
+		t.Fatalf("want not found, got %v", err)
+	}
+
+	pub, err := s.PublishEndpoint(reg.ID, PublishEndpointRequest{
+		PublicKey:  "pk-ep",
+		Addr:       "127.0.0.1:61211",
+		CertFP:     "abcd",
+		TTLSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.Addr != "127.0.0.1:61211" || pub.CertFP != "abcd" {
+		t.Fatalf("%+v", pub)
+	}
+	got, err := s.GetEndpoint(reg.ID)
+	if err != nil || got.Addr != pub.Addr || got.CertFP != pub.CertFP {
+		t.Fatalf("got %+v err %v", got, err)
+	}
+
+	// Overwrite on republish.
+	if _, err := s.PublishEndpoint(reg.ID, PublishEndpointRequest{
+		PublicKey: "pk-ep", Addr: "127.0.0.1:9", CertFP: "ef01",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetEndpoint(reg.ID)
+	if err != nil || got.Addr != "127.0.0.1:9" || got.CertFP != "ef01" {
+		t.Fatalf("overwrite %+v %v", got, err)
+	}
+
+	if _, err := s.PublishEndpoint(reg.ID, PublishEndpointRequest{
+		PublicKey: "wrong", Addr: "x", CertFP: "y",
+	}); err != ErrUnauthorized {
+		t.Fatalf("want unauthorized, got %v", err)
+	}
+
+	s.SetNow(func() time.Time { return now.Add(DefaultEndpointTTL) })
+	if _, err := s.GetEndpoint(reg.ID); err != ErrNotFound {
+		t.Fatalf("want expired not found, got %v", err)
+	}
+}
+
+func TestHTTPEndpoint(t *testing.T) {
+	s := New()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	regBody, _ := json.Marshal(RegisterRequest{PublicKey: "http-ep"})
+	res, err := http.Post(ts.URL+"/v1/register", "application/json", bytes.NewReader(regBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg RegisterResponse
+	_ = json.NewDecoder(res.Body).Decode(&reg)
+	_ = res.Body.Close()
+
+	body, _ := json.Marshal(PublishEndpointRequest{
+		PublicKey: "http-ep", Addr: "127.0.0.1:1", CertFP: "aa",
+	})
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/daemons/"+reg.ID+"/endpoint", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res2.Body.Close()
+	if res2.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res2.StatusCode)
+	}
+
+	res3, err := http.Get(ts.URL + "/v1/daemons/" + reg.ID + "/endpoint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res3.Body.Close()
+	var ep EndpointResponse
+	if err := json.NewDecoder(res3.Body).Decode(&ep); err != nil {
+		t.Fatal(err)
+	}
+	if ep.Addr != "127.0.0.1:1" || ep.CertFP != "aa" {
+		t.Fatalf("%+v", ep)
+	}
+}
+
 func TestHTTPRegisterAcceptFlow(t *testing.T) {
 	s := New()
 	s.SetBaseURL("http://cp.test")

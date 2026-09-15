@@ -17,13 +17,14 @@ import (
 )
 
 const (
-	InviteTTL        = 10 * time.Minute
-	ApprovalFull     = "full"
-	ApprovalPre      = "pre"
-	ApprovalPost     = "post"
-	DefaultApproval  = ApprovalFull
-	idBytes          = 8
-	inviteTokenBytes = 16
+	InviteTTL         = 10 * time.Minute
+	DefaultEndpointTTL = 90 * time.Second
+	ApprovalFull      = "full"
+	ApprovalPre       = "pre"
+	ApprovalPost      = "post"
+	DefaultApproval   = ApprovalFull
+	idBytes           = 8
+	inviteTokenBytes  = 16
 )
 
 var (
@@ -38,12 +39,36 @@ var (
 
 // Service is an in-memory CP suitable for local runs and tests.
 type Service struct {
-	mu      sync.Mutex
-	daemons map[string]*Daemon // id -> daemon
-	byPub   map[string]string  // public_key -> id
-	invites map[string]*Invite // token -> invite
-	now     func() time.Time
-	baseURL string // optional; used when building public URLs
+	mu        sync.Mutex
+	daemons   map[string]*Daemon   // id -> daemon
+	byPub     map[string]string    // public_key -> id
+	invites   map[string]*Invite   // token -> invite
+	endpoints map[string]*Endpoint // daemon id -> current endpoint (ephemeral signaling only)
+	now       func() time.Time
+	baseURL   string // optional; used when building public URLs
+}
+
+// Endpoint is ephemeral dial signaling for the data plane.
+// CP must never store session/TTY content — only addr / cert fingerprint hints.
+type Endpoint struct {
+	DaemonID  string    `json:"daemon_id"`
+	PublicKey string    `json:"public_key"`
+	Addr      string    `json:"addr"`
+	CertFP    string    `json:"cert_fp"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type PublishEndpointRequest struct {
+	PublicKey  string `json:"public_key"`
+	Addr       string `json:"addr"`
+	CertFP     string `json:"cert_fp"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+}
+
+type EndpointResponse struct {
+	Addr      string    `json:"addr"`
+	CertFP    string    `json:"cert_fp"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type Daemon struct {
@@ -108,10 +133,11 @@ type AcceptResponse struct {
 
 func New() *Service {
 	return &Service{
-		daemons: make(map[string]*Daemon),
-		byPub:   make(map[string]string),
-		invites: make(map[string]*Invite),
-		now:     time.Now,
+		daemons:   make(map[string]*Daemon),
+		byPub:     make(map[string]string),
+		invites:   make(map[string]*Invite),
+		endpoints: make(map[string]*Endpoint),
+		now:       time.Now,
 	}
 }
 
@@ -323,6 +349,55 @@ func (s *Service) ListPeers(daemonID, publicKey string) ([]Peer, error) {
 	return append([]Peer(nil), d.Peers...), nil
 }
 
+func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (*EndpointResponse, error) {
+	pub := strings.TrimSpace(req.PublicKey)
+	addr := strings.TrimSpace(req.Addr)
+	fp := strings.TrimSpace(strings.ToLower(req.CertFP))
+	if pub == "" {
+		return nil, ErrInvalidPublicKey
+	}
+	if addr == "" || fp == "" {
+		return nil, fmt.Errorf("addr and cert_fp required")
+	}
+	ttl := DefaultEndpointTTL
+	if req.TTLSeconds > 0 {
+		ttl = time.Duration(req.TTLSeconds) * time.Second
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.daemons[daemonID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if d.PublicKey != pub {
+		return nil, ErrUnauthorized
+	}
+	ep := &Endpoint{
+		DaemonID:  d.ID,
+		PublicKey: pub,
+		Addr:      addr,
+		CertFP:    fp,
+		ExpiresAt: s.now().Add(ttl),
+	}
+	s.endpoints[d.ID] = ep
+	return &EndpointResponse{Addr: ep.Addr, CertFP: ep.CertFP, ExpiresAt: ep.ExpiresAt}, nil
+}
+
+func (s *Service) GetEndpoint(daemonID string) (*EndpointResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ep, ok := s.endpoints[daemonID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if !s.now().Before(ep.ExpiresAt) {
+		delete(s.endpoints, daemonID)
+		return nil, ErrNotFound
+	}
+	return &EndpointResponse{Addr: ep.Addr, CertFP: ep.CertFP, ExpiresAt: ep.ExpiresAt}, nil
+}
+
 func peerIndex(peers []Peer, id string) int {
 	for i, p := range peers {
 		if p.ID == id {
@@ -447,6 +522,32 @@ func (s *Service) handleDaemon(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "endpoint" {
+		switch r.Method {
+		case http.MethodPut, http.MethodPost:
+			var req PublishEndpointRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid json")
+				return
+			}
+			resp, err := s.PublishEndpoint(id, req)
+			if err != nil {
+				writeServiceErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
+		case http.MethodGet:
+			resp, err := s.GetEndpoint(id)
+			if err != nil {
+				writeServiceErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 	writeErr(w, http.StatusNotFound, "not found")

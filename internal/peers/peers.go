@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -80,4 +81,44 @@ func (f *File) MergePeers(list []Peer) {
 	for _, p := range list {
 		f.UpsertPeer(p)
 	}
+}
+
+// Find resolves a peer by CP id or nickname.
+func (f *File) Find(idOrNick string) (*Peer, error) {
+	idOrNick = strings.TrimSpace(idOrNick)
+	if idOrNick == "" {
+		return nil, fmt.Errorf("empty peer")
+	}
+	var byNick *Peer
+	for i := range f.Peers {
+		p := &f.Peers[i]
+		if p.ID == idOrNick {
+			out := *p
+			return &out, nil
+		}
+		if p.Nickname != "" && p.Nickname == idOrNick {
+			byNick = p
+		}
+	}
+	if byNick != nil {
+		out := *byNick
+		return &out, nil
+	}
+	return nil, fmt.Errorf("unknown peer %q", idOrNick)
+}
+
+// Outbound returns peers this side may dial (direction outbound).
+func (f *File) Outbound() []Peer {
+	var out []Peer
+	for _, p := range f.Peers {
+		if p.Direction == "outbound" || p.Direction == "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// HasRegistration reports whether this daemon registered with CP.
+func (f *File) HasRegistration() bool {
+	return f != nil && f.Registration != nil && f.Registration.ID != ""
 }

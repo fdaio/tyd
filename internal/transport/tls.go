@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -149,7 +150,15 @@ func DialTLS(addr, serverCertPath string) (Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load server cert %s: %w", serverCertPath, err)
 	}
-	wantFP := Fingerprint(pinned)
+	return DialTLSFingerprint(addr, Fingerprint(pinned))
+}
+
+// DialTLSFingerprint dials TLS and pins the server by SHA-256 cert fingerprint (hex).
+func DialTLSFingerprint(addr, certFP string) (Conn, error) {
+	wantFP := strings.ToLower(strings.TrimSpace(certFP))
+	if wantFP == "" {
+		return nil, fmt.Errorf("tls: empty certificate fingerprint")
+	}
 	cfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // replaced by fingerprint pin below
