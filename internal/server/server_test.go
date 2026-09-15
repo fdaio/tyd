@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -549,5 +550,170 @@ func TestCloseAlreadyClosedErrors(t *testing.T) {
 	err = client.CloseSession(ep, key, info.ID)
 	if err == nil || !strings.Contains(err.Error(), "already closed") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func startApprovalServer(t *testing.T, mode string) (unixEP, tlsEP client.Endpoint, admin ed25519.PrivateKey, getAudits func() []string) {
+	t.Helper()
+	key, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "server.crt")
+	keyPath := filepath.Join(dir, "server.key")
+	tmp, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := tmp.Addr().String()
+	_ = tmp.Close()
+	sock := fmt.Sprintf("/tmp/tyd-appr-%d.sock", time.Now().UnixNano()%1_000_000)
+	var (
+		mu    sync.Mutex
+		lines []string
+	)
+	srv := NewWithConfig(Config{
+		Socket: sock, Listen: addr, CertPath: cert, KeyPath: keyPath,
+		Mgr: session.NewManager(), Trust: trust, ApprovalMode: mode,
+		AuditLog: func(line string) {
+			mu.Lock()
+			lines = append(lines, line)
+			mu.Unlock()
+		},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	unixEP = client.Endpoint{Kind: transport.KindUnix, Address: sock}
+	tlsEP = client.Endpoint{Kind: transport.KindTLS, Address: addr, CertPath: cert}
+	if err := client.WaitReady(unixEP, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.WaitReady(tlsEP, 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	return unixEP, tlsEP, key, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), lines...)
+	}
+}
+
+func TestPreTLSCreatePendingThenUnixApprove(t *testing.T) {
+	unixEP, tlsEP, key, _ := startApprovalServer(t, "pre")
+	dir := t.TempDir()
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State != string(session.StatePending) {
+		t.Fatalf("state=%s", info.State)
+	}
+	c, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := c.Recv()
+	_ = c.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeError || !strings.Contains(f.Error, "pending approval") {
+		t.Fatalf("attach want pending error, got %+v", f)
+	}
+
+	approved, err := client.Approve(unixEP, key, info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.State != string(session.StateDetached) {
+		t.Fatalf("after approve %s", approved.State)
+	}
+
+	c2, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if err := c2.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = c2.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeAttached {
+		t.Fatalf("attach after approve: %+v", f)
+	}
+	_ = client.CloseSession(unixEP, key, info.ID)
+}
+
+func TestPreUnixCreateBypassesPending(t *testing.T) {
+	unixEP, _, key, _ := startApprovalServer(t, "pre")
+	info, err := client.Create(unixEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State == string(session.StatePending) {
+		t.Fatal("unix create under pre must not be pending")
+	}
+	if info.State != string(session.StateDetached) {
+		t.Fatalf("state=%s", info.State)
+	}
+	_ = client.CloseSession(unixEP, key, info.ID)
+}
+
+func TestFullCreateNoPending(t *testing.T) {
+	_, tlsEP, key, _ := startApprovalServer(t, "full")
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State != string(session.StateDetached) {
+		t.Fatalf("state=%s", info.State)
+	}
+	_ = client.CloseSession(tlsEP, key, info.ID)
+}
+
+func TestPostCreateCloseEmitsAudit(t *testing.T) {
+	unixEP, tlsEP, key, getAudits := startApprovalServer(t, "post")
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.State == string(session.StatePending) {
+		t.Fatal("post must auto-create")
+	}
+	if err := client.CloseSession(unixEP, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, line := range getAudits() {
+			if strings.Contains(line, info.ID) && strings.Contains(line, "audit:") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("audit missing for %s: %+v", info.ID, getAudits())
+}
+
+func TestApproveRejectedOverTLS(t *testing.T) {
+	unixEP, tlsEP, key, _ := startApprovalServer(t, "pre")
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Approve(tlsEP, key, info.ID); err == nil || !strings.Contains(err.Error(), "unix") {
+		t.Fatalf("approve over tls: %v", err)
+	}
+	if err := client.Reject(unixEP, key, info.ID); err != nil {
+		t.Fatal(err)
 	}
 }

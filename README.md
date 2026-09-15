@@ -4,7 +4,7 @@
 
 It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), and Step 1 Control Panel pairing skeleton.
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing (Steps 1–2), and approval modes (Step 3: `full` / `pre` / `post`).
 
 ## Documentation
 
@@ -49,14 +49,14 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
 ```
 
-Default production platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data. See the requirements doc and roadmap Steps 2–5 for data-plane mesh, approval modes, and revoke.
+Default production platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data. See the requirements doc and roadmap Steps 4–5 for session alias and revoke.
 
 ## CLI layout
 
 | Group | Commands |
 |-------|----------|
 | Root | `up`, `serve` (alias), `status`, `keygen`, `register`, `accept` |
-| `session` | `create`, `list`, `attach`, `watch`, `close` |
+| `session` | `create`, `list`, `attach`, `watch`, `approve`, `reject`, `close` |
 
 ## Defaults
 

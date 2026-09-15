@@ -19,6 +19,7 @@ import (
 type State string
 
 const (
+	StatePending  State = "PENDING"
 	StateAttached State = "ATTACHED"
 	StateDetached State = "DETACHED"
 	StateClosed   State = "CLOSED"
@@ -27,21 +28,40 @@ const (
 const ringMax = 64 << 10
 
 type CreateOpts struct {
-	Rows  uint16
-	Cols  uint16
-	Shell string
-	Cwd   string
-	Env   []string
-	Owner string
+	Rows   uint16
+	Cols   uint16
+	Shell  string
+	Cwd    string
+	Env    []string
+	Owner  string
+	PeerID string // optional; recorded for post-approval audit
+}
+
+// ClosedInfo is emitted when a live session transitions to CLOSED (not pending reject).
+type ClosedInfo struct {
+	SessionID string
+	Principal string
+	PeerID    string
+	CreatedAt time.Time
+	ClosedAt  time.Time
 }
 
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
+	onClosed func(ClosedInfo)
 }
 
 func NewManager() *Manager {
 	return &Manager{sessions: make(map[string]*Session)}
+}
+
+// SetOnClosed registers a callback for sessions that become CLOSED (shell exit or Close).
+// Pending reject/remove does not fire the callback.
+func (m *Manager) SetOnClosed(fn func(ClosedInfo)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onClosed = fn
 }
 
 func (m *Manager) Create(opts CreateOpts) (*Session, error) {
@@ -54,9 +74,74 @@ func (m *Manager) Create(opts CreateOpts) (*Session, error) {
 		return nil, err
 	}
 	m.mu.Lock()
+	s.onClosed = m.onClosed
 	m.sessions[id] = s
 	m.mu.Unlock()
 	return s, nil
+}
+
+// CreatePending allocates a session in PENDING without starting a PTY.
+func (m *Manager) CreatePending(opts CreateOpts) (*Session, error) {
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	normalizeCreateOpts(&opts)
+	owner := opts.Owner
+	if owner == "" {
+		if u, err := user.Current(); err == nil {
+			owner = u.Username
+		}
+	}
+	s := &Session{
+		ID:        id,
+		Owner:     owner,
+		User:      owner,
+		PeerID:    opts.PeerID,
+		CreatedAt: time.Now().UTC(),
+		state:     StatePending,
+		rows:      opts.Rows,
+		cols:      opts.Cols,
+		pending:   &opts,
+		cmdDone:   make(chan struct{}),
+	}
+	m.mu.Lock()
+	s.onClosed = m.onClosed
+	m.sessions[id] = s
+	m.mu.Unlock()
+	return s, nil
+}
+
+// Approve starts the PTY for a PENDING session and moves it to DETACHED.
+func (m *Manager) Approve(id string) (*Session, error) {
+	s, err := m.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.approve(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// Reject removes a PENDING session. Non-pending sessions return an error.
+func (m *Manager) Reject(id string) error {
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session %s not found", id)
+	}
+	s.mu.Lock()
+	pending := s.state == StatePending
+	s.mu.Unlock()
+	if !pending {
+		m.mu.Unlock()
+		return fmt.Errorf("session %s is not pending", id)
+	}
+	delete(m.sessions, id)
+	m.mu.Unlock()
+	return nil
 }
 
 func (m *Manager) Get(id string) (*Session, error) {
@@ -80,7 +165,7 @@ func (m *Manager) List() []protocol.SessionInfo {
 		iClosed := out[i].State == string(StateClosed)
 		jClosed := out[j].State == string(StateClosed)
 		if iClosed != jClosed {
-			return !iClosed // alive (non-CLOSED) first
+			return !iClosed // alive (non-CLOSED, including PENDING) first
 		}
 		return out[i].CreatedAt < out[j].CreatedAt
 	})
@@ -93,6 +178,14 @@ func (m *Manager) Close(id string) error {
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("session %s not found", id)
+	}
+	s.mu.Lock()
+	pending := s.state == StatePending
+	s.mu.Unlock()
+	if pending {
+		delete(m.sessions, id)
+		m.mu.Unlock()
+		return nil
 	}
 	m.mu.Unlock()
 	return s.Close()
@@ -107,6 +200,12 @@ func (m *Manager) CloseAll() {
 	}
 	m.mu.Unlock()
 	for _, s := range all {
+		s.mu.Lock()
+		pending := s.state == StatePending
+		s.mu.Unlock()
+		if pending {
+			continue
+		}
 		_ = s.Close()
 	}
 }
@@ -115,21 +214,26 @@ type Session struct {
 	ID        string
 	Owner     string
 	User      string
+	PeerID    string
 	CreatedAt time.Time
 
-	mu        sync.Mutex
-	state     State
-	rows      uint16
-	cols      uint16
-	cmd       *exec.Cmd
-	pty       *os.File
-	attach    *Attachment
-	watchers  []*Watcher
-	ring      []byte
-	exitCode  int
-	closed    bool
-	closeOnce sync.Once
-	cmdDone   chan struct{}
+	mu         sync.Mutex
+	state      State
+	rows       uint16
+	cols       uint16
+	cmd        *exec.Cmd
+	pty        *os.File
+	attach     *Attachment
+	watchers   []*Watcher
+	ring       []byte
+	exitCode   int
+	closed     bool
+	closedAt   time.Time
+	closeOnce  sync.Once
+	closedOnce sync.Once
+	cmdDone    chan struct{}
+	pending    *CreateOpts
+	onClosed   func(ClosedInfo)
 }
 
 type Attachment struct {
@@ -146,7 +250,7 @@ type Watcher struct {
 	closeOnce sync.Once
 }
 
-func startSession(id string, opts CreateOpts) (*Session, error) {
+func normalizeCreateOpts(opts *CreateOpts) {
 	if opts.Rows == 0 {
 		opts.Rows = 24
 	}
@@ -156,6 +260,41 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 	if opts.Shell == "" {
 		opts.Shell = defaultShell()
 	}
+}
+
+func startSession(id string, opts CreateOpts) (*Session, error) {
+	normalizeCreateOpts(&opts)
+	cmd, ptmx, err := startPTY(opts)
+	if err != nil {
+		return nil, err
+	}
+
+	owner := opts.Owner
+	if owner == "" {
+		if u, err := user.Current(); err == nil {
+			owner = u.Username
+		}
+	}
+
+	s := &Session{
+		ID:        id,
+		Owner:     owner,
+		User:      owner,
+		PeerID:    opts.PeerID,
+		CreatedAt: time.Now().UTC(),
+		state:     StateDetached,
+		rows:      opts.Rows,
+		cols:      opts.Cols,
+		cmd:       cmd,
+		pty:       ptmx,
+		cmdDone:   make(chan struct{}),
+	}
+	go s.waitLoop()
+	go s.readLoop()
+	return s, nil
+}
+
+func startPTY(opts CreateOpts) (*exec.Cmd, *os.File, error) {
 	cmd := exec.Command(opts.Shell)
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
@@ -170,31 +309,46 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: opts.Rows, Cols: opts.Cols})
 	if err != nil {
-		return nil, fmt.Errorf("start pty: %w", err)
+		return nil, nil, fmt.Errorf("start pty: %w", err)
+	}
+	return cmd, ptmx, nil
+}
+
+func (s *Session) approve() error {
+	s.mu.Lock()
+	if s.closed || s.state == StateClosed {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s is closed", s.ID)
+	}
+	if s.state != StatePending || s.pending == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("session %s is not pending", s.ID)
+	}
+	opts := *s.pending
+	s.mu.Unlock()
+
+	cmd, ptmx, err := startPTY(opts)
+	if err != nil {
+		return err
 	}
 
-	owner := opts.Owner
-	if owner == "" {
-		if u, err := user.Current(); err == nil {
-			owner = u.Username
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != StatePending {
+		_ = ptmx.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
 		}
+		return fmt.Errorf("session %s is not pending", s.ID)
 	}
-
-	s := &Session{
-		ID:        id,
-		Owner:     owner,
-		User:      owner,
-		CreatedAt: time.Now().UTC(),
-		state:     StateDetached,
-		rows:      opts.Rows,
-		cols:      opts.Cols,
-		cmd:       cmd,
-		pty:       ptmx,
-		cmdDone:   make(chan struct{}),
-	}
+	s.pending = nil
+	s.cmd = cmd
+	s.pty = ptmx
+	s.state = StateDetached
+	s.cmdDone = make(chan struct{})
 	go s.waitLoop()
 	go s.readLoop()
-	return s, nil
+	return nil
 }
 
 func defaultShell() string {
@@ -228,6 +382,12 @@ func (s *Session) Info() protocol.SessionInfo {
 	}
 }
 
+func (s *Session) State() State {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
 func (s *Session) PID() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,6 +400,9 @@ func (s *Session) PID() int {
 func (s *Session) Attach() (*Attachment, []byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.state == StatePending {
+		return nil, nil, fmt.Errorf("session pending approval")
+	}
 	if s.closed || s.state == StateClosed {
 		return nil, nil, fmt.Errorf("session %s is closed", s.ID)
 	}
@@ -260,6 +423,9 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 func (s *Session) Watch() (*Watcher, []byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.state == StatePending {
+		return nil, nil, fmt.Errorf("session pending approval")
+	}
 	snap := append([]byte(nil), s.ring...)
 	w := &Watcher{
 		s:      s,
@@ -430,8 +596,15 @@ func (s *Session) closeWatchersLocked() {
 
 func (s *Session) Signal(name string) error {
 	s.mu.Lock()
+	if s.state == StatePending {
+		s.mu.Unlock()
+		return fmt.Errorf("session pending approval")
+	}
 	ptmx := s.pty
-	proc := s.cmd.Process
+	var proc *os.Process
+	if s.cmd != nil {
+		proc = s.cmd.Process
+	}
 	s.mu.Unlock()
 	if ptmx == nil {
 		return fmt.Errorf("session has no pty")
@@ -461,8 +634,32 @@ func (s *Session) Signal(name string) error {
 	}
 }
 
+func (s *Session) fireClosedLocked() {
+	s.closedOnce.Do(func() {
+		if s.closedAt.IsZero() {
+			s.closedAt = time.Now().UTC()
+		}
+		fn := s.onClosed
+		info := ClosedInfo{
+			SessionID: s.ID,
+			Principal: s.Owner,
+			PeerID:    s.PeerID,
+			CreatedAt: s.CreatedAt,
+			ClosedAt:  s.closedAt,
+		}
+		if fn == nil {
+			return
+		}
+		go fn(info)
+	})
+}
+
 func (s *Session) Close() error {
 	s.mu.Lock()
+	if s.state == StatePending {
+		s.mu.Unlock()
+		return fmt.Errorf("session pending approval; use reject")
+	}
 	if s.closed || s.state == StateClosed {
 		s.mu.Unlock()
 		return fmt.Errorf("already closed")
@@ -480,6 +677,7 @@ func (s *Session) Close() error {
 		}
 		s.closed = true
 		s.state = StateClosed
+		s.closedAt = time.Now().UTC()
 		cmd := s.cmd
 		ptmx := s.pty
 		if s.attach != nil {
@@ -487,6 +685,7 @@ func (s *Session) Close() error {
 			s.attach = nil
 		}
 		s.closeWatchersLocked()
+		s.fireClosedLocked()
 		s.mu.Unlock()
 
 		if cmd != nil && cmd.Process != nil {
@@ -544,11 +743,13 @@ func (s *Session) waitLoop() {
 	s.exitCode = code
 	s.closed = true
 	s.state = StateClosed
+	s.closedAt = time.Now().UTC()
 	if s.attach != nil {
 		s.attach.closeOut()
 		s.attach = nil
 	}
 	s.closeWatchersLocked()
+	s.fireClosedLocked()
 	s.mu.Unlock()
 	close(s.cmdDone)
 }

@@ -195,6 +195,8 @@ func TestRootHelpPlain(t *testing.T) {
 		"session list",
 		"session attach",
 		"session watch",
+		"session approve",
+		"session reject",
 		"session close",
 		"Identity / pairing:",
 		"keygen",
@@ -245,6 +247,8 @@ func TestSessionHelpPlain(t *testing.T) {
 		"list",
 		"attach",
 		"watch",
+		"approve",
+		"reject",
 		"close",
 	} {
 		if !strings.Contains(out, want) {

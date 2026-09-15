@@ -187,6 +187,22 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 	return err
 }
 
+func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {
+	resp, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeApprove, SessionID: id})
+	if err != nil {
+		return protocol.SessionInfo{}, err
+	}
+	if resp.Session == nil {
+		return protocol.SessionInfo{}, fmt.Errorf("approve: empty session")
+	}
+	return *resp.Session, nil
+}
+
+func Reject(ep Endpoint, key ed25519.PrivateKey, id string) error {
+	_, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeReject, SessionID: id})
+	return err
+}
+
 const detachByte = 0x1c // Ctrl-\
 
 func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) error {

@@ -201,6 +201,9 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, info.ID)
+		if info.State == string(session.StatePending) {
+			fmt.Fprintln(os.Stderr, "pending approval")
+		}
 		fmt.Println(info.ID)
 		return nil
 	case "list":
@@ -251,6 +254,31 @@ func runSession(opts options) error {
 		}
 		rememberPeerSession(opts, peerID, args[0])
 		return client.CloseSession(ep, key, args[0])
+	case "approve":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd session approve <session_id>")
+		}
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
+		info, err := client.Approve(local, key, args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Println(info.ID)
+		return nil
+	case "reject":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd session reject <session_id>")
+		}
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
+		return client.Reject(local, key, args[0])
 	case "help", "-h", "--help":
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
@@ -335,20 +363,30 @@ func runUp(opts options) error {
 	if err != nil {
 		return err
 	}
+	approvalMode := controlpanel.DefaultApproval
+	if doc, err := peers.Load(opts.peers); err == nil && doc.Registration != nil {
+		if mode, err := controlpanel.NormalizeApproval(doc.Registration.ApprovalMode); err == nil {
+			approvalMode = mode
+		}
+	}
 	mgr := session.NewManager()
 	srv := server.NewWithConfig(server.Config{
-		Socket:     opts.socket,
-		Listen:     opts.listen,
-		DataListen: dataListen,
-		CertPath:   opts.cert,
-		KeyPath:    opts.key,
-		Mgr:        mgr,
-		Trust:      trust,
+		Socket:       opts.socket,
+		Listen:       opts.listen,
+		DataListen:   dataListen,
+		CertPath:     opts.cert,
+		KeyPath:      opts.key,
+		Mgr:          mgr,
+		Trust:        trust,
+		ApprovalMode: approvalMode,
 	})
 	if err := srv.Start(); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
+	if approvalMode != controlpanel.ApprovalFull {
+		fmt.Fprintf(os.Stderr, "tyd approval mode %s\n", approvalMode)
+	}
 	if opts.listen != "" && opts.listen != "off" {
 		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", srv.ListenAddr(), srv.TLSFingerprint())
 	} else {
@@ -788,6 +826,8 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session list", "List sessions (alive first)"},
 		{"session attach", "Attach to a running session"},
 		{"session watch", "Follow session output (read-only)"},
+		{"session approve", "Approve a PENDING remote session (local unix)"},
+		{"session reject", "Reject a PENDING remote session (local unix)"},
 		{"session close", "Close a session (kept as history)"},
 	}, color)
 	fmt.Fprintln(w)
@@ -839,15 +879,19 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Commands:")
 	writeHelpRows(w, []helpRow{
 		{"create", "Create a persistent PTY session"},
-		{"list", "List sessions (alive first)"},
+		{"list", "List sessions (alive first; PENDING counts as alive)"},
 		{"attach", "Attach to a running session"},
 		{"watch", "Follow session output (read-only)"},
+		{"approve", "Approve PENDING session (local unix only)"},
+		{"reject", "Reject PENDING session (local unix only)"},
 		{"close", "Close a session (kept as history)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  attach <session_id>   Interactive; Ctrl-\\ detaches.")
 	fmt.Fprintln(w, "  watch <session_id>    Read-only; Ctrl-C / Ctrl-\\ stops.")
+	fmt.Fprintln(w, "  approve <session_id>  Start PTY for a PENDING remote create.")
+	fmt.Fprintln(w, "  reject <session_id>   Remove a PENDING session.")
 	fmt.Fprintln(w, "  close <session_id>    Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  --peer <id|nick>      Target a paired peer (CP signaling + direct TLS).")
 }
