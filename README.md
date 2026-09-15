@@ -44,6 +44,8 @@ TLS client (pin the server certificate):
 | Root | `keygen`, `serve`, `status` |
 | `session` | `create`, `list`, `attach`, `watch`, `close` |
 
+Run `tyd` or `tyd session help` for grouped, colorized help (plain text when not a TTY).
+
 ## Defaults
 
 | Item | Path / value |

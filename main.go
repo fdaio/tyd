@@ -3,11 +3,14 @@ package main
 import (
 	"crypto/ed25519"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 	"text/tabwriter"
+
+	"golang.org/x/term"
 
 	"tyd/internal/auth"
 	"tyd/internal/client"
@@ -16,6 +19,17 @@ import (
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
+
+const (
+	ansiCyan   = "\033[36m"
+	ansiReset  = "\033[0m"
+	helpColPad = 22
+)
+
+type helpRow struct {
+	name string
+	desc string
+}
 
 type options struct {
 	socket   string
@@ -79,7 +93,8 @@ func run(opts options) error {
 
 func runSession(opts options) error {
 	if len(opts.rest) == 0 {
-		return fmt.Errorf("usage: tyd session <create|list|attach|watch|close>")
+		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
+		return nil
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
@@ -140,7 +155,7 @@ func runSession(opts options) error {
 		}
 		return client.CloseSession(endpoint(opts), key, args[0])
 	case "help", "-h", "--help":
-		fmt.Fprint(os.Stderr, sessionUsage())
+		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
 	default:
 		return fmt.Errorf("unknown session command %q\n%s", sub, sessionUsage())
@@ -310,39 +325,95 @@ func parseArgs(args []string) (options, error) {
 	return opts, nil
 }
 
+func colorEnabled(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+func writeHelpRows(w io.Writer, rows []helpRow, color bool) {
+	for _, r := range rows {
+		name := r.name
+		pad := helpColPad - len(name)
+		if pad < 2 {
+			pad = 2
+		}
+		if color {
+			fmt.Fprintf(w, "  %s%s%s%s%s\n", ansiCyan, name, ansiReset, strings.Repeat(" ", pad), r.desc)
+			continue
+		}
+		fmt.Fprintf(w, "  %-*s%s\n", helpColPad, name, r.desc)
+	}
+}
+
+func writeRootHelp(w io.Writer, color bool) {
+	fmt.Fprintln(w, "Persistent, remotely attachable terminal sessions.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  tyd [command] [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Common commands:")
+	writeHelpRows(w, []helpRow{
+		{"session create", "Create a persistent PTY session"},
+		{"session list", "List sessions (alive first)"},
+		{"session attach", "Attach to a running session"},
+		{"session watch", "Follow session output (read-only)"},
+		{"session close", "Close a session (kept as history)"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Identity:")
+	writeHelpRows(w, []helpRow{
+		{"keygen", "Generate Ed25519 client identity"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Daemon:")
+	writeHelpRows(w, []helpRow{
+		{"serve", "Start the tyd daemon"},
+		{"status", "Show daemon / connection status"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flags:")
+	writeHelpRows(w, []helpRow{
+		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
+		{"--listen ADDR|off", fmt.Sprintf("TLS listen for serve (default %s)", paths.DefaultListen())},
+		{"--addr HOST:PORT", "TLS client endpoint"},
+		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},
+		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
+		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
+		{"--tls-key PATH", "Server key"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Tips:")
+	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
+	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
+}
+
+func writeSessionHelp(w io.Writer, color bool) {
+	fmt.Fprintln(w, "Manage persistent PTY sessions.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  tyd session [command]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Commands:")
+	writeHelpRows(w, []helpRow{
+		{"create", "Create a persistent PTY session"},
+		{"list", "List sessions (alive first)"},
+		{"attach", "Attach to a running session"},
+		{"watch", "Follow session output (read-only)"},
+		{"close", "Close a session (kept as history)"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Tips:")
+	fmt.Fprintln(w, "  attach <session_id>   Interactive; Ctrl-\\ detaches.")
+	fmt.Fprintln(w, "  watch <session_id>    Read-only; Ctrl-C / Ctrl-\\ stops.")
+	fmt.Fprintln(w, "  close <session_id>    Marks CLOSED; kept until daemon restart.")
+}
+
 func sessionUsage() string {
-	return `tyd session commands:
-  tyd session create
-  tyd session list
-  tyd session attach <session_id>
-  tyd session watch  <session_id>
-  tyd session close  <session_id>
-`
+	var b strings.Builder
+	writeSessionHelp(&b, false)
+	return b.String()
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `tyd - persistent terminal session daemon
-
-Usage:
-  tyd keygen
-  tyd serve
-  tyd status
-  tyd session create
-  tyd session list
-  tyd session attach <session_id>
-  tyd session watch  <session_id>
-  tyd session close  <session_id>
-
-Flags (global):
-  --socket PATH           unix socket (default %s)
-  --listen ADDR|off       TLS listen for serve (default %s)
-  --addr HOST:PORT        TLS client endpoint
-  --identity PATH         client identity (default %s)
-  --trust PATH            trust file (default %s)
-  --tls-cert PATH         server cert / client pin (default %s)
-  --tls-key PATH          server key
-
-While attached, press Ctrl-\ to detach. The shell keeps running.
-While watching, press Ctrl-C or Ctrl-\ to stop; the session is not closed.
-`, paths.DefaultSocket(), paths.DefaultListen(), paths.DefaultIdentity(), paths.DefaultTrust(), paths.DefaultServerCert())
+	writeRootHelp(os.Stderr, colorEnabled(os.Stderr))
 }
