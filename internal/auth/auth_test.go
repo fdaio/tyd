@@ -176,3 +176,25 @@ func TestEnsureIdentityCreatesOnce(t *testing.T) {
 		t.Fatal("identity changed")
 	}
 }
+
+func TestDropUnlistedPeers(t *testing.T) {
+	store := NewStore()
+	_, a, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, b, err := Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Add("local", a.Public().(ed25519.PublicKey), AllGlobal)
+	store.EnsurePeer("peer", b.Public().(ed25519.PublicKey), AllGlobal)
+	store.DropUnlistedPeers(nil)
+	nonce, _ := NewNonce()
+	if _, err := store.Authenticate(nonce, b.Public().(ed25519.PublicKey), Sign(b, nonce)); err == nil {
+		t.Fatal("revoked peer still trusted")
+	}
+	if _, err := store.Authenticate(nonce, a.Public().(ed25519.PublicKey), Sign(a, nonce)); err != nil {
+		t.Fatalf("local principal dropped: %v", err)
+	}
+}

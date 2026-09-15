@@ -19,10 +19,14 @@ type Principal struct {
 type Store struct {
 	mu         sync.Mutex
 	principals map[string]*Principal // keyed by public key encoding
+	peerKeys   map[string]struct{}   // inbound peer pubs injected via EnsurePeer
 }
 
 func NewStore() *Store {
-	return &Store{principals: make(map[string]*Principal)}
+	return &Store{
+		principals: make(map[string]*Principal),
+		peerKeys:   make(map[string]struct{}),
+	}
 }
 
 func (s *Store) Add(name string, pub ed25519.PublicKey, global []Cap) *Principal {
@@ -67,9 +71,30 @@ func (s *Store) EnsurePeer(name string, pub ed25519.PublicKey, caps []Cap) *Prin
 		p.Global[c] = true
 	}
 	s.principals[key] = p
+	s.peerKeys[key] = struct{}{}
 	out := *p
 	out.Pub = append(ed25519.PublicKey(nil), p.Pub...)
 	return &out
+}
+
+// DropUnlistedPeers removes EnsurePeer principals whose keys are not in keep.
+func (s *Store) DropUnlistedPeers(keep []ed25519.PublicKey) {
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, pub := range keep {
+		keepSet[EncodePublic(pub)] = struct{}{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.peerKeys == nil {
+		s.peerKeys = make(map[string]struct{})
+	}
+	for k := range s.peerKeys {
+		if _, ok := keepSet[k]; ok {
+			continue
+		}
+		delete(s.principals, k)
+		delete(s.peerKeys, k)
+	}
 }
 
 func (s *Store) Grant(pub ed25519.PublicKey, sessionID string, caps ...Cap) error {

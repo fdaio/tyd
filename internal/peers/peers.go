@@ -83,6 +83,40 @@ func (f *File) MergePeers(list []Peer) {
 	}
 }
 
+// ReplaceFromRemote sets the peer list from CP, keeping local nicknames when CP has none.
+func (f *File) ReplaceFromRemote(list []Peer) {
+	nicks := make(map[string]string, len(f.Peers))
+	for _, p := range f.Peers {
+		if p.Nickname != "" {
+			nicks[p.ID] = p.Nickname
+		}
+	}
+	out := make([]Peer, 0, len(list))
+	for _, p := range list {
+		if p.Nickname == "" {
+			p.Nickname = nicks[p.ID]
+		}
+		out = append(out, p)
+	}
+	f.Peers = out
+}
+
+func (f *File) RemovePeer(idOrNick string) (*Peer, error) {
+	p, err := f.Find(idOrNick)
+	if err != nil {
+		return nil, err
+	}
+	filtered := f.Peers[:0]
+	for _, cur := range f.Peers {
+		if cur.ID == p.ID {
+			continue
+		}
+		filtered = append(filtered, cur)
+	}
+	f.Peers = filtered
+	return p, nil
+}
+
 // Find resolves a peer by CP id or nickname.
 func (f *File) Find(idOrNick string) (*Peer, error) {
 	idOrNick = strings.TrimSpace(idOrNick)

@@ -62,9 +62,12 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - Recent-session peer placeholder defaults (Step 2 `--peer` / `recent.json`) + help placeholder
 - `status` shows CP registration, peers, recent, session aliases, and daemon connections
 
-### Step 5 — Revoke + hardening
+### Step 5 — Revoke + hardening (done)
 
-- Peer revoke; invite edge cases; production hardening
+- `tyd revoke <peer-id|nickname>` — either side drops the pair on CP and locally
+- `tyd invite` mints a new 10-minute invite; `tyd invite revoke <token>` invalidates unused invites
+- CP prunes used/expired invites; JSON bodies capped; peer sync **replaces** (so revokes propagate)
+- Inbound trust drops revoked peer keys (`DropUnlistedPeers`); data-plane create then fails AuthN
 
 ## Not done (intentionally)
 

@@ -128,6 +128,33 @@ func (c *Client) GetEndpoint(daemonID string) (addr, certFP string, err error) {
 	return out.Addr, out.CertFP, nil
 }
 
+func (c *Client) RevokeInvite(token, daemonID, publicKey string) error {
+	return c.post("/v1/invites/revoke", controlpanel.RevokeInviteRequest{
+		Token:     token,
+		DaemonID:  daemonID,
+		PublicKey: publicKey,
+	}, nil)
+}
+
+func (c *Client) RevokePeer(daemonID, publicKey, peerID string) error {
+	u := c.BaseURL + "/v1/daemons/" + url.PathEscape(daemonID) + "/peers/" + url.PathEscape(peerID) +
+		"?public_key=" + url.QueryEscape(publicKey)
+	req, err := http.NewRequest(http.MethodDelete, u, nil)
+	if err != nil {
+		return err
+	}
+	res, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("cp revoke peer: %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 func (c *Client) put(path string, in, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {

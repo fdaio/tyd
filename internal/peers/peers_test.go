@@ -65,3 +65,20 @@ func TestFindAndOutbound(t *testing.T) {
 		t.Fatal("expected registration")
 	}
 }
+
+func TestReplaceFromRemoteAndRemove(t *testing.T) {
+	f := &File{Peers: []Peer{
+		{ID: "aaa", PublicKey: "p1", Nickname: "lap", Direction: "outbound"},
+		{ID: "bbb", PublicKey: "p2", Direction: "inbound"},
+	}}
+	f.ReplaceFromRemote([]Peer{{ID: "aaa", PublicKey: "p1", Direction: "outbound"}})
+	if len(f.Peers) != 1 || f.Peers[0].Nickname != "lap" {
+		t.Fatalf("keep nick %+v", f.Peers)
+	}
+	if _, err := f.RemovePeer("lap"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.Peers) != 0 {
+		t.Fatalf("%+v", f.Peers)
+	}
+}

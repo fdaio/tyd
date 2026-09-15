@@ -181,8 +181,12 @@ func run(opts options) error {
 		return runUp(opts)
 	case "register":
 		return runRegister(opts)
+	case "invite":
+		return runInvite(opts)
 	case "accept":
 		return runAccept(opts)
+	case "revoke":
+		return runRevoke(opts)
 	case "status":
 		return runStatus(opts)
 	case "alias":
@@ -667,6 +671,7 @@ func injectPeerTrust(trust *auth.Store, doc *peers.File) {
 	if trust == nil || doc == nil {
 		return
 	}
+	var keep []ed25519.PublicKey
 	for _, p := range doc.Peers {
 		if p.Direction != "inbound" && p.Direction != "" {
 			continue
@@ -680,7 +685,9 @@ func injectPeerTrust(trust *auth.Store, doc *peers.File) {
 			name = p.ID
 		}
 		trust.EnsurePeer(name, pub, auth.AllGlobal)
+		keep = append(keep, pub)
 	}
+	trust.DropUnlistedPeers(keep)
 }
 
 func syncPeersAndTrust(opts options, trust *auth.Store) error {
@@ -752,6 +759,105 @@ func runRegister(opts options) error {
 	return nil
 }
 
+func runInvite(opts options) error {
+	if len(opts.rest) > 0 && (opts.rest[0] == "revoke" || opts.rest[0] == "rm") {
+		if len(opts.rest) != 2 {
+			return fmt.Errorf("usage: tyd invite revoke <token>")
+		}
+		return runRevokeInvite(opts, opts.rest[1])
+	}
+	if len(opts.rest) != 0 {
+		return fmt.Errorf("usage: tyd invite | tyd invite revoke <token>")
+	}
+	key, err := ensureIdentity(opts)
+	if err != nil {
+		return err
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if !doc.HasRegistration() {
+		return fmt.Errorf("not registered; run: tyd register")
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	cli := cpclient.New(platform)
+	inv, err := cli.CreateInvite(doc.Registration.ID, pub)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "invite (TTL %s)\n", controlpanel.InviteTTL)
+	fmt.Println(inv.Token)
+	return nil
+}
+
+func runRevokeInvite(opts options, token string) error {
+	key, err := loadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if !doc.HasRegistration() {
+		return fmt.Errorf("not registered; run: tyd register")
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	cli := cpclient.New(platform)
+	if err := cli.RevokeInvite(token, doc.Registration.ID, pub); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "invite revoked")
+	return nil
+}
+
+func runRevoke(opts options) error {
+	if len(opts.rest) != 1 {
+		return fmt.Errorf("usage: tyd revoke <peer-id|nickname>")
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	p, err := doc.Find(opts.rest[0])
+	if err != nil {
+		return err
+	}
+	if doc.HasRegistration() {
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+		platform := opts.platform
+		if doc.Platform != "" {
+			platform = doc.Platform
+		}
+		cli := cpclient.New(platform)
+		if err := cli.RevokePeer(doc.Registration.ID, pub, p.ID); err != nil {
+			return err
+		}
+	}
+	if _, err := doc.RemovePeer(p.ID); err != nil {
+		return err
+	}
+	if err := peers.Save(opts.peers, doc); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "revoked peer %s\n", p.ID)
+	fmt.Println(p.ID)
+	return nil
+}
+
 func runAccept(opts options) error {
 	if len(opts.rest) != 1 {
 		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
@@ -819,7 +925,7 @@ func syncPeersFromCP(opts options) error {
 	if err != nil {
 		return err
 	}
-	doc.MergePeers(cpPeersToLocal(remote))
+	doc.ReplaceFromRemote(cpPeersToLocal(remote))
 	return peers.Save(opts.peers, doc)
 }
 
@@ -1044,7 +1150,9 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
 		{"register", "Register with Control Panel and print invite"},
+		{"invite", "Mint a new pairing invite (10m TTL)"},
 		{"accept", "Accept a peer invite (stores peer public key)"},
+		{"revoke", "Revoke a paired peer (either side)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Daemon:")
@@ -1077,6 +1185,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> to create/list sessions on a paired peer.")
+	fmt.Fprintln(w, "  tyd revoke <peer> drops a pairing; tyd invite revoke <token> drops an unused invite.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }

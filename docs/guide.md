@@ -56,9 +56,14 @@ See [requirements/control-plane-pairing.md](requirements/control-plane-pairing.m
 go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 register
 ./tyd --platform http://127.0.0.1:8080 accept <invite> --as laptop
+./tyd --peer laptop session create
+./tyd invite                              # another 10-minute invite
+./tyd invite revoke <token>               # unused invite
+./tyd revoke laptop                       # drop pairing (either side)
 ```
 
 Paired peer public keys are stored in `~/.tyd/peers.json`. Default platform is `https://app.getfda.dev`.
+CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon peer-sync drops inbound trust.
 
 ### Data plane (Step 2)
 
@@ -214,9 +219,15 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 
 | Command | Role |
 |---------|------|
-| `keygen` | Create identity (+ bootstrap trust if missing) |
-| `serve` | Daemon |
-| `status` | List connection topology |
+| `keygen` | Create identity (+ bootstrap trust if missing); also auto on first up/register/accept |
+| `up` | Daemon (`serve` is a deprecated alias) |
+| `status` | CP registration, peers, aliases, connections |
+| `register` | Register with CP and print an invite |
+| `invite` | Mint a new invite (10m TTL) |
+| `invite revoke` | Invalidate an unused invite |
+| `accept` | Accept an invite; store peer public key |
+| `revoke` | Revoke a paired peer |
+| `alias` | Name a session (client-local) |
 
 ### `session` commands
 
