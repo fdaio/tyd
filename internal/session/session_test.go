@@ -2,6 +2,7 @@ package session
 
 import (
 	"bytes"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -109,8 +110,15 @@ func TestCreateWriteDetachReattachClose(t *testing.T) {
 	if s.Alive() {
 		t.Fatal("shell still alive after close")
 	}
-	if _, err := m.Get(s.ID); err == nil {
-		t.Fatal("closed session still listed")
+	got, err := m.Get(s.ID)
+	if err != nil {
+		t.Fatal("closed session should remain gettable:", err)
+	}
+	if got.Info().State != string(StateClosed) {
+		t.Fatalf("state after close: %s", got.Info().State)
+	}
+	if err := m.Close(s.ID); err == nil || !strings.Contains(err.Error(), "already closed") {
+		t.Fatalf("expected already closed, got %v", err)
 	}
 }
 
@@ -159,3 +167,169 @@ func TestSignalINTStopsSleep(t *testing.T) {
 		t.Fatal("unexpected")
 	}
 }
+
+func TestListSortAliveThenClosedByCreatedAt(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+
+	s1, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1.CreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	s2.CreatedAt = time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	s3.CreatedAt = time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+
+	if err := m.Close(s2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	list := m.List()
+	if len(list) != 3 {
+		t.Fatalf("len=%d", len(list))
+	}
+	// alive first (older first): s1, s3; then closed: s2
+	want := []string{s1.ID, s3.ID, s2.ID}
+	for i, id := range want {
+		if list[i].ID != id {
+			t.Fatalf("pos %d: got %s want %s (states %v)", i, list[i].ID, id, []string{list[0].State, list[1].State, list[2].State})
+		}
+	}
+	if list[2].State != string(StateClosed) {
+		t.Fatalf("closed should be last group: %+v", list)
+	}
+}
+
+func TestCloseKeepsSessionInManager(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, snap, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "keep-closed-" + filepath.Base(t.TempDir())
+	if _, err := att.Write([]byte("echo " + marker + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitContains(t, att, snap, marker, 5*time.Second)
+	att.Detach()
+
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := m.Get(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Info().State != string(StateClosed) {
+		t.Fatalf("state %s", got.Info().State)
+	}
+	found := false
+	for _, info := range m.List() {
+		if info.ID == s.ID && info.State == string(StateClosed) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("closed session missing from list")
+	}
+}
+
+func waitWatcherContains(t *testing.T, w *Watcher, acc []byte, sub string, timeout time.Duration) []byte {
+	t.Helper()
+	if bytes.Contains(acc, []byte(sub)) {
+		return acc
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		b, err := w.RecvTimeout(time.Until(deadline))
+		if err != nil {
+			t.Fatalf("waiting for %q, got %q: %v", sub, acc, err)
+		}
+		acc = append(acc, b...)
+		if bytes.Contains(acc, []byte(sub)) {
+			return acc
+		}
+	}
+	t.Fatalf("timeout waiting for %q, got %q", sub, acc)
+	return acc
+}
+
+func TestWatchLiveReceivesOutput(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Detach()
+
+	w, snap, err := s.Watch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	marker := "watch-live-" + filepath.Base(t.TempDir())
+	if _, err := att.Write([]byte("echo " + marker + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitWatcherContains(t, w, snap, marker, 5*time.Second)
+}
+
+func TestWatchClosedDumpsRingThenEnds(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, snap, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "watch-hist-" + filepath.Base(t.TempDir())
+	if _, err := att.Write([]byte("echo " + marker + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitContains(t, att, snap, marker, 5*time.Second)
+	att.Detach()
+
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	w, hist, err := s.Watch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if !bytes.Contains(hist, []byte(marker)) {
+		t.Fatalf("ring missing marker: %q", hist)
+	}
+	if !w.SessionClosed() {
+		t.Fatal("watcher should see closed session")
+	}
+	_, err = w.Recv()
+	if err != io.EOF {
+		t.Fatalf("expected EOF from closed watch, got %v", err)
+	}
+}
+
+

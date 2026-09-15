@@ -184,6 +184,50 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 
 const detachByte = 0x1c // Ctrl-\
 
+func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) error {
+	c, err := Dial(ep, key)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	if err := c.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: id}); err != nil {
+		return err
+	}
+	resp, err := c.Recv()
+	if err != nil {
+		return err
+	}
+	if resp.Type == protocol.TypeError {
+		return fmt.Errorf("%s", resp.Error)
+	}
+	if resp.Type != protocol.TypeWatching && resp.Type != protocol.TypeAttached {
+		return fmt.Errorf("unexpected watch reply %q", resp.Type)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGQUIT)
+	defer signal.Stop(sigCh)
+
+	done := make(chan struct{})
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- copyOutput(c, stdout)
+		close(done)
+	}()
+	go func() {
+		select {
+		case <-sigCh:
+			_ = c.Send(protocol.Frame{Type: protocol.TypeDetach})
+		case <-done:
+		}
+	}()
+
+	err = <-errCh
+	_ = c.Close()
+	return err
+}
+
 func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
 	c, err := Dial(ep, key)
 	if err != nil {

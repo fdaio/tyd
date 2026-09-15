@@ -394,3 +394,160 @@ func TestPlainTCPCannotSpeakProtocol(t *testing.T) {
 	}
 	_ = key
 }
+
+func TestWatchLiveAndClosed(t *testing.T) {
+	ep, key, _ := startTestServer(t)
+	dir := t.TempDir()
+	info, err := client.Create(ep, key, client.CreateOpts{
+		Rows: 24, Cols: 80, Shell: "/bin/sh", Cwd: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Produce output via attach, then detach.
+	c, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := c.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeAttached {
+		t.Fatalf("got %s %s", f.Type, f.Error)
+	}
+	marker := "watch-server-live"
+	if err := c.Send(protocol.Frame{Type: protocol.TypeWrite, Data: []byte("echo " + marker + "\n")}); err != nil {
+		t.Fatal(err)
+	}
+	waitOutput(t, c, nil, marker, 5*time.Second)
+	if err := c.Send(protocol.Frame{Type: protocol.TypeDetach}); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = c.Recv()
+	_ = c.Close()
+
+	// Live watch should see ring + new output.
+	wc, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wc.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = wc.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeWatching {
+		t.Fatalf("got %s %s", f.Type, f.Error)
+	}
+	acc := waitOutput(t, wc, nil, marker, 5*time.Second)
+
+	ac, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ac.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = ac.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeAttached {
+		t.Fatalf("attach while watch: %s %s", f.Type, f.Error)
+	}
+	live2 := "watch-live-2"
+	if err := ac.Send(protocol.Frame{Type: protocol.TypeWrite, Data: []byte("echo " + live2 + "\n")}); err != nil {
+		t.Fatal(err)
+	}
+	waitOutput(t, wc, acc, live2, 5*time.Second)
+	_ = ac.Send(protocol.Frame{Type: protocol.TypeDetach})
+	_ = ac.Close()
+	_ = wc.Send(protocol.Frame{Type: protocol.TypeDetach})
+	_ = wc.Close()
+
+	if err := client.CloseSession(ep, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := client.List(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range listed {
+		if s.ID == info.ID {
+			found = true
+			if s.State != string(session.StateClosed) {
+				t.Fatalf("want CLOSED, got %s", s.State)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("closed session not in list")
+	}
+
+	// Historical watch: ring then exit.
+	hc, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hc.Close()
+	if err := hc.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = hc.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeWatching {
+		t.Fatalf("got %s %s", f.Type, f.Error)
+	}
+	var hist []byte
+	sawExit := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = hc.SetDeadline(deadline)
+		f, err = hc.Recv()
+		if err != nil {
+			break
+		}
+		switch f.Type {
+		case protocol.TypeOutput:
+			hist = append(hist, f.Data...)
+		case protocol.TypeExit:
+			sawExit = true
+			goto done
+		case protocol.TypeDetached:
+			sawExit = true
+			goto done
+		}
+	}
+done:
+	if !bytes.Contains(hist, []byte(marker)) {
+		t.Fatalf("history missing marker: %q", hist)
+	}
+	if !sawExit {
+		t.Fatal("expected exit after closed watch history")
+	}
+}
+
+func TestCloseAlreadyClosedErrors(t *testing.T) {
+	ep, key, _ := startTestServer(t)
+	info, err := client.Create(ep, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.CloseSession(ep, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	err = client.CloseSession(ep, key, info.ID)
+	if err == nil || !strings.Contains(err.Error(), "already closed") {
+		t.Fatalf("got %v", err)
+	}
+}

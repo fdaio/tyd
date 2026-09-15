@@ -49,19 +49,22 @@ Session operations live under the `session` subcommand:
 
 ```bash
 id=$(./tyd session create)
-./tyd session list
-./tyd session attach "$id"     # interactive; Ctrl-\ to detach
-./tyd session attach "$id"     # reattach; shell still running
-./tyd session close "$id"
+./tyd session list                   # alive first, then CLOSED; older first within each group
+./tyd session attach "$id"           # interactive; Ctrl-\ to detach
+./tyd session watch "$id"            # read-only follow; Ctrl-C / Ctrl-\ exits watch
+./tyd session attach "$id"           # reattach; shell still running
+./tyd session close "$id"            # kill shell; session stays listed as CLOSED
+./tyd session watch "$id"            # dump history from ring, then end
 ```
 
-Detach keys:
+Detach / watch-exit keys:
 
 | Action | Effect |
 |--------|--------|
-| `Ctrl-\` | Detach; PTY/shell keep running |
+| `Ctrl-\` (attach) | Detach; PTY/shell keep running |
+| `Ctrl-C` / `Ctrl-\` (watch) | Stop watching; session unchanged |
 | Client crash / socket drop | Same: session stays |
-| `tyd session close <id>` | Kill session and shell |
+| `tyd session close <id>` | Kill shell; keep session as `CLOSED` until daemon restart |
 
 ## Connection topology
 
@@ -149,9 +152,10 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 | Command | Role |
 |---------|------|
 | `session create` | Create session; print `session_id` |
-| `session list` | List sessions |
-| `session attach <id>` | Attach interactive I/O |
-| `session close <id>` | Destroy session |
+| `session list` | List sessions (alive first, then closed; older first) |
+| `session attach <id>` | Attach interactive I/O (exclusive) |
+| `session watch <id>` | Read-only follow / history dump (`attach` cap) |
+| `session close <id>` | Close session (kept as `CLOSED` in list) |
 
 Old root forms (`tyd create`, `tyd list`, …) are rejected with a migration hint.
 

@@ -26,7 +26,8 @@ id=$(./tyd session create)
 ./tyd session list
 ./tyd status
 ./tyd session attach "$id"           # Ctrl-\ detaches; shell keeps running
-./tyd session close "$id"
+./tyd session watch "$id"            # read-only; Ctrl-C / Ctrl-\ stops watch
+./tyd session close "$id"            # marks CLOSED; kept in list until daemon restart
 ```
 
 TLS client (pin the server certificate):
@@ -41,7 +42,7 @@ TLS client (pin the server certificate):
 | Group | Commands |
 |-------|----------|
 | Root | `keygen`, `serve`, `status` |
-| `session` | `create`, `list`, `attach`, `close` |
+| `session` | `create`, `list`, `attach`, `watch`, `close` |
 
 ## Defaults
 
@@ -53,4 +54,4 @@ TLS client (pin the server certificate):
 | Trust file | `~/.tyd/trusted.json` |
 | Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
 
-`attach` ≠ `write`. A key granted only `attach` can watch output but cannot type.
+`attach` ≠ `write`. A key granted only `attach` can watch output (via `attach` or `watch`) but cannot type. `watch` is read-only and does not take the exclusive attach lock.
