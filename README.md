@@ -42,7 +42,7 @@ TLS (opt-in):
 
 ## Control Panel pairing
 
-Local CP for tests / self-host:
+Local CP for tests:
 
 ```bash
 go run ./cmd/controlpanel -listen 127.0.0.1:8080
@@ -52,7 +52,22 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd revoke peer-nick
 ```
 
-Default production platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data.
+### Docker Compose (production-oriented)
+
+Control Panel only (no TLS in the container — put Cloudflare or another edge in front):
+
+```bash
+# optional: public origin used in register URLs
+export TYD_CP_BASE_URL=https://app.getfda.dev
+docker compose up -d --build
+curl -s http://127.0.0.1:8080/healthz   # ok
+./tyd --platform http://127.0.0.1:8080 register   # or https://app.getfda.dev via Cloudflare
+```
+
+Files: `Dockerfile.controlpanel`, `docker-compose.yml`.  
+**In-memory only** — restarting the container drops registrations, invites, and peer pairs.
+
+Default client platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data.
 
 ## CLI layout
 

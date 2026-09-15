@@ -1,0 +1,25 @@
+# tyd Control Panel (pairing only). TLS is expected at the edge (e.g. Cloudflare).
+#
+# Local:
+#   docker compose up -d --build
+#   curl -s http://127.0.0.1:8080/healthz
+#   tyd --platform http://127.0.0.1:8080 register
+#
+# Production: set TYD_CP_BASE_URL to the public HTTPS origin clients use
+# (e.g. https://app.getfda.dev) so register responses return that URL.
+#
+# WARNING: pairing state is in-memory — container restart loses registrations,
+# invites, and peer pairs.
+
+services:
+  controlpanel:
+    build:
+      context: .
+      dockerfile: Dockerfile.controlpanel
+    image: tyd-controlpanel:local
+    ports:
+      - "${TYD_CP_PORT:-8080}:8080"
+    environment:
+      # Public origin for register URLs (Cloudflare / reverse proxy front door).
+      TYD_CP_BASE_URL: ${TYD_CP_BASE_URL:-https://app.getfda.dev}
+    restart: unless-stopped

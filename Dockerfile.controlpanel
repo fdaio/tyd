@@ -1,0 +1,16 @@
+# Control Panel only — pairing metadata HTTP API (no TTY / session data).
+# Restart drops in-memory registration, invites, and peer pairs.
+
+FROM golang:1.26-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /out/controlpanel ./cmd/controlpanel
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/controlpanel /controlpanel
+EXPOSE 8080
+USER nonroot:nonroot
+ENTRYPOINT ["/controlpanel"]
+CMD ["-listen", "0.0.0.0:8080"]
