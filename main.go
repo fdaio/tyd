@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"tyd/internal/alias"
 	"tyd/internal/auth"
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
@@ -48,6 +49,7 @@ type options struct {
 	trust      string
 	peers      string
 	recent     string
+	aliases    string
 	platform   string
 	approval   string
 	as         string
@@ -149,10 +151,23 @@ func platformFor(opts options) (string, error) {
 }
 
 func rememberPeerSession(opts options, peerID, sessionID string) {
-	if peerID == "" {
-		return
-	}
 	_ = recent.Remember(opts.recent, peerID, sessionID)
+}
+
+// resolveSessionRef maps alias → session id, or uses recent session when ref is empty.
+func resolveSessionRef(opts options, ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		ref = recent.SessionPlaceholder(opts.recent)
+		if ref == "" {
+			return "", fmt.Errorf("session id required (no recent session; pass <session_id|alias>)")
+		}
+	}
+	doc, err := alias.Load(opts.aliases)
+	if err != nil {
+		return "", err
+	}
+	return doc.Resolve(ref), nil
 }
 
 func run(opts options) error {
@@ -170,6 +185,8 @@ func run(opts options) error {
 		return runAccept(opts)
 	case "status":
 		return runStatus(opts)
+	case "alias":
+		return runAlias(opts)
 	case "session":
 		return runSession(opts)
 	case "create", "list", "attach", "close":
@@ -216,69 +233,79 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, "")
+		adoc, _ := alias.Load(opts.aliases)
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "SESSION\tPID\tSTATE\tSIZE\tCREATED")
+		fmt.Fprintln(tw, "SESSION\tALIAS\tPID\tSTATE\tSIZE\tCREATED")
 		for _, it := range items {
-			fmt.Fprintf(tw, "%s\t%d\t%s\t%dx%d\t%s\n", it.ID, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
+			an := ""
+			if adoc != nil {
+				an = adoc.NameFor(it.ID)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
 		}
 		return tw.Flush()
 	case "attach":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd session attach <session_id>")
+		sid, err := resolveSessionRef(opts, firstArg(args))
+		if err != nil {
+			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		rememberPeerSession(opts, peerID, args[0])
-		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", args[0])
-		return client.Attach(ep, key, args[0], os.Stdin, os.Stdout)
+		rememberPeerSession(opts, peerID, sid)
+		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", sid)
+		return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
 	case "watch":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd session watch <session_id>")
+		sid, err := resolveSessionRef(opts, firstArg(args))
+		if err != nil {
+			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		rememberPeerSession(opts, peerID, args[0])
-		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", args[0])
-		return client.Watch(ep, key, args[0], os.Stdout)
+		rememberPeerSession(opts, peerID, sid)
+		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", sid)
+		return client.Watch(ep, key, sid, os.Stdout)
 	case "close":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd session close <session_id>")
+		sid, err := resolveSessionRef(opts, firstArg(args))
+		if err != nil {
+			return fmt.Errorf("usage: tyd session close [session_id|alias]: %w", err)
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		rememberPeerSession(opts, peerID, args[0])
-		return client.CloseSession(ep, key, args[0])
+		rememberPeerSession(opts, peerID, sid)
+		return client.CloseSession(ep, key, sid)
 	case "approve":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd session approve <session_id>")
+		sid, err := resolveSessionRef(opts, firstArg(args))
+		if err != nil {
+			return fmt.Errorf("usage: tyd session approve [session_id|alias]: %w", err)
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
 		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
-		info, err := client.Approve(local, key, args[0])
+		info, err := client.Approve(local, key, sid)
 		if err != nil {
 			return err
 		}
 		fmt.Println(info.ID)
 		return nil
 	case "reject":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd session reject <session_id>")
+		sid, err := resolveSessionRef(opts, firstArg(args))
+		if err != nil {
+			return fmt.Errorf("usage: tyd session reject [session_id|alias]: %w", err)
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
 		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
-		return client.Reject(local, key, args[0])
+		return client.Reject(local, key, sid)
 	case "help", "-h", "--help":
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
@@ -287,7 +314,159 @@ func runSession(opts options) error {
 	}
 }
 
+func firstArg(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+	return args[0]
+}
+
+func runAlias(opts options) error {
+	doc, err := alias.Load(opts.aliases)
+	if err != nil {
+		return err
+	}
+	if len(opts.rest) == 0 || opts.rest[0] == "list" {
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ALIAS\tSESSION\tPEER")
+		for _, e := range doc.Aliases {
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Name, e.SessionID, e.PeerID)
+		}
+		return tw.Flush()
+	}
+	sub := opts.rest[0]
+	args := opts.rest[1:]
+	switch sub {
+	case "rm", "remove", "unset":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd alias rm <name>")
+		}
+		if err := doc.Remove(args[0]); err != nil {
+			return err
+		}
+		return alias.Save(opts.aliases, doc)
+	case "set":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: tyd alias set <session_id|alias> <name>")
+		}
+		sid, err := resolveSessionRef(opts, args[0])
+		if err != nil {
+			return err
+		}
+		peerID := ""
+		if rec, _ := recent.Load(opts.recent); rec != nil {
+			peerID = rec.PeerID
+		}
+		if err := doc.Set(args[1], sid, peerID); err != nil {
+			return err
+		}
+		if err := alias.Save(opts.aliases, doc); err != nil {
+			return err
+		}
+		fmt.Printf("%s -> %s\n", args[1], sid)
+		return nil
+	default:
+		// tyd alias <name>                 — alias the recent session
+		// tyd alias <session_id> <name>    — alias an explicit session
+		var sid, name string
+		switch len(opts.rest) {
+		case 1:
+			name = opts.rest[0]
+			var err error
+			sid, err = resolveSessionRef(opts, "")
+			if err != nil {
+				return fmt.Errorf("usage: tyd alias <name> (needs a recent session), or tyd alias <session_id> <name>")
+			}
+		case 2:
+			var err error
+			sid, err = resolveSessionRef(opts, opts.rest[0])
+			if err != nil {
+				return err
+			}
+			name = opts.rest[1]
+		default:
+			return fmt.Errorf("usage: tyd alias [<session_id>] <name> | tyd alias list | tyd alias rm <name>")
+		}
+		peerID := ""
+		if rec, _ := recent.Load(opts.recent); rec != nil {
+			peerID = rec.PeerID
+		}
+		if err := doc.Set(name, sid, peerID); err != nil {
+			return err
+		}
+		if err := alias.Save(opts.aliases, doc); err != nil {
+			return err
+		}
+		fmt.Printf("%s -> %s\n", name, sid)
+		return nil
+	}
+}
+
 func runStatus(opts options) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	platform, _ := platformFor(opts)
+	fmt.Println("Control Panel")
+	fmt.Printf("  platform:   %s\n", platform)
+	if doc.HasRegistration() {
+		reg := doc.Registration
+		url := reg.URL
+		if url == "" {
+			url = platform + "/" + reg.ID
+		}
+		fmt.Printf("  registered: %s\n", url)
+		fmt.Printf("  id:         %s\n", reg.ID)
+		fmt.Printf("  approval:   %s\n", reg.ApprovalMode)
+		epAddr, epFP, epErr := cpclient.New(platform).GetEndpoint(reg.ID)
+		if epErr != nil {
+			fmt.Printf("  endpoint:   (none / expired)\n")
+		} else {
+			fmt.Printf("  endpoint:   %s  fp=%s\n", epAddr, shortFP(epFP))
+		}
+	} else {
+		fmt.Println("  registered: (no)")
+	}
+	fmt.Println()
+	fmt.Println("Peers")
+	if len(doc.Peers) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tNICK\tDIRECTION\tPAIRED")
+		for _, p := range doc.Peers {
+			nick := p.Nickname
+			if nick == "" {
+				nick = "-"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.ID, nick, p.Direction, p.PairedAt.Format(time.RFC3339))
+		}
+		_ = tw.Flush()
+	}
+	if rec, _ := recent.Load(opts.recent); rec != nil && (rec.PeerID != "" || rec.SessionID != "") {
+		fmt.Println()
+		fmt.Println("Recent")
+		if rec.PeerID != "" {
+			fmt.Printf("  peer:    %s\n", rec.PeerID)
+		}
+		if rec.SessionID != "" {
+			fmt.Printf("  session: %s\n", rec.SessionID)
+		}
+	}
+	if adoc, _ := alias.Load(opts.aliases); adoc != nil && len(adoc.Aliases) > 0 {
+		fmt.Println()
+		fmt.Println("Session aliases")
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(tw, "ALIAS\tSESSION\tPEER")
+		for _, e := range adoc.Aliases {
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Name, e.SessionID, e.PeerID)
+		}
+		_ = tw.Flush()
+	}
+
+	fmt.Println()
+	fmt.Println("Connections")
 	key, err := loadIdentity(opts.identity)
 	if err != nil {
 		return err
@@ -298,7 +477,12 @@ func runStatus(opts options) error {
 	}
 	items, err := client.Status(ep, key)
 	if err != nil {
-		return err
+		fmt.Printf("  (daemon unreachable: %v)\n", err)
+		return nil
+	}
+	if len(items) == 0 {
+		fmt.Println("  (none)")
+		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tTRANSPORT\tREMOTE\tTLS\tSTATE\tPRINCIPAL\tSESSION\tSINCE")
@@ -307,6 +491,13 @@ func runStatus(opts options) error {
 			it.ID, it.Transport, it.RemoteAddr, it.TLS, it.State, it.Principal, it.SessionID, it.EstablishedAt)
 	}
 	return tw.Flush()
+}
+
+func shortFP(fp string) string {
+	if len(fp) > 16 {
+		return fp[:16]
+	}
+	return fp
 }
 
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
@@ -656,6 +847,7 @@ func parseArgs(args []string) (options, error) {
 		trust:      paths.DefaultTrust(),
 		peers:      paths.DefaultPeers(),
 		recent:     paths.DefaultRecent(),
+		aliases:    paths.DefaultAliases(),
 		platform:   paths.DefaultPlatform(),
 		approval:   controlpanel.DefaultApproval,
 		cert:       paths.DefaultServerCert(),
@@ -740,6 +932,22 @@ func parseArgs(args []string) (options, error) {
 			opts.peers = args[i]
 		case strings.HasPrefix(a, "--peers="):
 			opts.peers = strings.TrimPrefix(a, "--peers=")
+		case a == "--aliases":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.aliases = args[i]
+		case strings.HasPrefix(a, "--aliases="):
+			opts.aliases = strings.TrimPrefix(a, "--aliases=")
+		case a == "--recent":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.recent = args[i]
+		case strings.HasPrefix(a, "--recent="):
+			opts.recent = strings.TrimPrefix(a, "--recent=")
 		case a == "--platform":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a URL", a)
@@ -824,11 +1032,12 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"session create", "Create a persistent PTY session"},
 		{"session list", "List sessions (alive first)"},
-		{"session attach", "Attach to a running session"},
+		{"session attach", "Attach to a session (id, alias, or recent)"},
 		{"session watch", "Follow session output (read-only)"},
 		{"session approve", "Approve a PENDING remote session (local unix)"},
 		{"session reject", "Reject a PENDING remote session (local unix)"},
 		{"session close", "Close a session (kept as history)"},
+		{"alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Identity / pairing:")
@@ -842,7 +1051,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
 		{"serve", "Alias for up (deprecated)"},
-		{"status", "Show daemon / connection status"},
+		{"status", "Show CP registration, peers, and connections"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
@@ -856,6 +1065,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},
 		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
 		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
+		{"--aliases PATH", fmt.Sprintf("Session aliases file (default %s)", paths.DefaultAliases())},
 		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
@@ -867,10 +1077,16 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> to create/list sessions on a paired peer.")
+	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
 func writeSessionHelp(w io.Writer, color bool) {
+	ph := recent.SessionPlaceholder(paths.DefaultRecent())
+	attachEx := "attach [session_id|alias]"
+	if ph != "" {
+		attachEx = "attach [" + ph + "]"
+	}
 	fmt.Fprintln(w, "Manage persistent PTY sessions.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
@@ -880,20 +1096,22 @@ func writeSessionHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"create", "Create a persistent PTY session"},
 		{"list", "List sessions (alive first; PENDING counts as alive)"},
-		{"attach", "Attach to a running session"},
-		{"watch", "Follow session output (read-only)"},
+		{"attach", "Attach (id, alias, or omit for recent)"},
+		{"watch", "Follow output (id, alias, or omit for recent)"},
 		{"approve", "Approve PENDING session (local unix only)"},
 		{"reject", "Reject PENDING session (local unix only)"},
 		{"close", "Close a session (kept as history)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
-	fmt.Fprintln(w, "  attach <session_id>   Interactive; Ctrl-\\ detaches.")
-	fmt.Fprintln(w, "  watch <session_id>    Read-only; Ctrl-C / Ctrl-\\ stops.")
-	fmt.Fprintln(w, "  approve <session_id>  Start PTY for a PENDING remote create.")
-	fmt.Fprintln(w, "  reject <session_id>   Remove a PENDING session.")
-	fmt.Fprintln(w, "  close <session_id>    Marks CLOSED; kept until daemon restart.")
-	fmt.Fprintln(w, "  --peer <id|nick>      Target a paired peer (CP signaling + direct TLS).")
+	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
+	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only; Ctrl-C / Ctrl-\\ stops.")
+	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
+	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
+	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
+	fmt.Fprintln(w, "  Omit the id to reuse the most recent session (recent.json).")
+	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer (CP signaling + direct TLS).")
+	fmt.Fprintln(w, "  tyd alias <name>          Name the recent session for later use.")
 }
 
 func sessionUsage() string {

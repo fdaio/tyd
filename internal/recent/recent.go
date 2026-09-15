@@ -44,12 +44,26 @@ func Save(path string, f *File) error {
 }
 
 func Remember(path, peerID, sessionID string) error {
-	if peerID == "" {
+	if peerID == "" && sessionID == "" {
 		return nil
+	}
+	cur, _ := Load(path)
+	// list against a peer often passes empty session id — keep last session for placeholder.
+	if sessionID == "" && cur != nil && peerID != "" && peerID == cur.PeerID {
+		sessionID = cur.SessionID
 	}
 	return Save(path, &File{
 		PeerID:    peerID,
 		SessionID: sessionID,
 		At:        time.Now().UTC(),
 	})
+}
+
+// SessionPlaceholder returns the most recent session id, or empty.
+func SessionPlaceholder(path string) string {
+	f, err := Load(path)
+	if err != nil || f == nil {
+		return ""
+	}
+	return f.SessionID
 }

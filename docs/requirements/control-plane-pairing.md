@@ -68,14 +68,15 @@ Enforcement is Step 3 (declared at register; applied by the daemon from `peers.j
   registered as `app.getfda.dev/<id>` (full CP heartbeat is later; Step 1 is
   register / accept / local peer persistence).
 
-## Client UX (later steps; recorded here)
+## Client UX
 
-- `tyd alias` is for **sessions** (not peers).
+- `tyd alias` is for **sessions** (not peers). Stored client-side in `~/.tyd/aliases.json`.
 - Peer targeting for `session create` etc.:
   - `--peer <cp-id>` or peer nickname set at accept (`--as`)
-  - If omitted: 0 peers → error; 1 peer → use it; many → use peer of
-    **most recent session** as default (no interactive prompt).
-- `status` should reflect CP connection + peers (OK to evolve).
+  - If omitted: recent peer from `recent.json` if still known; else 1 outbound → use it;
+    0 outbound → local unix; many outbound → error (no interactive prompt).
+- Session id targeting: pass id, pass alias, or omit → most recent session id.
+- `status` shows CP registration + peers + recent + aliases + live connections.
 
 ## Privacy boundary (hard)
 
@@ -125,10 +126,9 @@ These guide Step 2+; not implemented in Step 1.
 - `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
 - Integration test: CP + pair + publish + remote session create/list over TLS
 
-## Explicitly out of Step 1–3 (later steps)
+## Explicitly out of Step 1–4 (later steps)
 
 - Remote mesh beyond loopback advertise / data-listen
-- Session alias command
 - Peer revoke
 - Production deployment of `app.getfda.dev` (local CP is enough for tests)
 - NAT traversal / STUN
@@ -143,3 +143,12 @@ These guide Step 2+; not implemented in Step 1.
 - Protocol: `approve` / `reject` (unix only); CLI `tyd session approve|reject`
 - List shows `PENDING`; alive-first sort treats PENDING as alive
 - Tests for pre/post/full and unix bypass under pre
+
+## Step 4 deliverables
+
+- `tyd alias [<session_id>] <name>` / `tyd alias list` / `tyd alias rm <name>` → `~/.tyd/aliases.json`
+- Session commands resolve alias names; omitting id uses `recent.json` session placeholder
+- `session list` shows an ALIAS column
+- `tyd status` prints Control Panel / Peers / Recent / Session aliases / Connections
+- Help tips show recent session as placeholder when available
+- Docs (roadmap, guide, README) updated

@@ -88,13 +88,27 @@ Session operations live under the `session` subcommand (`tyd session help` lists
 
 ```bash
 id=$(./tyd session create)
-./tyd session list                   # alive first (incl. PENDING), then CLOSED
-./tyd session attach "$id"           # interactive; Ctrl-\ to detach
-./tyd session watch "$id"            # read-only follow; Ctrl-C / Ctrl-\ exits watch
+./tyd session list                   # alive first (incl. PENDING), then CLOSED; ALIAS column
+./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
+./tyd session attach jammy           # id, alias, or omit id to reuse recent
+./tyd session watch                  # omit → recent session
 ./tyd session attach "$id"           # reattach; shell still running
-./tyd session close "$id"            # kill shell; session stays listed as CLOSED
-./tyd session watch "$id"            # dump history from ring, then end
+./tyd session close jammy            # kill shell; session stays listed as CLOSED
+./tyd session watch jammy            # dump history from ring, then end
 ```
+
+### Session aliases
+
+Aliases are **client-local** (not peers, not stored on the daemon):
+
+```bash
+./tyd alias <session_id> <name>
+./tyd alias <name>              # names the most recent session
+./tyd alias list
+./tyd alias rm <name>
+```
+
+Stored in `~/.tyd/aliases.json`.
 
 ### Approval modes
 
@@ -126,24 +140,21 @@ Detach / watch-exit keys:
 | Client crash / socket drop | Same: session stays |
 | `tyd session close <id>` | Kill shell; keep session as `CLOSED` until daemon restart |
 
-## Connection topology
+## Status
 
 ```bash
 ./tyd status
 ```
 
-Shows current control connections known to the daemon, including:
+Prints:
 
-- transport (`unix` / `tls`)
-- remote address
-- whether TLS is on
-- short cert fingerprint (TLS)
-- state (`handshaking` / `authenticated` / `attached`)
-- principal name
-- attached `session_id` (if any)
-- established time
+1. **Control Panel** — platform URL, registration id/url, approval mode, published data-plane endpoint (if any)
+2. **Peers** — paired peer ids, nicknames, direction
+3. **Recent** — last peer / session used by this client (`~/.tyd/recent.json`)
+4. **Session aliases** — local names from `~/.tyd/aliases.json`
+5. **Connections** — live daemon connections (transport, remote, TLS, principal, attached session)
 
-Requires the `list` capability.
+Connections require a reachable daemon and the `list` capability. CP/peers sections come from local files (+ optional CP endpoint lookup) even if the daemon is down.
 
 ## TLS client
 

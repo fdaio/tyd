@@ -33,6 +33,10 @@ func DefaultRecent() string {
 	return filepath.Join(DefaultDir(), "recent.json")
 }
 
+func DefaultAliases() string {
+	return filepath.Join(DefaultDir(), "aliases.json")
+}
+
 // DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
 	return "off"
