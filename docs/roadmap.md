@@ -55,11 +55,12 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - **full** (default): unchanged create; no per-session review
 - `approve` / `reject` protocol + CLI (unix transport only)
 
-### Step 4 — Session alias + defaults + status UX
+### Step 4 — Session alias + defaults + status UX (done)
 
-- Session alias (`tyd alias` for sessions, not peers)
-- Recent-session peer placeholder defaults (0/1/many peer rules) — partial in Step 2 via `--peer` / recent.json
-- Status shows CP connection + peers
+- Session alias (`tyd alias` for sessions, not peers); stored in `~/.tyd/aliases.json`
+- `attach` / `watch` / `close` / `approve` / `reject` accept alias or omit id → recent session
+- Recent-session peer placeholder defaults (Step 2 `--peer` / `recent.json`) + help placeholder
+- `status` shows CP registration, peers, recent, session aliases, and daemon connections
 
 ### Step 5 — Revoke + hardening
 

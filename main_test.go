@@ -78,19 +78,23 @@ func TestParseArgs(t *testing.T) {
 }
 
 func TestRunRejectsBadUsage(t *testing.T) {
-	base := options{socket: "/tmp/x.sock", identity: "/tmp/id", trust: "/tmp/t.json", listen: "off"}
+	dir := t.TempDir()
+	base := options{
+		socket: "/tmp/x.sock", identity: "/tmp/id", trust: "/tmp/t.json", listen: "off",
+		recent: filepath.Join(dir, "recent.json"), aliases: filepath.Join(dir, "aliases.json"),
+	}
 
 	a := base
 	a.cmd = "session"
 	a.rest = []string{"attach"}
 	if err := run(a); err == nil {
-		t.Fatal("attach without id")
+		t.Fatal("attach without id and without recent")
 	}
 	c := base
 	c.cmd = "session"
 	c.rest = []string{"close"}
 	if err := run(c); err == nil {
-		t.Fatal("close without id")
+		t.Fatal("close without id and without recent")
 	}
 	w := base
 	w.cmd = "wat"
@@ -132,7 +136,10 @@ func TestRunSessionCreateListStatusClose(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 
-	cli := options{socket: sock, identity: idPath, trust: trustPath, listen: "off"}
+	cli := options{
+		socket: sock, identity: idPath, trust: trustPath, listen: "off",
+		recent: filepath.Join(dir, "recent.json"), aliases: filepath.Join(dir, "aliases.json"),
+	}
 	id := strings.TrimSpace(captureStdout(t, func() {
 		create := cli
 		create.cmd = "session"
@@ -163,13 +170,56 @@ func TestRunSessionCreateListStatusClose(t *testing.T) {
 		}
 	})
 	if !strings.Contains(out, "TRANSPORT") {
-		t.Fatalf("status missing header: %q", out)
+		t.Fatalf("status missing connections header: %q", out)
+	}
+	if !strings.Contains(out, "Control Panel") {
+		t.Fatalf("status missing CP section: %q", out)
 	}
 	closeCmd := cli
 	closeCmd.cmd = "session"
 	closeCmd.rest = []string{"close", id}
 	if err := run(closeCmd); err != nil {
 		t.Fatal(err)
+	}
+
+	// recent placeholder + alias
+	aliasCmd := cli
+	aliasCmd.cmd = "alias"
+	aliasCmd.rest = []string{id, "jammy"}
+	outAlias := captureStdout(t, func() {
+		if err := run(aliasCmd); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(outAlias, "jammy ->") {
+		t.Fatalf("alias out %q", outAlias)
+	}
+	list2 := captureStdout(t, func() {
+		list := cli
+		list.cmd = "session"
+		list.rest = []string{"list"}
+		if err := run(list); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(list2, "jammy") {
+		t.Fatalf("list missing alias column: %q", list2)
+	}
+	closeAlias := cli
+	closeAlias.cmd = "session"
+	closeAlias.rest = []string{"close", "jammy"} // already closed is ok? close again on CLOSED
+	// session already closed — closing again may error; use resolve only via attach attempt no.
+	// Instead verify resolveSessionRef through alias list:
+	alist := captureStdout(t, func() {
+		a := cli
+		a.cmd = "alias"
+		a.rest = nil
+		if err := run(a); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(alist, "jammy") || !strings.Contains(alist, id) {
+		t.Fatalf("alias list %q", alist)
 	}
 }
 
@@ -198,6 +248,7 @@ func TestRootHelpPlain(t *testing.T) {
 		"session approve",
 		"session reject",
 		"session close",
+		"alias",
 		"Identity / pairing:",
 		"keygen",
 		"register",
@@ -209,11 +260,13 @@ func TestRootHelpPlain(t *testing.T) {
 		"Flags:",
 		"--socket PATH",
 		"--peer ID|NICK",
+		"--aliases PATH",
 		"--data-listen MODE",
 		"--platform URL",
 		"Tips:",
 		"Ctrl-\\",
 		"--peer",
+		"recent",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

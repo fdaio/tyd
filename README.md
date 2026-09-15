@@ -4,7 +4,7 @@
 
 It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing (Steps 1–2), and approval modes (Step 3: `full` / `pre` / `post`).
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing (Steps 1–2), approval modes (Step 3), and session alias / status UX (Step 4).
 
 ## Documentation
 
@@ -23,11 +23,12 @@ make build
 ./tyd up                             # unix socket; TLS listen off by default
 
 id=$(./tyd session create)
+./tyd alias work                     # name the recent session
 ./tyd session list
 ./tyd status
-./tyd session attach "$id"           # Ctrl-\ detaches; shell keeps running
-./tyd session watch "$id"            # read-only; Ctrl-C / Ctrl-\ stops watch
-./tyd session close "$id"            # marks CLOSED; kept in list until daemon restart
+./tyd session attach work            # or omit id to reuse recent; Ctrl-\ detaches
+./tyd session watch                  # recent session; Ctrl-C / Ctrl-\ stops
+./tyd session close work             # marks CLOSED; kept in list until daemon restart
 ```
 
 Identity is created automatically on first `up` / `register` / `accept` (optional `tyd keygen`).
@@ -39,7 +40,7 @@ TLS (opt-in):
 ./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt session create
 ```
 
-## Control Panel pairing (Step 1)
+## Control Panel pairing
 
 Local CP for tests / self-host:
 
@@ -47,15 +48,16 @@ Local CP for tests / self-host:
 go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 register   # prints invite token
 ./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
+./tyd --peer peer-nick session create
 ```
 
-Default production platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data. See the requirements doc and roadmap Steps 4–5 for session alias and revoke.
+Default production platform URL: `https://app.getfda.dev`. CP stores pairing metadata (ids + public keys) only — never session/TTY data. See the requirements doc and roadmap (Step 5: revoke).
 
 ## CLI layout
 
 | Group | Commands |
 |-------|----------|
-| Root | `up`, `serve` (alias), `status`, `keygen`, `register`, `accept` |
+| Root | `up`, `serve` (alias), `status`, `keygen`, `register`, `accept`, `alias` |
 | `session` | `create`, `list`, `attach`, `watch`, `approve`, `reject`, `close` |
 
 ## Defaults
@@ -67,6 +69,8 @@ Default production platform URL: `https://app.getfda.dev`. CP stores pairing met
 | Identity | `~/.tyd/id_ed25519` |
 | Trust file | `~/.tyd/trusted.json` |
 | Peers file | `~/.tyd/peers.json` |
+| Recent | `~/.tyd/recent.json` |
+| Session aliases | `~/.tyd/aliases.json` |
 | Platform | `https://app.getfda.dev` |
 | Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
 
