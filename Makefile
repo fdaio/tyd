@@ -1,7 +1,10 @@
-.PHONY: build test fmt clean dist
+.PHONY: build test fmt clean dist controlpanel
 
 build:
 	go build -o tyd .
+
+controlpanel:
+	go build -o controlpanel ./cmd/controlpanel
 
 test:
 	go test ./...
@@ -10,7 +13,7 @@ fmt:
 	go fmt ./...
 
 clean:
-	rm -rf tyd dist
+	rm -rf tyd controlpanel dist
 
 # Three TTY-platform releases (linux, darwin, freebsd), each with amd64 and arm64.
 GOOS_LIST := linux darwin freebsd

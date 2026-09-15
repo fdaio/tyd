@@ -1,0 +1,12 @@
+# Docker ignore for Control Panel image builds
+.wf/
+.git/
+.github/
+dist/
+tyd
+**/*_test.go
+docs/
+*.md
+.dockerignore
+Dockerfile*
+docker-compose*.yml
