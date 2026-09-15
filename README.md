@@ -1,32 +1,49 @@
 # tyd
 
-tyd maintains persistent, remotely attachable terminal sessions on a machine.
+**tyd maintains persistent, remotely attachable terminal sessions on a machine.**
 
-Step 3 adds a Transport layer: local Unix socket and TLS TCP (default `127.0.0.1:61211`), plus connection topology via `tyd status`.
+It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-## Build
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, and a Transport layer (`unix` + TLS) with connection topology.
+
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [docs/overview.md](docs/overview.md) | Positioning, architecture, boundaries |
+| [docs/guide.md](docs/guide.md) | Install, keygen, serve, attach, TLS, status |
+| [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
+| [docs/roadmap.md](docs/roadmap.md) | Done (steps 1–3) and not done |
+
+## Quick start
 
 ```bash
 make build
-```
-
-## Use
-
-```bash
 ./tyd keygen
-./tyd serve                 # unix + TLS on 127.0.0.1:61211
-# ./tyd serve --listen off  # unix only
+./tyd serve                 # unix socket + TLS on 127.0.0.1:61211
 
 id=$(./tyd create)
+./tyd list
 ./tyd status
-./tyd attach "$id"
+./tyd attach "$id"          # Ctrl-\ detaches; shell keeps running
 ./tyd close "$id"
+```
 
-# TLS client (pin server cert)
+TLS client (pin the server certificate):
+
+```bash
 ./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt create
 ./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt status
 ```
 
-`attach` is not `write`. Topology shows transport, addresses, TLS fingerprint, principal, and session.
+## Defaults
 
-This step does not include Tailcat/NetBird, SSH, or switching Unix users.
+| Item | Path / value |
+|------|----------------|
+| Unix socket | `~/.tyd/tyd.sock` |
+| TLS listen | `127.0.0.1:61211` |
+| Identity | `~/.tyd/id_ed25519` |
+| Trust file | `~/.tyd/trusted.json` |
+| Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
+
+`attach` ≠ `write`. A key granted only `attach` can watch output but cannot type.

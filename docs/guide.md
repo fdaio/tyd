@@ -1,0 +1,159 @@
+# User guide
+
+## Build
+
+```bash
+git clone git@github.com:fdaio/tyd.git
+cd tyd
+make build    # produces ./tyd
+make test
+```
+
+## First-time setup
+
+```bash
+./tyd keygen
+```
+
+Writes:
+
+- `~/.tyd/id_ed25519` — private identity (mode 0600)
+- `~/.tyd/id_ed25519.pub` — public key
+- `~/.tyd/trusted.json` — bootstrap trust (this key gets `list` + `create`) if the file did not exist
+
+Prints the public key (base64) on stdout.
+
+## Start the daemon
+
+```bash
+./tyd serve
+```
+
+By default listens on:
+
+- Unix: `~/.tyd/tyd.sock`
+- TLS: `127.0.0.1:61211` (creates `~/.tyd/server.crt` / `server.key` on first start)
+
+Useful flags:
+
+```bash
+./tyd serve --listen off                          # unix only
+./tyd serve --listen 127.0.0.1:61211              # explicit TLS (default)
+./tyd serve --socket /tmp/tyd.sock --trust /path/trusted.json
+./tyd serve --tls-cert /path/server.crt --tls-key /path/server.key
+```
+
+## Session lifecycle
+
+```bash
+id=$(./tyd create)
+./tyd list
+./tyd attach "$id"     # interactive; Ctrl-\ to detach
+./tyd attach "$id"     # reattach; shell still running
+./tyd close "$id"
+```
+
+Detach keys:
+
+| Action | Effect |
+|--------|--------|
+| `Ctrl-\` | Detach; PTY/shell keep running |
+| Client crash / socket drop | Same: session stays |
+| `tyd close <id>` | Kill session and shell |
+
+## Connection topology
+
+```bash
+./tyd status
+```
+
+Shows current control connections known to the daemon, including:
+
+- transport (`unix` / `tls`)
+- remote address
+- whether TLS is on
+- short cert fingerprint (TLS)
+- state (`handshaking` / `authenticated` / `attached`)
+- principal name
+- attached `session_id` (if any)
+- established time
+
+Requires the `list` capability.
+
+## TLS client
+
+Copy (or share) the server’s `server.crt` to the client machine, then:
+
+```bash
+./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt create
+./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt status
+./tyd --addr 127.0.0.1:61211 --tls-cert /path/to/server.crt attach "$id"
+```
+
+If `--addr` is set, the client uses TLS and ignores `--socket` for that command. The client **pins** the certificate fingerprint; a different cert is rejected (`untrusted server certificate`).
+
+## Trust and permissions
+
+### `trusted.json` shape
+
+```json
+{
+  "principals": [
+    {
+      "name": "local",
+      "public_key": "<base64 ed25519 public key>",
+      "allow": ["list", "create"],
+      "sessions": {
+        "optional-session-id": ["attach"]
+      }
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `allow` | Global: only `list`, `create` |
+| `sessions` | Optional map of `session_id` → caps |
+
+Session caps: `attach`, `write`, `resize`, `signal`, `close`.
+
+**`attach` does not imply `write`.**
+
+When an identity with `create` creates a session, tyd grants that identity owner caps (`attach`, `write`, `resize`, `signal`, `close`) **in the running daemon’s memory**. Those grants are not written back to `trusted.json` and disappear if the daemon restarts.
+
+### Untrusted key
+
+A key not listed in `trusted.json` fails the handshake with `untrusted public key`.
+
+## CLI reference
+
+```text
+tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
+    [--identity PATH] [--trust PATH] [--tls-cert PATH] [--tls-key PATH]
+    <command>
+```
+
+| Command | Role |
+|---------|------|
+| `keygen` | Create identity (+ bootstrap trust if missing) |
+| `serve` | Daemon |
+| `create` | Create session; print `session_id` |
+| `list` | List sessions |
+| `status` | List connection topology |
+| `attach <id>` | Attach interactive I/O |
+| `close <id>` | Destroy session |
+
+## Testing trust / TLS locally
+
+Untrusted identity:
+
+```bash
+./tyd --identity /tmp/tyd-a --trust /tmp/trust-a.json keygen
+./tyd --socket /tmp/tyd.sock --trust /tmp/trust-a.json --listen off serve
+# other terminal:
+./tyd --identity /tmp/tyd-b --trust /tmp/trust-b.json keygen
+./tyd --socket /tmp/tyd.sock --identity /tmp/tyd-b create   # expect untrusted
+```
+
+Automated coverage: `go test ./internal/auth ./internal/server ./internal/transport`.
