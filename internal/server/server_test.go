@@ -65,6 +65,28 @@ func waitOutput(t *testing.T, c *client.Conn, acc []byte, sub string, timeout ti
 	return acc
 }
 
+func waitDetached(t *testing.T, c *client.Conn, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		_ = c.SetDeadline(deadline)
+		f, err := c.Recv()
+		if err != nil {
+			t.Fatalf("waiting for detached: %v", err)
+		}
+		switch f.Type {
+		case protocol.TypeDetached:
+			_ = c.SetDeadline(time.Time{})
+			return
+		case protocol.TypeOutput:
+			continue // drain trailing PTY output
+		case protocol.TypeError:
+			t.Fatalf("waiting for detached: %s", f.Error)
+		}
+	}
+	t.Fatal("timeout waiting for detached")
+}
+
 func TestServerCreateDetachDropReattach(t *testing.T) {
 	ep, key, _ := startTestServer(t)
 	dir := t.TempDir()
@@ -429,7 +451,7 @@ func TestWatchLiveAndClosed(t *testing.T) {
 	if err := c.Send(protocol.Frame{Type: protocol.TypeDetach}); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = c.Recv()
+	waitDetached(t, c, 5*time.Second)
 	_ = c.Close()
 
 	// Live watch should see ring + new output.
