@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -17,14 +18,14 @@ import (
 )
 
 const (
-	InviteTTL         = 10 * time.Minute
+	InviteTTL          = 10 * time.Minute
 	DefaultEndpointTTL = 90 * time.Second
-	ApprovalFull      = "full"
-	ApprovalPre       = "pre"
-	ApprovalPost      = "post"
-	DefaultApproval   = ApprovalFull
-	idBytes           = 8
-	inviteTokenBytes  = 16
+	ApprovalFull       = "full"
+	ApprovalPre        = "pre"
+	ApprovalPost       = "post"
+	DefaultApproval    = ApprovalFull
+	idBytes            = 8
+	inviteTokenBytes   = 16
 )
 
 var (
@@ -35,6 +36,8 @@ var (
 	ErrInvalidPublicKey = errors.New("invalid public key")
 	ErrUnauthorized     = errors.New("unauthorized")
 	ErrAlreadyPaired    = errors.New("already paired")
+	ErrNotPaired        = errors.New("not paired")
+	maxJSONBody         = int64(1 << 20)
 )
 
 // Service is an in-memory CP suitable for local runs and tests.
@@ -131,6 +134,12 @@ type AcceptResponse struct {
 	PeerNickname  string `json:"peer_nickname,omitempty"`
 }
 
+type RevokeInviteRequest struct {
+	Token     string `json:"token"`
+	DaemonID  string `json:"daemon_id"`
+	PublicKey string `json:"public_key"`
+}
+
 func New() *Service {
 	return &Service{
 		daemons:   make(map[string]*Daemon),
@@ -217,6 +226,7 @@ func (s *Service) registerRespLocked(d *Daemon) *RegisterResponse {
 func (s *Service) CreateInvite(req CreateInviteRequest) (*CreateInviteResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.pruneInvitesLocked()
 
 	d, ok := s.daemons[req.DaemonID]
 	if !ok {
@@ -252,7 +262,8 @@ func (s *Service) Accept(req AcceptRequest) (*AcceptResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	inv, ok := s.invites[strings.TrimSpace(req.Token)]
+	tok := strings.TrimSpace(req.Token)
+	inv, ok := s.invites[tok]
 	if !ok {
 		return nil, ErrNotFound
 	}
@@ -260,8 +271,10 @@ func (s *Service) Accept(req AcceptRequest) (*AcceptResponse, error) {
 		return nil, ErrInviteUsed
 	}
 	if !s.now().Before(inv.ExpiresAt) {
+		delete(s.invites, tok)
 		return nil, ErrInviteExpired
 	}
+	s.pruneInvitesLocked()
 	server, ok := s.daemons[inv.DaemonID]
 	if !ok {
 		return nil, ErrNotFound
@@ -349,6 +362,76 @@ func (s *Service) ListPeers(daemonID, publicKey string) ([]Peer, error) {
 	return append([]Peer(nil), d.Peers...), nil
 }
 
+func (s *Service) pruneInvitesLocked() {
+	now := s.now()
+	for tok, inv := range s.invites {
+		if inv.Used || !now.Before(inv.ExpiresAt) {
+			delete(s.invites, tok)
+		}
+	}
+}
+
+func (s *Service) RevokeInvite(req RevokeInviteRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneInvitesLocked()
+
+	tok := strings.TrimSpace(req.Token)
+	inv, ok := s.invites[tok]
+	if !ok {
+		return ErrNotFound
+	}
+	d, ok := s.daemons[inv.DaemonID]
+	if !ok {
+		delete(s.invites, tok)
+		return ErrNotFound
+	}
+	if d.ID != strings.TrimSpace(req.DaemonID) || d.PublicKey != strings.TrimSpace(req.PublicKey) {
+		return ErrUnauthorized
+	}
+	if inv.Used {
+		return ErrInviteUsed
+	}
+	delete(s.invites, tok)
+	return nil
+}
+
+func (s *Service) RevokePeer(daemonID, publicKey, peerID string) error {
+	daemonID = strings.TrimSpace(daemonID)
+	peerID = strings.TrimSpace(peerID)
+	publicKey = strings.TrimSpace(publicKey)
+	if daemonID == "" || peerID == "" {
+		return ErrNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	self, ok := s.daemons[daemonID]
+	if !ok {
+		return ErrNotFound
+	}
+	if self.PublicKey != publicKey {
+		return ErrUnauthorized
+	}
+	other, ok := s.daemons[peerID]
+	if !ok {
+		return ErrNotFound
+	}
+	si := peerIndex(self.Peers, peerID)
+	oi := peerIndex(other.Peers, daemonID)
+	if si < 0 && oi < 0 {
+		return ErrNotPaired
+	}
+	if si >= 0 {
+		self.Peers = append(self.Peers[:si], self.Peers[si+1:]...)
+	}
+	if oi >= 0 {
+		other.Peers = append(other.Peers[:oi], other.Peers[oi+1:]...)
+	}
+	return nil
+}
+
 func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (*EndpointResponse, error) {
 	pub := strings.TrimSpace(req.PublicKey)
 	addr := strings.TrimSpace(req.Addr)
@@ -423,6 +506,7 @@ func (s *Service) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/v1/register", s.handleRegister)
+	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)
 	mux.HandleFunc("/v1/invites", s.handleCreateInvite)
 	mux.HandleFunc("/v1/accept", s.handleAccept)
 	mux.HandleFunc("/v1/daemons/", s.handleDaemon)
@@ -435,7 +519,7 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -453,7 +537,7 @@ func (s *Service) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req CreateInviteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -465,13 +549,30 @@ func (s *Service) handleCreateInvite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func (s *Service) handleRevokeInvite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req RevokeInviteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.RevokeInvite(req); err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
 func (s *Service) handleAccept(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var req AcceptRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(r, &req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -524,11 +625,24 @@ func (s *Service) handleDaemon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
 		return
 	}
+	if len(parts) == 3 && parts[1] == "peers" {
+		if r.Method != http.MethodDelete {
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		pub := r.URL.Query().Get("public_key")
+		if err := s.RevokePeer(id, pub, parts[2]); err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "endpoint" {
 		switch r.Method {
 		case http.MethodPut, http.MethodPost:
 			var req PublishEndpointRequest
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if err := decodeJSON(r, &req); err != nil {
 				writeErr(w, http.StatusBadRequest, "invalid json")
 				return
 			}
@@ -559,7 +673,7 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrInviteExpired):
 		writeErr(w, http.StatusGone, err.Error())
-	case errors.Is(err, ErrInviteUsed), errors.Is(err, ErrAlreadyPaired):
+	case errors.Is(err, ErrInviteUsed), errors.Is(err, ErrAlreadyPaired), errors.Is(err, ErrNotPaired):
 		writeErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrUnauthorized):
 		writeErr(w, http.StatusUnauthorized, err.Error())
@@ -568,6 +682,11 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 	default:
 		writeErr(w, http.StatusBadRequest, err.Error())
 	}
+}
+
+func decodeJSON(r *http.Request, v any) error {
+	defer r.Body.Close()
+	return json.NewDecoder(io.LimitReader(r.Body, maxJSONBody)).Decode(v)
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {

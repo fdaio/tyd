@@ -37,7 +37,7 @@ Self-hosted CP is supported via `--platform`. A registered daemon is addressed a
 |------|--------|
 | Invite TTL | **10 minutes** |
 | Unused invite after TTL | Expired (treat as invite revoke for unused invites) |
-| After successful accept | Pairing is **permanent** until an explicit peer/pairing revoke (later step) |
+| After successful accept | Pairing is **permanent** until an explicit peer/pairing revoke |
 
 ### Accept
 
@@ -105,8 +105,8 @@ These guide Step 2+; not implemented in Step 1.
    auth between peers use the data plane only.
 3. **Peer AuthN** — Paired peers authenticate with the exchanged Ed25519 public
    keys (trust entries derived from `peers.json` / local store).
-4. **Invite revoke** — Unused invites expire at TTL; established pairs are
-   revoked only via an explicit revoke command (Step 5).
+4. **Invite / peer revoke** — Unused invites expire at TTL or via `tyd invite revoke`.
+   Established pairs are revoked with `tyd revoke <peer>` (either side).
 
 ## Step 1 deliverables
 
@@ -126,10 +126,9 @@ These guide Step 2+; not implemented in Step 1.
 - `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
 - Integration test: CP + pair + publish + remote session create/list over TLS
 
-## Explicitly out of Step 1–4 (later steps)
+## Explicitly out of Step 1–5
 
 - Remote mesh beyond loopback advertise / data-listen
-- Peer revoke
 - Production deployment of `app.getfda.dev` (local CP is enough for tests)
 - NAT traversal / STUN
 
@@ -152,3 +151,11 @@ These guide Step 2+; not implemented in Step 1.
 - `tyd status` prints Control Panel / Peers / Recent / Session aliases / Connections
 - Help tips show recent session as placeholder when available
 - Docs (roadmap, guide, README) updated
+
+## Step 5 deliverables
+
+- CP: `RevokeInvite`, `RevokePeer` (either side); prune used/expired invites; JSON body size limit
+- HTTP: `POST /v1/invites/revoke`, `DELETE /v1/daemons/{id}/peers/{peerID}?public_key=`
+- CLI: `tyd invite`, `tyd invite revoke <token>`, `tyd revoke <peer>`
+- Local `peers.json` replace-from-CP on sync so revokes propagate; drop inbound peer from in-memory trust
+- Tests: invite revoke, peer revoke both sides, own-invite reject, AuthN fails after revoke

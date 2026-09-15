@@ -249,3 +249,133 @@ func TestHTTPRegisterAcceptFlow(t *testing.T) {
 		t.Fatalf("%+v", acc)
 	}
 }
+
+func TestRevokeInviteBlocksAccept(t *testing.T) {
+	s := New()
+	reg, err := s.Register(RegisterRequest{PublicKey: "pk-s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "pk-s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeInvite(RevokeInviteRequest{Token: inv.Token, DaemonID: "nope", PublicKey: "pk-s"}); err != ErrUnauthorized {
+		t.Fatalf("want unauthorized, got %v", err)
+	}
+	if err := s.RevokeInvite(RevokeInviteRequest{Token: inv.Token, DaemonID: reg.ID, PublicKey: "pk-s"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "pk-c"}); err != ErrNotFound {
+		t.Fatalf("want not found after revoke, got %v", err)
+	}
+}
+
+func TestRevokePeerRemovesBothSides(t *testing.T) {
+	s := New()
+	sReg, err := s.Register(RegisterRequest{PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: sReg.ID, PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "client-pub", Nickname: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokePeer(sReg.ID, "server-pub", acc.SelfID); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := s.ListPeers(sReg.ID, "server-pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sp) != 0 {
+		t.Fatalf("server still has peers %+v", sp)
+	}
+	cp, err := s.ListPeers(acc.SelfID, "client-pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cp) != 0 {
+		t.Fatalf("client still has peers %+v", cp)
+	}
+	if err := s.RevokePeer(sReg.ID, "server-pub", acc.SelfID); err != ErrNotPaired {
+		t.Fatalf("want not paired, got %v", err)
+	}
+
+	inv2, err := s.CreateInvite(CreateInviteRequest{DaemonID: sReg.ID, PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Accept(AcceptRequest{Token: inv2.Token, PublicKey: "client-pub"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokePeer(acc.SelfID, "client-pub", sReg.ID); err != nil {
+		t.Fatal(err)
+	}
+	sp, _ = s.ListPeers(sReg.ID, "server-pub")
+	if len(sp) != 0 {
+		t.Fatalf("after client revoke %+v", sp)
+	}
+}
+
+func TestAcceptOwnInviteRejected(t *testing.T) {
+	s := New()
+	reg, err := s.Register(RegisterRequest{PublicKey: "same"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "same"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "same"}); err == nil {
+		t.Fatal("expected cannot accept own invite")
+	}
+}
+
+func TestHTTPRevokePeer(t *testing.T) {
+	s := New()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	regBody, _ := json.Marshal(RegisterRequest{PublicKey: "http-s2"})
+	res, err := http.Post(ts.URL+"/v1/register", "application/json", bytes.NewReader(regBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reg RegisterResponse
+	_ = json.NewDecoder(res.Body).Decode(&reg)
+	_ = res.Body.Close()
+
+	invBody, _ := json.Marshal(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "http-s2"})
+	res2, err := http.Post(ts.URL+"/v1/invites", "application/json", bytes.NewReader(invBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv CreateInviteResponse
+	_ = json.NewDecoder(res2.Body).Decode(&inv)
+	_ = res2.Body.Close()
+
+	accBody, _ := json.Marshal(AcceptRequest{Token: inv.Token, PublicKey: "http-c2"})
+	res3, err := http.Post(ts.URL+"/v1/accept", "application/json", bytes.NewReader(accBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acc AcceptResponse
+	_ = json.NewDecoder(res3.Body).Decode(&acc)
+	_ = res3.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/v1/daemons/"+reg.ID+"/peers/"+acc.SelfID+"?public_key=http-s2", nil)
+	res4, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res4.Body.Close()
+	if res4.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res4.StatusCode)
+	}
+}

@@ -173,6 +173,27 @@ func TestDataPlanePeerSession(t *testing.T) {
 		t.Fatalf("session %s not listed: %+v", info.ID, listed)
 	}
 	_ = client.CloseSession(ep, cKey, info.ID)
+
+	if err := cp.RevokePeer(reg.ID, sPub, acc.SelfID); err != nil {
+		t.Fatal(err)
+	}
+	remote, err = cp.ListPeers(reg.ID, sPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sDoc.ReplaceFromRemote(toLocal(remote))
+	var keep []ed25519.PublicKey
+	for _, p := range sDoc.Peers {
+		pub, err := auth.DecodePublic(p.PublicKey)
+		if err != nil {
+			continue
+		}
+		keep = append(keep, pub)
+	}
+	trust.DropUnlistedPeers(keep)
+	if _, err := client.Create(ep, cKey, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()}); err == nil {
+		t.Fatal("expected create to fail after peer revoke")
+	}
 }
 
 func toLocal(list []controlpanel.Peer) []peers.Peer {
