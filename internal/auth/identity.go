@@ -39,6 +39,29 @@ func LoadIdentity(path string) (ed25519.PrivateKey, error) {
 	return ed25519.PrivateKey(raw), nil
 }
 
+// EnsureIdentity loads an existing identity or creates one (and bootstrap trust if missing).
+func EnsureIdentity(identityPath, trustPath string) (ed25519.PrivateKey, bool, error) {
+	if key, err := LoadIdentity(identityPath); err == nil {
+		return key, false, nil
+	} else if !os.IsNotExist(err) {
+		return nil, false, err
+	}
+	_, priv, err := Generate()
+	if err != nil {
+		return nil, false, err
+	}
+	if err := WriteIdentity(identityPath, priv); err != nil {
+		return nil, false, err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	if _, err := os.Stat(trustPath); os.IsNotExist(err) {
+		if err := WriteBootstrapTrust(trustPath, "local", pub); err != nil {
+			return nil, false, err
+		}
+	}
+	return priv, true, nil
+}
+
 func EncodePublic(pub ed25519.PublicKey) string {
 	return base64.StdEncoding.EncodeToString(pub)
 }

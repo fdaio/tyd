@@ -9,12 +9,16 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"golang.org/x/term"
 
 	"tyd/internal/auth"
 	"tyd/internal/client"
+	"tyd/internal/controlpanel"
+	"tyd/internal/cpclient"
 	"tyd/internal/paths"
+	"tyd/internal/peers"
 	"tyd/internal/server"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -37,6 +41,10 @@ type options struct {
 	addr     string
 	identity string
 	trust    string
+	peers    string
+	platform string
+	approval string
+	as       string
 	cert     string
 	key      string
 	cmd      string
@@ -78,8 +86,15 @@ func run(opts options) error {
 	switch opts.cmd {
 	case "keygen":
 		return runKeygen(opts)
+	case "up":
+		return runUp(opts)
 	case "serve":
-		return runServe(opts)
+		fmt.Fprintln(os.Stderr, "note: 'tyd serve' is deprecated; prefer 'tyd up'")
+		return runUp(opts)
+	case "register":
+		return runRegister(opts)
+	case "accept":
+		return runAccept(opts)
 	case "status":
 		return runStatus(opts)
 	case "session":
@@ -183,7 +198,18 @@ func runStatus(opts options) error {
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
 	key, err := auth.LoadIdentity(path)
 	if err != nil {
-		return nil, fmt.Errorf("load identity %s: %w (run 'tyd keygen')", path, err)
+		return nil, fmt.Errorf("load identity %s: %w (identity is created on first up/register/accept)", path, err)
+	}
+	return key, nil
+}
+
+func ensureIdentity(opts options) (ed25519.PrivateKey, error) {
+	key, created, err := auth.EnsureIdentity(opts.identity, opts.trust)
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "created identity %s\n", opts.identity)
 	}
 	return key, nil
 }
@@ -211,10 +237,13 @@ func runKeygen(opts options) error {
 	return nil
 }
 
-func runServe(opts options) error {
+func runUp(opts options) error {
+	if _, err := ensureIdentity(opts); err != nil {
+		return err
+	}
 	trust, err := auth.LoadStore(opts.trust)
 	if err != nil {
-		return fmt.Errorf("load trust %s: %w (run 'tyd keygen')", opts.trust, err)
+		return fmt.Errorf("load trust %s: %w", opts.trust, err)
 	}
 	mgr := session.NewManager()
 	srv := server.NewWithConfig(server.Config{
@@ -231,6 +260,11 @@ func runServe(opts options) error {
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
 	if opts.listen != "" && opts.listen != "off" {
 		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", opts.listen, srv.TLSFingerprint())
+	} else {
+		fmt.Fprintln(os.Stderr, "tyd tls listen off (use --listen HOST:PORT to enable)")
+	}
+	if err := syncPeersFromCP(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 	}
 
 	ch := make(chan os.Signal, 1)
@@ -239,12 +273,139 @@ func runServe(opts options) error {
 	return srv.Close()
 }
 
+func runRegister(opts options) error {
+	key, err := ensureIdentity(opts)
+	if err != nil {
+		return err
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	cli := cpclient.New(opts.platform)
+	reg, err := cli.Register(pub, opts.approval)
+	if err != nil {
+		return err
+	}
+	inv, err := cli.CreateInvite(reg.ID, pub)
+	if err != nil {
+		return err
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	doc.Platform = cli.BaseURL
+	doc.Registration = &peers.Registration{
+		ID:           reg.ID,
+		PublicKey:    pub,
+		ApprovalMode: reg.ApprovalMode,
+		URL:          reg.URL,
+		RegisteredAt: time.Now().UTC(),
+	}
+	if remote, err := cli.ListPeers(reg.ID, pub); err == nil {
+		doc.MergePeers(cpPeersToLocal(remote))
+	}
+	if err := peers.Save(opts.peers, doc); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "registered %s (approval %s)\n", reg.URL, reg.ApprovalMode)
+	fmt.Fprintf(os.Stderr, "invite (TTL %s): %s\n", controlpanel.InviteTTL, inv.Token)
+	fmt.Println(inv.Token)
+	return nil
+}
+
+func runAccept(opts options) error {
+	if len(opts.rest) != 1 {
+		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
+	}
+	key, err := ensureIdentity(opts)
+	if err != nil {
+		return err
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	cli := cpclient.New(opts.platform)
+	acc, err := cli.Accept(opts.rest[0], pub, opts.as)
+	if err != nil {
+		return err
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	doc.Platform = cli.BaseURL
+	if doc.Registration == nil {
+		doc.Registration = &peers.Registration{
+			ID:           acc.SelfID,
+			PublicKey:    pub,
+			ApprovalMode: controlpanel.DefaultApproval,
+			RegisteredAt: time.Now().UTC(),
+		}
+	} else {
+		doc.Registration.ID = acc.SelfID
+		doc.Registration.PublicKey = pub
+	}
+	doc.UpsertPeer(peers.Peer{
+		ID:        acc.PeerID,
+		PublicKey: acc.PeerPublicKey,
+		Nickname:  acc.PeerNickname,
+		Direction: "outbound",
+		PairedAt:  time.Now().UTC(),
+	})
+	if err := peers.Save(opts.peers, doc); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "paired with %s\n", acc.PeerID)
+	fmt.Println(acc.PeerID)
+	return nil
+}
+
+func syncPeersFromCP(opts options) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if doc.Registration == nil || doc.Registration.ID == "" {
+		return nil
+	}
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	key, err := auth.LoadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	cli := cpclient.New(platform)
+	remote, err := cli.ListPeers(doc.Registration.ID, pub)
+	if err != nil {
+		return err
+	}
+	doc.MergePeers(cpPeersToLocal(remote))
+	return peers.Save(opts.peers, doc)
+}
+
+func cpPeersToLocal(list []controlpanel.Peer) []peers.Peer {
+	out := make([]peers.Peer, 0, len(list))
+	for _, p := range list {
+		out = append(out, peers.Peer{
+			ID:        p.ID,
+			PublicKey: p.PublicKey,
+			Nickname:  p.Nickname,
+			Direction: p.Direction,
+			PairedAt:  p.PairedAt,
+		})
+	}
+	return out
+}
+
 func parseArgs(args []string) (options, error) {
 	opts := options{
 		socket:   paths.DefaultSocket(),
 		listen:   paths.DefaultListen(),
 		identity: paths.DefaultIdentity(),
 		trust:    paths.DefaultTrust(),
+		peers:    paths.DefaultPeers(),
+		platform: paths.DefaultPlatform(),
+		approval: controlpanel.DefaultApproval,
 		cert:     paths.DefaultServerCert(),
 		key:      paths.DefaultServerKey(),
 	}
@@ -295,6 +456,38 @@ func parseArgs(args []string) (options, error) {
 			opts.trust = args[i]
 		case strings.HasPrefix(a, "--trust="):
 			opts.trust = strings.TrimPrefix(a, "--trust=")
+		case a == "--peers":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.peers = args[i]
+		case strings.HasPrefix(a, "--peers="):
+			opts.peers = strings.TrimPrefix(a, "--peers=")
+		case a == "--platform":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a URL", a)
+			}
+			i++
+			opts.platform = args[i]
+		case strings.HasPrefix(a, "--platform="):
+			opts.platform = strings.TrimPrefix(a, "--platform=")
+		case a == "--approval":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires full|pre|post", a)
+			}
+			i++
+			opts.approval = args[i]
+		case strings.HasPrefix(a, "--approval="):
+			opts.approval = strings.TrimPrefix(a, "--approval=")
+		case a == "--as":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a nickname", a)
+			}
+			i++
+			opts.as = args[i]
+		case strings.HasPrefix(a, "--as="):
+			opts.as = strings.TrimPrefix(a, "--as=")
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -360,24 +553,31 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session close", "Close a session (kept as history)"},
 	}, color)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Identity:")
+	fmt.Fprintln(w, "Identity / pairing:")
 	writeHelpRows(w, []helpRow{
-		{"keygen", "Generate Ed25519 client identity"},
+		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
+		{"register", "Register with Control Panel and print invite"},
+		{"accept", "Accept a peer invite (stores peer public key)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Daemon:")
 	writeHelpRows(w, []helpRow{
-		{"serve", "Start the tyd daemon"},
+		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
+		{"serve", "Alias for up (deprecated)"},
 		{"status", "Show daemon / connection status"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	writeHelpRows(w, []helpRow{
 		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
-		{"--listen ADDR|off", fmt.Sprintf("TLS listen for serve (default %s)", paths.DefaultListen())},
+		{"--listen ADDR|off", fmt.Sprintf("TLS listen for up (default %s)", paths.DefaultListen())},
 		{"--addr HOST:PORT", "TLS client endpoint"},
 		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},
 		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
+		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
+		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
+		{"--approval MODE", "Register approval: full|pre|post (default full)"},
+		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
@@ -385,6 +585,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
+	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
 func writeSessionHelp(w io.Writer, color bool) {

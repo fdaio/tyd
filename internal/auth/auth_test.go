@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -150,5 +151,28 @@ func TestTrustFileRoundTrip(t *testing.T) {
 	}
 	if p.Name != "dev" || !store.Allow(p, CapCreate, "") {
 		t.Fatalf("loaded principal %+v", p)
+	}
+}
+
+func TestEnsureIdentityCreatesOnce(t *testing.T) {
+	dir := t.TempDir()
+	idPath := filepath.Join(dir, "id_ed25519")
+	trustPath := filepath.Join(dir, "trusted.json")
+	key, created, err := EnsureIdentity(idPath, trustPath)
+	if err != nil || !created {
+		t.Fatalf("created=%v err=%v", created, err)
+	}
+	if len(key) != ed25519.PrivateKeySize {
+		t.Fatal("bad key")
+	}
+	if _, err := os.Stat(trustPath); err != nil {
+		t.Fatal(err)
+	}
+	again, created2, err := EnsureIdentity(idPath, trustPath)
+	if err != nil || created2 {
+		t.Fatalf("created2=%v err=%v", created2, err)
+	}
+	if EncodePublic(key.Public().(ed25519.PublicKey)) != EncodePublic(again.Public().(ed25519.PublicKey)) {
+		t.Fatal("identity changed")
 	}
 }

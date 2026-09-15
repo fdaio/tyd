@@ -25,8 +25,18 @@ func DefaultTrust() string {
 	return filepath.Join(DefaultDir(), "trusted.json")
 }
 
+func DefaultPeers() string {
+	return filepath.Join(DefaultDir(), "peers.json")
+}
+
+// DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
-	return "127.0.0.1:61211"
+	return "off"
+}
+
+// DefaultPlatform is the production Control Panel base URL.
+func DefaultPlatform() string {
+	return "https://app.getfda.dev"
 }
 
 func DefaultServerCert() string {
