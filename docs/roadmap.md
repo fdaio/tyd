@@ -5,7 +5,7 @@
 ### Step 1 — Persistent local PTY
 
 - Single binary `tyd`
-- `serve` / `create` / `list` / `attach` / `close`
+- `serve` / `session create|list|attach|close` / `status` / `keygen`
 - PTY + shell; resize; SIGINT-style signals via PTY control bytes
 - Client disconnect / detach leaves shell running; reattach works
 - In-process sessions only (lost on daemon restart)

@@ -37,7 +37,8 @@ func TestParseArgs(t *testing.T) {
 		{name: "empty", args: nil, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust},
 		{name: "serve", args: []string{"serve"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "serve"},
 		{name: "listen off", args: []string{"--listen", "off", "serve"}, wantSocket: def, wantListen: "off", wantID: id, wantTrust: trust, wantCmd: "serve"},
-		{name: "addr", args: []string{"--addr", "127.0.0.1:61211", "list"}, wantSocket: def, wantListen: listen, wantAddr: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantCmd: "list"},
+		{name: "session list with addr", args: []string{"--addr", "127.0.0.1:61211", "session", "list"}, wantSocket: def, wantListen: listen, wantAddr: "127.0.0.1:61211", wantID: id, wantTrust: trust, wantCmd: "session", wantRest: []string{"list"}},
+		{name: "session attach", args: []string{"session", "attach", "abc"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "session", wantRest: []string{"attach", "abc"}},
 		{name: "status", args: []string{"status"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "status"},
 		{name: "help", args: []string{"--help"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantCmd: "help"},
 		{name: "unknown flag", args: []string{"--nope"}, wantErr: true},
@@ -59,7 +60,7 @@ func TestParseArgs(t *testing.T) {
 				t.Fatalf("%+v", opts)
 			}
 			if strings.Join(opts.rest, ",") != strings.Join(tt.wantRest, ",") {
-				t.Fatalf("rest=%q", opts.rest)
+				t.Fatalf("rest=%q want %q", opts.rest, tt.wantRest)
 			}
 		})
 	}
@@ -67,13 +68,16 @@ func TestParseArgs(t *testing.T) {
 
 func TestRunRejectsBadUsage(t *testing.T) {
 	base := options{socket: "/tmp/x.sock", identity: "/tmp/id", trust: "/tmp/t.json", listen: "off"}
+
 	a := base
-	a.cmd = "attach"
+	a.cmd = "session"
+	a.rest = []string{"attach"}
 	if err := run(a); err == nil {
 		t.Fatal("attach without id")
 	}
 	c := base
-	c.cmd = "close"
+	c.cmd = "session"
+	c.rest = []string{"close"}
 	if err := run(c); err == nil {
 		t.Fatal("close without id")
 	}
@@ -82,9 +86,14 @@ func TestRunRejectsBadUsage(t *testing.T) {
 	if err := run(w); err == nil {
 		t.Fatal("unknown command")
 	}
+	legacy := base
+	legacy.cmd = "create"
+	if err := run(legacy); err == nil || !strings.Contains(err.Error(), "tyd session create") {
+		t.Fatalf("expected migration hint, got %v", err)
+	}
 }
 
-func TestRunCreateListStatusClose(t *testing.T) {
+func TestRunSessionCreateListStatusClose(t *testing.T) {
 	dir := t.TempDir()
 	idPath := filepath.Join(dir, "id_ed25519")
 	trustPath := filepath.Join(dir, "trusted.json")
@@ -115,13 +124,25 @@ func TestRunCreateListStatusClose(t *testing.T) {
 	cli := options{socket: sock, identity: idPath, trust: trustPath, listen: "off"}
 	id := strings.TrimSpace(captureStdout(t, func() {
 		create := cli
-		create.cmd = "create"
+		create.cmd = "session"
+		create.rest = []string{"create"}
 		if err := run(create); err != nil {
 			t.Fatal(err)
 		}
 	}))
 	if id == "" {
 		t.Fatal("empty session id")
+	}
+	listOut := captureStdout(t, func() {
+		list := cli
+		list.cmd = "session"
+		list.rest = []string{"list"}
+		if err := run(list); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(listOut, id) {
+		t.Fatalf("list missing id: %q", listOut)
 	}
 	out := captureStdout(t, func() {
 		st := cli
@@ -134,8 +155,8 @@ func TestRunCreateListStatusClose(t *testing.T) {
 		t.Fatalf("status missing header: %q", out)
 	}
 	closeCmd := cli
-	closeCmd.cmd = "close"
-	closeCmd.rest = []string{id}
+	closeCmd.cmd = "session"
+	closeCmd.rest = []string{"close", id}
 	if err := run(closeCmd); err != nil {
 		t.Fatal(err)
 	}
