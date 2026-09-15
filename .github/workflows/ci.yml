@@ -25,6 +25,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # macos runners occasionally fail DNS/proxy to proxy.golang.org on first fetch
+      - name: Download modules
+        run: |
+          for i in 1 2 3 4 5; do
+            go mod download && exit 0
+            echo "go mod download failed (attempt $i); retrying..."
+            sleep $((i * 5))
+          done
+          exit 1
+
       - name: Vet
         run: go vet ./...
 
