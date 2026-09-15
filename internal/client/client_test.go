@@ -331,40 +331,6 @@ func TestWatchClientAPI(t *testing.T) {
 	_ = inR.Close()
 	_ = outR.Close()
 
-	wOutR, wOutW, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	watchErr := make(chan error, 1)
-	go func() {
-		watchErr <- Watch(ep, key, info.ID, wOutW)
-	}()
-	deadline = time.Now().Add(5 * time.Second)
-	acc = nil
-	for time.Now().Before(deadline) {
-		_ = wOutR.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-		n, err := wOutR.Read(buf)
-		if n > 0 {
-			acc = append(acc, buf[:n]...)
-			if bytes.Contains(acc, []byte("watch-cli-ok")) {
-				break
-			}
-		}
-		if err != nil && !os.IsTimeout(err) {
-			break
-		}
-	}
-	_ = wOutW.Close()
-	select {
-	case <-watchErr:
-	case <-time.After(3 * time.Second):
-		t.Fatal("watch did not return")
-	}
-	_ = wOutR.Close()
-	if !bytes.Contains(acc, []byte("watch-cli-ok")) {
-		t.Fatalf("watch missing output: %q", acc)
-	}
-
 	if err := CloseSession(ep, key, info.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -381,6 +347,44 @@ func TestWatchClientAPI(t *testing.T) {
 	if !found {
 		t.Fatal("closed session should remain listed")
 	}
+
+	// Closed-session watch dumps ring then exits — exercises Watch() end-to-end.
+	wOutR, wOutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchErr := make(chan error, 1)
+	go func() {
+		watchErr <- Watch(ep, key, info.ID, wOutW)
+	}()
+	deadline = time.Now().Add(5 * time.Second)
+	acc = nil
+	for time.Now().Before(deadline) {
+		_ = wOutR.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := wOutR.Read(buf)
+		if n > 0 {
+			acc = append(acc, buf[:n]...)
+		}
+		select {
+		case err := <-watchErr:
+			_ = wOutW.Close()
+			outRest, _ := io.ReadAll(wOutR)
+			acc = append(acc, outRest...)
+			_ = wOutR.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(acc, []byte("watch-cli-ok")) {
+				t.Fatalf("watch missing history: %q", acc)
+			}
+			return
+		default:
+		}
+		if err != nil && !os.IsTimeout(err) {
+			break
+		}
+	}
+	t.Fatalf("watch did not finish; got %q", acc)
 }
 
 func TestCopyOutputStopsOnDetach(t *testing.T) {
