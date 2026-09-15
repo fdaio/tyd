@@ -753,9 +753,14 @@ func runRegister(opts options) error {
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "registered %s (approval %s)\n", reg.URL, reg.ApprovalMode)
-	fmt.Fprintf(os.Stderr, "invite (TTL %s): %s\n", controlpanel.InviteTTL, inv.Token)
-	fmt.Println(inv.Token)
+	printInviteResult(os.Stderr, os.Stdout, inviteResult{
+		Kind:     "registered",
+		URL:      reg.URL,
+		Approval: reg.ApprovalMode,
+		Platform: cli.BaseURL,
+		Token:    inv.Token,
+		TTL:      controlpanel.InviteTTL,
+	})
 	return nil
 }
 
@@ -790,8 +795,21 @@ func runInvite(opts options) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "invite (TTL %s)\n", controlpanel.InviteTTL)
-	fmt.Println(inv.Token)
+	url := ""
+	if doc.Registration != nil {
+		url = doc.Registration.URL
+		if url == "" && doc.Registration.ID != "" {
+			url = strings.TrimRight(cli.BaseURL, "/") + "/" + doc.Registration.ID
+		}
+	}
+	printInviteResult(os.Stderr, os.Stdout, inviteResult{
+		Kind:     "invite",
+		URL:      url,
+		Approval: doc.Registration.ApprovalMode,
+		Platform: cli.BaseURL,
+		Token:    inv.Token,
+		TTL:      controlpanel.InviteTTL,
+	})
 	return nil
 }
 
@@ -862,13 +880,17 @@ func runAccept(opts options) error {
 	if len(opts.rest) != 1 {
 		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
 	}
+	token := parseInviteToken(opts.rest[0])
+	if token == "" {
+		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
+	}
 	key, err := ensureIdentity(opts)
 	if err != nil {
 		return err
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(opts.platform)
-	acc, err := cli.Accept(opts.rest[0], pub, opts.as)
+	acc, err := cli.Accept(token, pub, opts.as)
 	if err != nil {
 		return err
 	}
@@ -1113,6 +1135,77 @@ func colorEnabled(w io.Writer) bool {
 	return ok && term.IsTerminal(int(f.Fd()))
 }
 
+type inviteResult struct {
+	Kind     string // registered | invite
+	URL      string
+	Approval string
+	Platform string
+	Token    string
+	TTL      time.Duration
+}
+
+// formatAcceptCommand returns a shell line the peer can paste as-is.
+// --platform is included only when it differs from the built-in default.
+func formatAcceptCommand(platform, token string) string {
+	platform = strings.TrimRight(strings.TrimSpace(platform), "/")
+	def := strings.TrimRight(paths.DefaultPlatform(), "/")
+	if platform == "" || strings.EqualFold(platform, def) {
+		return "tyd accept " + token
+	}
+	return fmt.Sprintf("tyd --platform %s accept %s", platform, token)
+}
+
+// parseInviteToken accepts a bare token or a pasted "tyd … accept <token>" line.
+func parseInviteToken(arg string) string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return ""
+	}
+	fields := strings.Fields(arg)
+	for i, f := range fields {
+		if f == "accept" && i+1 < len(fields) {
+			tok := fields[i+1]
+			if tok == "" || strings.HasPrefix(tok, "-") {
+				return ""
+			}
+			return tok
+		}
+	}
+	if len(fields) == 1 {
+		return fields[0]
+	}
+	return ""
+}
+
+func printInviteResult(errW, outW io.Writer, r inviteResult) {
+	color := colorEnabled(errW)
+	switch r.Kind {
+	case "registered":
+		fmt.Fprintln(errW, "Registered with Control Panel.")
+	default:
+		fmt.Fprintln(errW, "Invite minted.")
+	}
+	fmt.Fprintln(errW)
+	rows := make([]helpRow, 0, 3)
+	if r.URL != "" {
+		rows = append(rows, helpRow{"url", r.URL})
+	}
+	if r.Approval != "" {
+		rows = append(rows, helpRow{"approval", r.Approval})
+	}
+	rows = append(rows, helpRow{"invite ttl", r.TTL.String()})
+	writeHelpRows(errW, rows, color)
+	fmt.Fprintln(errW)
+	fmt.Fprintln(errW, "Copy and run on the peer:")
+	cmd := formatAcceptCommand(r.Platform, r.Token)
+	if color {
+		fmt.Fprintf(errW, "  %s%s%s\n", ansiCyan, cmd, ansiReset)
+	} else {
+		fmt.Fprintf(errW, "  %s\n", cmd)
+	}
+	fmt.Fprintln(outW, cmd)
+}
+
 func writeHelpRows(w io.Writer, rows []helpRow, color bool) {
 	for _, r := range rows {
 		name := r.name
@@ -1149,9 +1242,9 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Identity / pairing:")
 	writeHelpRows(w, []helpRow{
 		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
-		{"register", "Register with Control Panel and print invite"},
-		{"invite", "Mint a new pairing invite (10m TTL)"},
-		{"accept", "Accept a peer invite (stores peer public key)"},
+		{"register", "Register with Control Panel; print tyd accept …"},
+		{"invite", "Mint invite; print tyd accept … (10m TTL)"},
+		{"accept", "Accept a peer invite (token or pasted accept line)"},
 		{"revoke", "Revoke a paired peer (either side)"},
 	}, color)
 	fmt.Fprintln(w)
