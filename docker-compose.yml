@@ -1,12 +1,13 @@
 # tyd Control Panel (pairing only). TLS is expected at the edge (e.g. Cloudflare).
 #
-# Local:
+# Local smoke (override client platform):
 #   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
 #   tyd --platform http://127.0.0.1:8080 register
 #
-# Production: set TYD_CP_BASE_URL to the public HTTPS origin clients use
-# (e.g. https://app.getfda.dev) so register responses return that URL.
+# Production: set TYD_CP_BASE_URL to the public HTTPS origin (e.g. https://app.getfda.dev).
+# Clients default to that same host — use: tyd register
+# (only pass --platform when pointing at a custom Control Panel).
 #
 # WARNING: pairing state is in-memory — container restart loses registrations,
 # invites, and peer pairs.

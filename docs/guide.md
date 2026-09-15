@@ -68,13 +68,15 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 export TYD_CP_BASE_URL=https://app.getfda.dev   # public origin behind Cloudflare
 docker compose up -d --build
 curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
-./tyd --platform https://app.getfda.dev register
+./tyd register                                  # platform defaults to https://app.getfda.dev
 ```
+
+`--platform` is only needed for a custom / local Control Panel (e.g. `--platform http://127.0.0.1:8080`).
 
 Container listens on `0.0.0.0:8080` (no TLS inside — terminate at Cloudflare).  
 State is **in-memory**; restart loses pairing metadata. See `Dockerfile.controlpanel` and `docker-compose.yml`.
 
-Paired peer public keys are stored in `~/.tyd/peers.json`. Default platform is `https://app.getfda.dev`.
+Paired peer public keys are stored in `~/.tyd/peers.json`.  
 CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon peer-sync drops inbound trust.
 
 ### Data plane (Step 2)
