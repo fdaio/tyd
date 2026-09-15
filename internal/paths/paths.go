@@ -29,9 +29,23 @@ func DefaultPeers() string {
 	return filepath.Join(DefaultDir(), "peers.json")
 }
 
+func DefaultRecent() string {
+	return filepath.Join(DefaultDir(), "recent.json")
+}
+
 // DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
 	return "off"
+}
+
+// DefaultDataListen is auto: enable loopback data-plane when registered with CP.
+func DefaultDataListen() string {
+	return "auto"
+}
+
+// DefaultAdvertise is the host published in CP endpoint signaling.
+func DefaultAdvertise() string {
+	return "127.0.0.1"
 }
 
 // DefaultPlatform is the production Control Panel base URL.

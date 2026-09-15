@@ -92,6 +92,67 @@ func (c *Client) ListPeers(daemonID, publicKey string) ([]controlpanel.Peer, err
 	return wrap.Peers, nil
 }
 
+func (c *Client) PublishEndpoint(daemonID, publicKey, addr, certFP string, ttl time.Duration) error {
+	ttlSec := 0
+	if ttl > 0 {
+		ttlSec = int(ttl / time.Second)
+	}
+	var out controlpanel.EndpointResponse
+	return c.put("/v1/daemons/"+url.PathEscape(daemonID)+"/endpoint", controlpanel.PublishEndpointRequest{
+		PublicKey:  publicKey,
+		Addr:       addr,
+		CertFP:     certFP,
+		TTLSeconds: ttlSec,
+	}, &out)
+}
+
+func (c *Client) GetEndpoint(daemonID string) (addr, certFP string, err error) {
+	u := c.BaseURL + "/v1/daemons/" + url.PathEscape(daemonID) + "/endpoint"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return "", "", err
+	}
+	res, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return "", "", fmt.Errorf("cp get endpoint: %s: %s", res.Status, strings.TrimSpace(string(body)))
+	}
+	var out controlpanel.EndpointResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", "", err
+	}
+	return out.Addr, out.CertFP, nil
+}
+
+func (c *Client) put(path string, in, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPut, c.BaseURL+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	res, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("cp %s: %s: %s", path, res.Status, strings.TrimSpace(string(body)))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(body, out)
+}
+
 func (c *Client) post(path string, in, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {

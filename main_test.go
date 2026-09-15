@@ -46,6 +46,7 @@ func TestParseArgs(t *testing.T) {
 		{name: "session attach", args: []string{"session", "attach", "abc"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "session", wantRest: []string{"attach", "abc"}},
 		{name: "status", args: []string{"status"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "status"},
 		{name: "register platform", args: []string{"--platform", "http://127.0.0.1:9", "register"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: "http://127.0.0.1:9", wantCmd: "register"},
+		{name: "peer flag", args: []string{"--peer", "box", "session", "list"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "session", wantRest: []string{"list"}},
 		{name: "help", args: []string{"--help"}, wantSocket: def, wantListen: listen, wantID: id, wantTrust: trust, wantPlatform: platform, wantCmd: "help"},
 		{name: "unknown flag", args: []string{"--nope"}, wantErr: true},
 	}
@@ -65,6 +66,9 @@ func TestParseArgs(t *testing.T) {
 				opts.cmd != tt.wantCmd || opts.identity != tt.wantID || opts.trust != tt.wantTrust ||
 				opts.platform != tt.wantPlatform {
 				t.Fatalf("%+v", opts)
+			}
+			if tt.name == "peer flag" && opts.peer != "box" {
+				t.Fatalf("peer=%q", opts.peer)
 			}
 			if strings.Join(opts.rest, ",") != strings.Join(tt.wantRest, ",") {
 				t.Fatalf("rest=%q want %q", opts.rest, tt.wantRest)
@@ -202,9 +206,12 @@ func TestRootHelpPlain(t *testing.T) {
 		"status",
 		"Flags:",
 		"--socket PATH",
+		"--peer ID|NICK",
+		"--data-listen MODE",
 		"--platform URL",
 		"Tips:",
 		"Ctrl-\\",
+		"--peer",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)

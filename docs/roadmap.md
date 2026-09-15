@@ -30,7 +30,7 @@
 
 Full requirements: [docs/requirements/control-plane-pairing.md](requirements/control-plane-pairing.md).
 
-### Step 1 — REQ + minimal CP pairing skeleton (this)
+### Step 1 — REQ + minimal CP pairing skeleton
 
 - Requirements doc + this phased roadmap
 - In-repo Control Panel service (local/tests): register → allocate id; invite (10m TTL); accept → exchange peer public keys
@@ -39,12 +39,13 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `tyd register` / `tyd accept` with `--platform` (default `https://app.getfda.dev`)
 - Persist paired peer keys locally (`peers.json`)
 
-### Step 2 — Data-plane self-network after pairing
+### Step 2 — Data-plane self-network after pairing (done)
 
-- Peer AuthN with exchanged keys
-- Direct / signaling path **without** CP storing TTY
-- CP may offer **ephemeral signaling** (endpoint exchange) only
-- Session commands targeting peers (`--peer` / nickname)
+- Peer AuthN with exchanged keys (inbound peers injected into server trust on sync)
+- Ephemeral CP signaling: `PUT/GET /v1/daemons/{id}/endpoint` (addr + cert fingerprint; TTL ~90s; no TTY)
+- Data frames never through CP — client dials peer TLS directly (`DialTLSFingerprint`)
+- `tyd up --data-listen auto` starts loopback data-plane TLS when registered; publishes/refreshes endpoint
+- Session targeting: `--peer <id|nickname>`; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 
 ### Step 3 — Approval modes
 
@@ -53,7 +54,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 ### Step 4 — Session alias + defaults + status UX
 
 - Session alias (`tyd alias` for sessions, not peers)
-- Recent-session peer placeholder defaults (0/1/many peer rules)
+- Recent-session peer placeholder defaults (0/1/many peer rules) — partial in Step 2 via `--peer` / recent.json
 - Status shows CP connection + peers
 
 ### Step 5 — Revoke + hardening

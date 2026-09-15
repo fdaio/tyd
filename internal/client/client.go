@@ -21,7 +21,8 @@ import (
 type Endpoint struct {
 	Kind     transport.Kind
 	Address  string
-	CertPath string // required for TLS: pinned server cert
+	CertPath string // TLS pin via cert file (optional if CertFP set)
+	CertFP   string // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
 }
 
 func (e Endpoint) String() string {
@@ -43,7 +44,11 @@ func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 	case transport.KindUnix, "":
 		nc, err = transport.DialUnix(ep.Address)
 	case transport.KindTLS:
-		nc, err = transport.DialTLS(ep.Address, ep.CertPath)
+		if ep.CertFP != "" {
+			nc, err = transport.DialTLSFingerprint(ep.Address, ep.CertFP)
+		} else {
+			nc, err = transport.DialTLS(ep.Address, ep.CertPath)
+		}
 	default:
 		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
@@ -367,7 +372,11 @@ func WaitReady(ep Endpoint, timeout time.Duration) error {
 		)
 		switch ep.Kind {
 		case transport.KindTLS:
-			c, err = transport.DialTLS(ep.Address, ep.CertPath)
+			if ep.CertFP != "" {
+				c, err = transport.DialTLSFingerprint(ep.Address, ep.CertFP)
+			} else {
+				c, err = transport.DialTLS(ep.Address, ep.CertPath)
+			}
 		default:
 			c, err = transport.DialUnix(ep.Address)
 		}

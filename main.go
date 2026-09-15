@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"tyd/internal/cpclient"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
+	"tyd/internal/recent"
 	"tyd/internal/server"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -36,19 +38,23 @@ type helpRow struct {
 }
 
 type options struct {
-	socket   string
-	listen   string
-	addr     string
-	identity string
-	trust    string
-	peers    string
-	platform string
-	approval string
-	as       string
-	cert     string
-	key      string
-	cmd      string
-	rest     []string
+	socket     string
+	listen     string
+	dataListen string
+	advertise  string
+	addr       string
+	peer       string
+	identity   string
+	trust      string
+	peers      string
+	recent     string
+	platform   string
+	approval   string
+	as         string
+	cert       string
+	key        string
+	cmd        string
+	rest       []string
 }
 
 func main() {
@@ -68,18 +74,85 @@ func main() {
 	}
 }
 
-func endpoint(opts options) client.Endpoint {
+func endpoint(opts options) (client.Endpoint, string, error) {
 	if opts.addr != "" {
 		return client.Endpoint{
 			Kind:     transport.KindTLS,
 			Address:  opts.addr,
 			CertPath: opts.cert,
-		}
+		}, "", nil
+	}
+	peerID, useLocal, err := resolvePeerTarget(opts)
+	if err != nil {
+		return client.Endpoint{}, "", err
+	}
+	if useLocal || peerID == "" {
+		return client.Endpoint{
+			Kind:    transport.KindUnix,
+			Address: opts.socket,
+		}, "", nil
+	}
+	platform, err := platformFor(opts)
+	if err != nil {
+		return client.Endpoint{}, "", err
+	}
+	cli := cpclient.New(platform)
+	addr, certFP, err := cli.GetEndpoint(peerID)
+	if err != nil {
+		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
 	return client.Endpoint{
-		Kind:    transport.KindUnix,
-		Address: opts.socket,
+		Kind:    transport.KindTLS,
+		Address: addr,
+		CertFP:  certFP,
+	}, peerID, nil
+}
+
+func resolvePeerTarget(opts options) (peerID string, useLocal bool, err error) {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return "", false, err
 	}
+	if opts.peer != "" {
+		p, err := doc.Find(opts.peer)
+		if err != nil {
+			return "", false, err
+		}
+		return p.ID, false, nil
+	}
+	outbound := doc.Outbound()
+	rec, _ := recent.Load(opts.recent)
+	if rec != nil && rec.PeerID != "" {
+		if p, err := doc.Find(rec.PeerID); err == nil {
+			return p.ID, false, nil
+		}
+	}
+	switch len(outbound) {
+	case 0:
+		return "", true, nil
+	case 1:
+		return outbound[0].ID, false, nil
+	default:
+		return "", false, fmt.Errorf("multiple peers; specify --peer <id|nickname>")
+	}
+}
+
+func platformFor(opts options) (string, error) {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return "", err
+	}
+	if doc.Platform != "" {
+		return doc.Platform, nil
+	}
+	return opts.platform, nil
+}
+
+func rememberPeerSession(opts options, peerID, sessionID string) {
+	if peerID == "" {
+		return
+	}
+	_ = recent.Remember(opts.recent, peerID, sessionID)
 }
 
 func run(opts options) error {
@@ -113,16 +186,21 @@ func runSession(opts options) error {
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
+	ep, peerID, err := endpoint(opts)
+	if err != nil {
+		return err
+	}
 	switch sub {
 	case "create":
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
-		info, err := client.Create(endpoint(opts), key, client.CreateOpts{})
+		info, err := client.Create(ep, key, client.CreateOpts{})
 		if err != nil {
 			return err
 		}
+		rememberPeerSession(opts, peerID, info.ID)
 		fmt.Println(info.ID)
 		return nil
 	case "list":
@@ -130,10 +208,11 @@ func runSession(opts options) error {
 		if err != nil {
 			return err
 		}
-		items, err := client.List(endpoint(opts), key)
+		items, err := client.List(ep, key)
 		if err != nil {
 			return err
 		}
+		rememberPeerSession(opts, peerID, "")
 		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "SESSION\tPID\tSTATE\tSIZE\tCREATED")
 		for _, it := range items {
@@ -148,8 +227,9 @@ func runSession(opts options) error {
 		if err != nil {
 			return err
 		}
+		rememberPeerSession(opts, peerID, args[0])
 		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", args[0])
-		return client.Attach(endpoint(opts), key, args[0], os.Stdin, os.Stdout)
+		return client.Attach(ep, key, args[0], os.Stdin, os.Stdout)
 	case "watch":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: tyd session watch <session_id>")
@@ -158,8 +238,9 @@ func runSession(opts options) error {
 		if err != nil {
 			return err
 		}
+		rememberPeerSession(opts, peerID, args[0])
 		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", args[0])
-		return client.Watch(endpoint(opts), key, args[0], os.Stdout)
+		return client.Watch(ep, key, args[0], os.Stdout)
 	case "close":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: tyd session close <session_id>")
@@ -168,7 +249,8 @@ func runSession(opts options) error {
 		if err != nil {
 			return err
 		}
-		return client.CloseSession(endpoint(opts), key, args[0])
+		rememberPeerSession(opts, peerID, args[0])
+		return client.CloseSession(ep, key, args[0])
 	case "help", "-h", "--help":
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
@@ -182,7 +264,11 @@ func runStatus(opts options) error {
 	if err != nil {
 		return err
 	}
-	items, err := client.Status(endpoint(opts), key)
+	ep, _, err := endpoint(opts)
+	if err != nil {
+		return err
+	}
+	items, err := client.Status(ep, key)
 	if err != nil {
 		return err
 	}
@@ -245,32 +331,157 @@ func runUp(opts options) error {
 	if err != nil {
 		return fmt.Errorf("load trust %s: %w", opts.trust, err)
 	}
+	dataListen, err := resolveDataListen(opts)
+	if err != nil {
+		return err
+	}
 	mgr := session.NewManager()
 	srv := server.NewWithConfig(server.Config{
-		Socket:   opts.socket,
-		Listen:   opts.listen,
-		CertPath: opts.cert,
-		KeyPath:  opts.key,
-		Mgr:      mgr,
-		Trust:    trust,
+		Socket:     opts.socket,
+		Listen:     opts.listen,
+		DataListen: dataListen,
+		CertPath:   opts.cert,
+		KeyPath:    opts.key,
+		Mgr:        mgr,
+		Trust:      trust,
 	})
 	if err := srv.Start(); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
 	if opts.listen != "" && opts.listen != "off" {
-		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", opts.listen, srv.TLSFingerprint())
+		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", srv.ListenAddr(), srv.TLSFingerprint())
 	} else {
 		fmt.Fprintln(os.Stderr, "tyd tls listen off (use --listen HOST:PORT to enable)")
 	}
-	if err := syncPeersFromCP(opts); err != nil {
-		fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
+
+	stop := make(chan struct{})
+	if srv.DataPlaneAddr() != "" {
+		pubAddr := advertisedAddr(opts.advertise, srv.DataPlaneAddr())
+		fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (published to CP)\n", pubAddr)
+		if err := syncPeersAndTrust(opts, trust); err != nil {
+			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
+		}
+		if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull()); err != nil {
+			fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
+		}
+		go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), stop)
+	} else {
+		if err := syncPeersFromCP(opts); err != nil {
+			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
+		}
 	}
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
+	close(stop)
 	return srv.Close()
+}
+
+func resolveDataListen(opts options) (string, error) {
+	v := strings.TrimSpace(opts.dataListen)
+	if v == "" {
+		v = "auto"
+	}
+	switch strings.ToLower(v) {
+	case "off", "none", "false":
+		return "off", nil
+	case "auto":
+		doc, err := peers.Load(opts.peers)
+		if err != nil {
+			return "", err
+		}
+		if doc.HasRegistration() {
+			return "127.0.0.1:0", nil
+		}
+		return "off", nil
+	default:
+		return v, nil
+	}
+}
+
+func advertisedAddr(host, listenAddr string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = paths.DefaultAdvertise()
+	}
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return listenAddr
+	}
+	return net.JoinHostPort(host, port)
+}
+
+func publishDataEndpoint(opts options, addr, certFP string) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if !doc.HasRegistration() {
+		return nil
+	}
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	key, err := auth.LoadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	cli := cpclient.New(platform)
+	return cli.PublishEndpoint(doc.Registration.ID, pub, addr, certFP, controlpanel.DefaultEndpointTTL)
+}
+
+func injectPeerTrust(trust *auth.Store, doc *peers.File) {
+	if trust == nil || doc == nil {
+		return
+	}
+	for _, p := range doc.Peers {
+		if p.Direction != "inbound" && p.Direction != "" {
+			continue
+		}
+		pub, err := auth.DecodePublic(p.PublicKey)
+		if err != nil {
+			continue
+		}
+		name := p.Nickname
+		if name == "" {
+			name = p.ID
+		}
+		trust.EnsurePeer(name, pub, auth.AllGlobal)
+	}
+}
+
+func syncPeersAndTrust(opts options, trust *auth.Store) error {
+	if err := syncPeersFromCP(opts); err != nil {
+		return err
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	injectPeerTrust(trust, doc)
+	return nil
+}
+
+func dataPlaneMaintain(opts options, trust *auth.Store, addr, certFP string, stop <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := syncPeersAndTrust(opts, trust); err != nil {
+				fmt.Fprintf(os.Stderr, "cp peer sync: %v\n", err)
+			}
+			if err := publishDataEndpoint(opts, addr, certFP); err != nil {
+				fmt.Fprintf(os.Stderr, "cp endpoint publish: %v\n", err)
+			}
+		}
+	}
 }
 
 func runRegister(opts options) error {
@@ -399,15 +610,18 @@ func cpPeersToLocal(list []controlpanel.Peer) []peers.Peer {
 
 func parseArgs(args []string) (options, error) {
 	opts := options{
-		socket:   paths.DefaultSocket(),
-		listen:   paths.DefaultListen(),
-		identity: paths.DefaultIdentity(),
-		trust:    paths.DefaultTrust(),
-		peers:    paths.DefaultPeers(),
-		platform: paths.DefaultPlatform(),
-		approval: controlpanel.DefaultApproval,
-		cert:     paths.DefaultServerCert(),
-		key:      paths.DefaultServerKey(),
+		socket:     paths.DefaultSocket(),
+		listen:     paths.DefaultListen(),
+		dataListen: paths.DefaultDataListen(),
+		advertise:  paths.DefaultAdvertise(),
+		identity:   paths.DefaultIdentity(),
+		trust:      paths.DefaultTrust(),
+		peers:      paths.DefaultPeers(),
+		recent:     paths.DefaultRecent(),
+		platform:   paths.DefaultPlatform(),
+		approval:   controlpanel.DefaultApproval,
+		cert:       paths.DefaultServerCert(),
+		key:        paths.DefaultServerKey(),
 	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -432,6 +646,22 @@ func parseArgs(args []string) (options, error) {
 			opts.listen = args[i]
 		case strings.HasPrefix(a, "--listen="):
 			opts.listen = strings.TrimPrefix(a, "--listen=")
+		case a == "--data-listen":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires auto|off|HOST:PORT", a)
+			}
+			i++
+			opts.dataListen = args[i]
+		case strings.HasPrefix(a, "--data-listen="):
+			opts.dataListen = strings.TrimPrefix(a, "--data-listen=")
+		case a == "--advertise":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a host", a)
+			}
+			i++
+			opts.advertise = args[i]
+		case strings.HasPrefix(a, "--advertise="):
+			opts.advertise = strings.TrimPrefix(a, "--advertise=")
 		case a == "--addr":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires host:port", a)
@@ -440,6 +670,14 @@ func parseArgs(args []string) (options, error) {
 			opts.addr = args[i]
 		case strings.HasPrefix(a, "--addr="):
 			opts.addr = strings.TrimPrefix(a, "--addr=")
+		case a == "--peer":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires an id or nickname", a)
+			}
+			i++
+			opts.peer = args[i]
+		case strings.HasPrefix(a, "--peer="):
+			opts.peer = strings.TrimPrefix(a, "--peer=")
 		case a == "--identity":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -570,8 +808,11 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Flags:")
 	writeHelpRows(w, []helpRow{
 		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
-		{"--listen ADDR|off", fmt.Sprintf("TLS listen for up (default %s)", paths.DefaultListen())},
-		{"--addr HOST:PORT", "TLS client endpoint"},
+		{"--listen ADDR|off", fmt.Sprintf("Manual TLS listen for up (default %s)", paths.DefaultListen())},
+		{"--data-listen MODE", "Data-plane TLS: auto|off|HOST:PORT (default auto)"},
+		{"--advertise HOST", fmt.Sprintf("Host published to CP (default %s)", paths.DefaultAdvertise())},
+		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
+		{"--peer ID|NICK", "Target paired peer for session commands"},
 		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},
 		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
 		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
@@ -585,6 +826,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
+	fmt.Fprintln(w, "  Use --peer <id|nickname> to create/list sessions on a paired peer.")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
@@ -607,6 +849,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  attach <session_id>   Interactive; Ctrl-\\ detaches.")
 	fmt.Fprintln(w, "  watch <session_id>    Read-only; Ctrl-C / Ctrl-\\ stops.")
 	fmt.Fprintln(w, "  close <session_id>    Marks CLOSED; kept until daemon restart.")
+	fmt.Fprintln(w, "  --peer <id|nick>      Target a paired peer (CP signaling + direct TLS).")
 }
 
 func sessionUsage() string {
