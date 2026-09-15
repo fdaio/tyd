@@ -321,6 +321,66 @@ func TestSessionHelpColor(t *testing.T) {
 	}
 }
 
+func TestFormatAcceptCommand(t *testing.T) {
+	tok := "abc123"
+	if got := formatAcceptCommand(paths.DefaultPlatform(), tok); got != "tyd accept "+tok {
+		t.Fatalf("default platform: %q", got)
+	}
+	if got := formatAcceptCommand("https://app.getfda.dev/", tok); got != "tyd accept "+tok {
+		t.Fatalf("default with slash: %q", got)
+	}
+	custom := "http://127.0.0.1:8080"
+	want := "tyd --platform " + custom + " accept " + tok
+	if got := formatAcceptCommand(custom, tok); got != want {
+		t.Fatalf("custom: %q want %q", got, want)
+	}
+}
+
+func TestParseInviteToken(t *testing.T) {
+	if got := parseInviteToken("deadbeef"); got != "deadbeef" {
+		t.Fatalf("bare: %q", got)
+	}
+	if got := parseInviteToken("tyd accept deadbeef"); got != "deadbeef" {
+		t.Fatalf("accept line: %q", got)
+	}
+	if got := parseInviteToken("tyd --platform http://127.0.0.1:1 accept deadbeef"); got != "deadbeef" {
+		t.Fatalf("with platform: %q", got)
+	}
+	if got := parseInviteToken("tyd accept"); got != "" {
+		t.Fatalf("missing token: %q", got)
+	}
+}
+
+func TestPrintInviteResult(t *testing.T) {
+	var errBuf, outBuf bytes.Buffer
+	printInviteResult(&errBuf, &outBuf, inviteResult{
+		Kind:     "registered",
+		URL:      "https://app.getfda.dev/abc",
+		Approval: "full",
+		Platform: paths.DefaultPlatform(),
+		Token:    "tok1",
+		TTL:      controlpanel.InviteTTL,
+	})
+	errOut := errBuf.String()
+	for _, want := range []string{
+		"Registered with Control Panel.",
+		"url",
+		"https://app.getfda.dev/abc",
+		"approval",
+		"full",
+		"invite ttl",
+		"Copy and run on the peer:",
+		"tyd accept tok1",
+	} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("missing %q in stderr:\n%s", want, errOut)
+		}
+	}
+	if got := strings.TrimSpace(outBuf.String()); got != "tyd accept tok1" {
+		t.Fatalf("stdout %q", got)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -362,13 +422,18 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		approval: "full",
 		cmd:      "register",
 	}
-	token := strings.TrimSpace(captureStdout(t, func() {
+	acceptLine := strings.TrimSpace(captureStdout(t, func() {
 		if err := run(sOpts); err != nil {
 			t.Fatal(err)
 		}
 	}))
+	token := parseInviteToken(acceptLine)
 	if token == "" {
-		t.Fatal("empty invite")
+		t.Fatalf("empty invite from %q", acceptLine)
+	}
+	wantCmd := formatAcceptCommand(platform, token)
+	if acceptLine != wantCmd {
+		t.Fatalf("stdout accept command %q want %q", acceptLine, wantCmd)
 	}
 	if _, err := os.Stat(sOpts.identity); err != nil {
 		t.Fatalf("server identity not auto-created: %v", err)
@@ -381,7 +446,7 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		platform: platform,
 		as:       "box",
 		cmd:      "accept",
-		rest:     []string{token},
+		rest:     []string{acceptLine}, // pasted full command line also works
 	}
 	peerID := strings.TrimSpace(captureStdout(t, func() {
 		if err := run(cOpts); err != nil {

@@ -46,8 +46,9 @@ Local CP for tests:
 
 ```bash
 go run ./cmd/controlpanel -listen 127.0.0.1:8080
-./tyd --platform http://127.0.0.1:8080 register   # prints invite token
+./tyd --platform http://127.0.0.1:8080 register   # prints: tyd --platform … accept <token>
 ./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
+# production (default platform): tyd register  →  paste stdout on peer: tyd accept <token> --as …
 ./tyd --peer peer-nick session create
 ./tyd revoke peer-nick
 ```
