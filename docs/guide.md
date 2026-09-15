@@ -45,7 +45,7 @@ Useful flags:
 
 ## Session lifecycle
 
-Session operations live under the `session` subcommand:
+Session operations live under the `session` subcommand (`tyd session help` lists them):
 
 ```bash
 id=$(./tyd session create)
