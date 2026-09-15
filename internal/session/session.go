@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -75,6 +76,14 @@ func (m *Manager) List() []protocol.SessionInfo {
 	for _, s := range m.sessions {
 		out = append(out, s.Info())
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		iClosed := out[i].State == string(StateClosed)
+		jClosed := out[j].State == string(StateClosed)
+		if iClosed != jClosed {
+			return !iClosed // alive (non-CLOSED) first
+		}
+		return out[i].CreatedAt < out[j].CreatedAt
+	})
 	return out
 }
 
@@ -85,7 +94,6 @@ func (m *Manager) Close(id string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("session %s not found", id)
 	}
-	delete(m.sessions, id)
 	m.mu.Unlock()
 	return s.Close()
 }
@@ -116,6 +124,7 @@ type Session struct {
 	cmd       *exec.Cmd
 	pty       *os.File
 	attach    *Attachment
+	watchers  []*Watcher
 	ring      []byte
 	exitCode  int
 	closed    bool
@@ -124,6 +133,13 @@ type Session struct {
 }
 
 type Attachment struct {
+	s         *Session
+	out       chan []byte
+	closed    chan struct{}
+	closeOnce sync.Once
+}
+
+type Watcher struct {
 	s         *Session
 	out       chan []byte
 	closed    chan struct{}
@@ -241,6 +257,23 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 	return a, snap, nil
 }
 
+func (s *Session) Watch() (*Watcher, []byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := append([]byte(nil), s.ring...)
+	w := &Watcher{
+		s:      s,
+		out:    make(chan []byte, 256),
+		closed: make(chan struct{}),
+	}
+	if s.closed || s.state == StateClosed {
+		w.closeOnce.Do(func() { close(w.closed) })
+		return w, snap, nil
+	}
+	s.watchers = append(s.watchers, w)
+	return w, snap, nil
+}
+
 func (a *Attachment) Write(p []byte) (int, error) {
 	if a.s.pty == nil {
 		return 0, io.ErrClosedPipe
@@ -326,6 +359,75 @@ func (a *Attachment) closeOut() {
 	})
 }
 
+func (w *Watcher) Recv() ([]byte, error) {
+	select {
+	case b := <-w.out:
+		return b, nil
+	case <-w.closed:
+		select {
+		case b := <-w.out:
+			return b, nil
+		default:
+			return nil, io.EOF
+		}
+	}
+}
+
+func (w *Watcher) RecvTimeout(d time.Duration) ([]byte, error) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case b := <-w.out:
+		return b, nil
+	case <-w.closed:
+		select {
+		case b := <-w.out:
+			return b, nil
+		default:
+			return nil, io.EOF
+		}
+	case <-timer.C:
+		return nil, os.ErrDeadlineExceeded
+	}
+}
+
+func (w *Watcher) SessionClosed() bool {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	return w.s.closed || w.s.state == StateClosed
+}
+
+func (w *Watcher) ExitCode() int {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	return w.s.exitCode
+}
+
+func (w *Watcher) Close() {
+	w.s.mu.Lock()
+	for i, x := range w.s.watchers {
+		if x == w {
+			w.s.watchers = append(w.s.watchers[:i], w.s.watchers[i+1:]...)
+			break
+		}
+	}
+	w.closeOut()
+	w.s.mu.Unlock()
+}
+
+func (w *Watcher) closeOut() {
+	w.closeOnce.Do(func() {
+		close(w.closed)
+	})
+}
+
+func (s *Session) closeWatchersLocked() {
+	for _, w := range s.watchers {
+		w.closeOut()
+	}
+	s.watchers = nil
+}
+
 func (s *Session) Signal(name string) error {
 	s.mu.Lock()
 	ptmx := s.pty
@@ -360,8 +462,22 @@ func (s *Session) Signal(name string) error {
 }
 
 func (s *Session) Close() error {
+	s.mu.Lock()
+	if s.closed || s.state == StateClosed {
+		s.mu.Unlock()
+		return fmt.Errorf("already closed")
+	}
+	s.mu.Unlock()
+
+	ran := false
 	s.closeOnce.Do(func() {
+		ran = true
 		s.mu.Lock()
+		if s.closed || s.state == StateClosed {
+			s.mu.Unlock()
+			ran = false
+			return
+		}
 		s.closed = true
 		s.state = StateClosed
 		cmd := s.cmd
@@ -370,6 +486,7 @@ func (s *Session) Close() error {
 			s.attach.closeOut()
 			s.attach = nil
 		}
+		s.closeWatchersLocked()
 		s.mu.Unlock()
 
 		if cmd != nil && cmd.Process != nil {
@@ -394,6 +511,9 @@ func (s *Session) Close() error {
 			}
 		}
 	})
+	if !ran {
+		return fmt.Errorf("already closed")
+	}
 	return nil
 }
 
@@ -428,6 +548,7 @@ func (s *Session) waitLoop() {
 		s.attach.closeOut()
 		s.attach = nil
 	}
+	s.closeWatchersLocked()
 	s.mu.Unlock()
 	close(s.cmdDone)
 }
@@ -440,13 +561,19 @@ func (s *Session) broadcast(p []byte) {
 		s.ring = append([]byte(nil), s.ring[len(s.ring)-ringMax:]...)
 	}
 	att := s.attach
+	watchers := append([]*Watcher(nil), s.watchers...)
 	s.mu.Unlock()
-	if att == nil {
-		return
+	if att != nil {
+		select {
+		case <-att.closed:
+		case att.out <- cp:
+		}
 	}
-	select {
-	case <-att.closed:
-	case att.out <- cp:
+	for _, w := range watchers {
+		select {
+		case <-w.closed:
+		case w.out <- cp:
+		}
 	}
 }
 

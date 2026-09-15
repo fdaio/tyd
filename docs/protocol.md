@@ -23,12 +23,13 @@ Maximum frame size: 1 MiB.
 | `create` | Create session | `create` |
 | `list` | List sessions | `list` |
 | `status` | List connection topology | `list` |
-| `attach` | Attach to session | `attach` on that session |
+| `attach` | Attach to session (exclusive writer/viewer) | `attach` on that session |
+| `watch` | Read-only observe (or dump closed history) | `attach` on that session |
 | `write` | Bytes to PTY | `write` |
 | `resize` | Rows/cols | `resize` |
 | `signal` | e.g. `INT`, `TSTP` | `signal` |
-| `detach` | Leave session without killing shell | (must be attached) |
-| `close` | Destroy session | `close` |
+| `detach` | Leave attach/watch without killing shell | (must be attached/watching) |
+| `close` | Close session (kept until daemon restart) | `close` |
 
 ### Server → client
 
@@ -40,10 +41,11 @@ Maximum frame size: 1 MiB.
 | `sessions` | List result |
 | `connections` | Status / topology result |
 | `attached` | Attach succeeded |
+| `watching` | Watch succeeded |
 | `output` | PTY output bytes |
 | `detached` | Detach acknowledged |
-| `exit` | Shell exited |
-| `closed` | Session closed |
+| `exit` | Shell exited (or closed-session watch finished) |
+| `closed` | Session close acknowledged |
 
 ## Authentication handshake
 
@@ -63,7 +65,7 @@ Server accepts only public keys present in the trust store. Bad signature → `a
 |------------|-------|-------|
 | `list` | global | Also required for `status` |
 | `create` | global | On success, creator gets owner caps on the new session (in memory) |
-| `attach` | per session | Read/follow output; **not** write |
+| `attach` | per session | Read/follow output (`attach` or `watch`); **not** write |
 | `write` | per session | Keyboard / stdin to PTY |
 | `resize` | per session | |
 | `signal` | per session | |

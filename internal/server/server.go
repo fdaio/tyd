@@ -111,6 +111,7 @@ type connState struct {
 	conn      net.Conn
 	wmu       sync.Mutex
 	att       *session.Attachment
+	watcher   *session.Watcher
 	sid       string
 	principal *auth.Principal
 	info      transport.Info
@@ -147,6 +148,10 @@ func (s *Server) handle(conn net.Conn) {
 		if st.att != nil {
 			st.att.Detach()
 			st.att = nil
+		}
+		if st.watcher != nil {
+			st.watcher.Close()
+			st.watcher = nil
 		}
 		s.mu.Lock()
 		delete(s.conns, st.id)
@@ -286,7 +291,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
-		if st.att != nil {
+		if st.att != nil || st.watcher != nil {
 			return fmt.Errorf("connection already attached")
 		}
 		sess, err := s.cfg.Mgr.Get(f.SessionID)
@@ -323,6 +328,46 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		go s.pumpOutput(st, att)
 		return nil
 
+	case protocol.TypeWatch:
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
+			return err
+		}
+		if st.att != nil || st.watcher != nil {
+			return fmt.Errorf("connection already attached")
+		}
+		sess, err := s.cfg.Mgr.Get(f.SessionID)
+		if err != nil {
+			return err
+		}
+		w, snap, err := sess.Watch()
+		if err != nil {
+			return err
+		}
+		info := sess.Info()
+		if err := st.send(protocol.Frame{Type: protocol.TypeWatching, Session: &info}); err != nil {
+			w.Close()
+			return err
+		}
+		if len(snap) > 0 {
+			if err := st.send(protocol.Frame{Type: protocol.TypeOutput, Data: snap}); err != nil {
+				w.Close()
+				return err
+			}
+		}
+		if info.State == string(session.StateClosed) {
+			_ = st.send(protocol.Frame{Type: protocol.TypeExit, ExitCode: w.ExitCode()})
+			w.Close()
+			return nil
+		}
+		st.watcher = w
+		st.sid = f.SessionID
+		st.state = "watching"
+		go s.pumpWatchOutput(st, w)
+		return nil
+
 	case protocol.TypeWrite:
 		if st.att == nil {
 			return fmt.Errorf("not attached")
@@ -352,14 +397,21 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		return st.att.Signal(f.Signal)
 
 	case protocol.TypeDetach:
-		if st.att == nil {
-			return fmt.Errorf("not attached")
+		if st.att != nil {
+			st.att.Detach()
+			st.att = nil
+			st.sid = ""
+			st.state = "authenticated"
+			return st.send(protocol.Frame{Type: protocol.TypeDetached})
 		}
-		st.att.Detach()
-		st.att = nil
-		st.sid = ""
-		st.state = "authenticated"
-		return st.send(protocol.Frame{Type: protocol.TypeDetached})
+		if st.watcher != nil {
+			st.watcher.Close()
+			st.watcher = nil
+			st.sid = ""
+			st.state = "authenticated"
+			return st.send(protocol.Frame{Type: protocol.TypeDetached})
+		}
+		return fmt.Errorf("not attached")
 
 	default:
 		return fmt.Errorf("unknown type %q", f.Type)
@@ -377,6 +429,22 @@ func (s *Server) pumpOutput(st *connState, att *session.Attachment) {
 		}
 		if err := st.send(protocol.Frame{Type: protocol.TypeOutput, Data: b}); err != nil {
 			att.Detach()
+			return
+		}
+	}
+}
+
+func (s *Server) pumpWatchOutput(st *connState, w *session.Watcher) {
+	for {
+		b, err := w.Recv()
+		if err != nil {
+			if w.SessionClosed() {
+				_ = st.send(protocol.Frame{Type: protocol.TypeExit, ExitCode: w.ExitCode()})
+			}
+			return
+		}
+		if err := st.send(protocol.Frame{Type: protocol.TypeOutput, Data: b}); err != nil {
+			w.Close()
 			return
 		}
 	}

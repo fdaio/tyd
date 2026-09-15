@@ -79,7 +79,7 @@ func run(opts options) error {
 
 func runSession(opts options) error {
 	if len(opts.rest) == 0 {
-		return fmt.Errorf("usage: tyd session <create|list|attach|close>")
+		return fmt.Errorf("usage: tyd session <create|list|attach|watch|close>")
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
@@ -120,6 +120,16 @@ func runSession(opts options) error {
 		}
 		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", args[0])
 		return client.Attach(endpoint(opts), key, args[0], os.Stdin, os.Stdout)
+	case "watch":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd session watch <session_id>")
+		}
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", args[0])
+		return client.Watch(endpoint(opts), key, args[0], os.Stdout)
 	case "close":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: tyd session close <session_id>")
@@ -305,6 +315,7 @@ func sessionUsage() string {
   tyd session create
   tyd session list
   tyd session attach <session_id>
+  tyd session watch  <session_id>
   tyd session close  <session_id>
 `
 }
@@ -319,6 +330,7 @@ Usage:
   tyd session create
   tyd session list
   tyd session attach <session_id>
+  tyd session watch  <session_id>
   tyd session close  <session_id>
 
 Flags (global):
@@ -331,5 +343,6 @@ Flags (global):
   --tls-key PATH          server key
 
 While attached, press Ctrl-\ to detach. The shell keeps running.
+While watching, press Ctrl-C or Ctrl-\ to stop; the session is not closed.
 `, paths.DefaultSocket(), paths.DefaultListen(), paths.DefaultIdentity(), paths.DefaultTrust(), paths.DefaultServerCert())
 }

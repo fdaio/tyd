@@ -284,6 +284,105 @@ func TestCopyInputSendsWriteThenDetach(t *testing.T) {
 	}
 }
 
+func TestWatchClientAPI(t *testing.T) {
+	ep, key := startTestServer(t)
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Attach(ep, key, info.ID, inR, outW)
+	}()
+	if _, err := inW.Write([]byte("echo watch-cli-ok\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var acc []byte
+	buf := make([]byte, 1024)
+	for time.Now().Before(deadline) {
+		_ = outR.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := outR.Read(buf)
+		if n > 0 {
+			acc = append(acc, buf[:n]...)
+			if bytes.Contains(acc, []byte("watch-cli-ok")) {
+				break
+			}
+		}
+		if err != nil && !os.IsTimeout(err) {
+			t.Fatalf("read: %v", err)
+		}
+	}
+	if _, err := inW.Write([]byte{detachByte}); err != nil {
+		t.Fatal(err)
+	}
+	_ = inW.Close()
+	<-errCh
+	_ = outW.Close()
+	_ = inR.Close()
+	_ = outR.Close()
+
+	wOutR, wOutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	watchErr := make(chan error, 1)
+	go func() {
+		watchErr <- Watch(ep, key, info.ID, wOutW)
+	}()
+	deadline = time.Now().Add(5 * time.Second)
+	acc = nil
+	for time.Now().Before(deadline) {
+		_ = wOutR.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, err := wOutR.Read(buf)
+		if n > 0 {
+			acc = append(acc, buf[:n]...)
+			if bytes.Contains(acc, []byte("watch-cli-ok")) {
+				break
+			}
+		}
+		if err != nil && !os.IsTimeout(err) {
+			break
+		}
+	}
+	_ = wOutW.Close()
+	select {
+	case <-watchErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("watch did not return")
+	}
+	_ = wOutR.Close()
+	if !bytes.Contains(acc, []byte("watch-cli-ok")) {
+		t.Fatalf("watch missing output: %q", acc)
+	}
+
+	if err := CloseSession(ep, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := List(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, s := range listed {
+		if s.ID == info.ID && s.State == "CLOSED" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("closed session should remain listed")
+	}
+}
+
 func TestCopyOutputStopsOnDetach(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
