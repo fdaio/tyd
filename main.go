@@ -1659,7 +1659,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
-	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
+	fmt.Fprintln(w, "  While connecting, Ctrl-C cancels; while attached, Ctrl-\\ detaches.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> for create/attach/watch/close on a paired peer.")
 	fmt.Fprintln(w, "  session list is local (sessions.json); it does not use --peer or CP.")

@@ -1,10 +1,12 @@
 package transport
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 func ListenUnix(path string) (net.Listener, error) {
@@ -46,7 +48,12 @@ func (l *unixListener) Close() error {
 }
 
 func DialUnix(path string) (Conn, error) {
-	c, err := net.Dial("unix", path)
+	return DialUnixContext(context.Background(), path)
+}
+
+func DialUnixContext(ctx context.Context, path string) (Conn, error) {
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	c, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("dial unix %s: %w", path, err)
 	}

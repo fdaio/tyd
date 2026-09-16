@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -43,6 +44,13 @@ type Conn struct {
 }
 
 func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	return DialContext(context.Background(), ep, key)
+}
+
+func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	addrs := make([]string, 0, 1+len(ep.Candidates))
 	if strings.TrimSpace(ep.Address) != "" {
 		addrs = append(addrs, ep.Address)
@@ -68,40 +76,46 @@ func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 
 	var errs []string
 	for _, addr := range addrs {
+		if err := ctx.Err(); err != nil {
+			return nil, errInterrupted
+		}
 		if ep.OnDial != nil {
 			ep.OnDial(addr)
 		}
 		try := ep
 		try.Address = addr
 		try.Candidates = nil
-		c, err := dialOnce(try, key)
+		c, err := dialOnce(ctx, try, key)
 		if err == nil {
 			return c, nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errInterrupted) {
+			return nil, errInterrupted
 		}
 		errs = append(errs, fmt.Sprintf("%s: %v", addr, err))
 	}
 	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
 }
 
-func dialOnce(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 	var (
 		nc  transport.Conn
 		err error
 	)
 	switch ep.Kind {
 	case transport.KindUnix, "":
-		nc, err = transport.DialUnix(ep.Address)
+		nc, err = transport.DialUnixContext(ctx, ep.Address)
 	case transport.KindTLS:
 		if ep.CertFP != "" {
-			nc, err = transport.DialTLSFingerprint(ep.Address, ep.CertFP)
+			nc, err = transport.DialTLSFingerprintContext(ctx, ep.Address, ep.CertFP)
 		} else {
-			nc, err = transport.DialTLS(ep.Address, ep.CertPath)
+			nc, err = transport.DialTLSContext(ctx, ep.Address, ep.CertPath)
 		}
 	case transport.KindQUIC:
 		if ep.CertFP == "" {
 			return nil, fmt.Errorf("quic requires certificate fingerprint")
 		}
-		nc, err = transport.DialQUICFingerprint(ep.Address, ep.CertFP)
+		nc, err = transport.DialQUICFingerprintContext(ctx, ep.Address, ep.CertFP)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
@@ -261,6 +275,7 @@ const detachByte = 0x1c // Ctrl-\
 var (
 	errUserDetach   = errors.New("detached")
 	errSessionEnded = errors.New("session ended")
+	errInterrupted  = errors.New("interrupted")
 )
 
 func attachStopError(err error) error {
@@ -274,25 +289,43 @@ func leaveMessage(err error) string {
 	if errors.Is(err, errSessionEnded) {
 		return "session ended"
 	}
+	if errors.Is(err, errInterrupted) {
+		return "interrupted"
+	}
 	return "detaching"
 }
 
+func asInterrupted(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errInterrupted) {
+		return errInterrupted
+	}
+	return err
+}
+
 func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) error {
-	c, err := Dial(ep, key)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := DialContext(ctx, ep, key)
 	if err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	defer c.Close()
+	go closeOnDone(ctx, c)
+
 	if ep.OnAttach != nil {
 		ep.OnAttach()
 	}
 
 	if err := c.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: id}); err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	resp, err := c.Recv()
 	if err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	if resp.Type == protocol.TypeError {
 		return fmt.Errorf("%s", resp.Error)
@@ -304,6 +337,7 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 		ep.OnReady()
 	}
 
+	// After live: Ctrl-C / Ctrl-\ stop watching (existing behavior).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGQUIT)
 	defer signal.Stop(sigCh)
@@ -331,11 +365,16 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 }
 
 func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
-	c, err := Dial(ep, key)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	c, err := DialContext(ctx, ep, key)
 	if err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	defer c.Close()
+	go closeOnDone(ctx, c)
+
 	if ep.OnAttach != nil {
 		ep.OnAttach()
 	}
@@ -351,22 +390,14 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 			req.Cols = uint16(cols)
 			lastCols, lastRows = req.Cols, req.Rows
 		}
-		old, err := term.MakeRaw(fd)
-		if err != nil {
-			return err
-		}
-		restore = func() { _ = term.Restore(fd, old) }
-		defer restore()
-		// Drop Enter/keys typed while connecting so they don't spam the remote shell.
-		drainPendingInput(stdin)
 	}
 
 	if err := c.Send(req); err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	resp, err := c.Recv()
 	if err != nil {
-		return err
+		return asInterrupted(err)
 	}
 	if resp.Type == protocol.TypeError {
 		return fmt.Errorf("%s", resp.Error)
@@ -374,6 +405,18 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 	if resp.Type != protocol.TypeAttached {
 		return fmt.Errorf("unexpected attach reply %q", resp.Type)
 	}
+
+	// Keep the terminal cooked until attach succeeds so Ctrl-C stays SIGINT.
+	if term.IsTerminal(fd) {
+		old, err := term.MakeRaw(fd)
+		if err != nil {
+			return err
+		}
+		restore = func() { _ = term.Restore(fd, old) }
+		defer restore()
+		drainPendingInput(stdin)
+	}
+
 	if ep.OnReady != nil {
 		ep.OnReady()
 	}
@@ -390,7 +433,6 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		winCh := make(chan os.Signal, 4)
 		signal.Notify(winCh, syscall.SIGWINCH)
 		defer signal.Stop(winCh)
-		// MakeRaw often synthesizes SIGWINCH; ignore no-op resizes that reprint the prompt.
 		drainSignals(winCh)
 		go func() {
 			for range winCh {
@@ -424,6 +466,13 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		ep.OnLeave(leaveMessage(err))
 	}
 	return attachStopError(err)
+}
+
+func closeOnDone(ctx context.Context, c *Conn) {
+	<-ctx.Done()
+	if c != nil {
+		_ = c.Close()
+	}
 }
 
 // drainPendingInput discards bytes already buffered on stdin (usually Enter
