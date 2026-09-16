@@ -64,7 +64,16 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd invite --no-wait                    # print accept line and exit
 ./tyd invite revoke <token>               # unused invite
 ./tyd revoke laptop                       # drop pairing (either side)
+./tyd register --force                    # replace registration; invalidates peers
 ```
+
+Already registered: `tyd register` requires `--force` or a TTY `y/N` confirm. Force replaces the
+CP daemon (new id), clears local peers, and warns that existing pairings are invalid until peers
+accept a new invite. Non-TTY without `--force` errors.
+
+`tyd up` reuses `~/.tyd/peers.json` (same daemon id). If CP lost that daemon, `up` restores via
+`POST /v1/restore` (id + pubkey + peers) before publishing the data-plane endpoint — it does not
+mint a new registration.
 
 ### Docker Compose
 
@@ -78,7 +87,8 @@ curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
 `--platform` is only needed for a custom / local Control Panel (e.g. `--platform http://127.0.0.1:8080`).
 
 Container listens on `0.0.0.0:8080` (no TLS inside — terminate at Cloudflare).  
-State is **in-memory**; restart loses pairing metadata. See `Dockerfile.controlpanel` and `docker-compose.yml`.
+Default in-repo CP state is **in-memory**; restart loses pairing metadata until daemons `up` and
+restore from local `peers.json`. See `Dockerfile.controlpanel` and `docker-compose.yml`.
 
 Paired peer public keys are stored in `~/.tyd/peers.json`.  
 CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon peer-sync drops inbound trust.

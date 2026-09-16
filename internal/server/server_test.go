@@ -203,6 +203,31 @@ func TestRejectsUnauthenticatedCommand(t *testing.T) {
 	}
 }
 
+func TestAttachMissingSessionReportsNotFound(t *testing.T) {
+	ep, admin, _ := startTestServer(t)
+	c, err := client.Dial(ep, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: "missing-session-id"}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := c.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeError {
+		t.Fatalf("got %+v", f)
+	}
+	if !strings.Contains(f.Error, "not found") {
+		t.Fatalf("want not found, got %q", f.Error)
+	}
+	if strings.Contains(f.Error, "permission denied") {
+		t.Fatalf("stale/missing session must not look like permission denied: %q", f.Error)
+	}
+}
+
 func TestAttachWithoutWriteCannotType(t *testing.T) {
 	ep, admin, trust := startTestServer(t)
 	info, err := client.Create(ep, admin, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})

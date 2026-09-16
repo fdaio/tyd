@@ -35,11 +35,24 @@ func New(baseURL string) *Client {
 }
 
 func (c *Client) Register(publicKey, approvalMode string) (*controlpanel.RegisterResponse, error) {
+	return c.RegisterOpts(publicKey, approvalMode, false)
+}
+
+func (c *Client) RegisterOpts(publicKey, approvalMode string, force bool) (*controlpanel.RegisterResponse, error) {
 	var out controlpanel.RegisterResponse
 	if err := c.post("/v1/register", controlpanel.RegisterRequest{
 		PublicKey:    publicKey,
 		ApprovalMode: approvalMode,
+		Force:        force,
 	}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) Restore(req controlpanel.RestoreRequest) (*controlpanel.RegisterResponse, error) {
+	var out controlpanel.RegisterResponse
+	if err := c.post("/v1/restore", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
