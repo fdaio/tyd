@@ -378,6 +378,15 @@ func TestPrintInviteResult(t *testing.T) {
 			t.Fatalf("missing %q in stderr:\n%s", want, errOut)
 		}
 	}
+	if strings.Contains(errOut, "waiting for accept") {
+		t.Fatalf("unexpected waiting line in:\n%s", errOut)
+	}
+	// TTL is the trailing help row (below the accept hint).
+	ttlIdx := strings.LastIndex(errOut, "invite ttl")
+	copyIdx := strings.Index(errOut, "Copy and run on the peer:")
+	if ttlIdx < 0 || copyIdx < 0 || ttlIdx < copyIdx {
+		t.Fatalf("invite ttl should follow copy hint:\n%s", errOut)
+	}
 	if got := strings.TrimSpace(outBuf.String()); got != "tyd accept tok1" {
 		t.Fatalf("stdout %q", got)
 	}
