@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -386,6 +388,19 @@ func TestWatchClientAPI(t *testing.T) {
 		}
 	}
 	t.Fatalf("watch did not finish; got %q", acc)
+}
+
+func TestDialContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, key, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = DialContext(ctx, Endpoint{Kind: transport.KindTLS, Address: "127.0.0.1:1", CertFP: strings.Repeat("a", 64)}, key)
+	if !errors.Is(err, errInterrupted) {
+		t.Fatalf("want interrupted, got %v", err)
+	}
 }
 
 func TestDrainPendingInput(t *testing.T) {

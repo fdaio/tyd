@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -146,15 +147,24 @@ func (l *tlsListener) Accept() (net.Conn, error) {
 }
 
 func DialTLS(addr, serverCertPath string) (Conn, error) {
+	return DialTLSContext(context.Background(), addr, serverCertPath)
+}
+
+func DialTLSContext(ctx context.Context, addr, serverCertPath string) (Conn, error) {
 	pinned, err := LoadPinnedCert(serverCertPath)
 	if err != nil {
 		return nil, fmt.Errorf("load server cert %s: %w", serverCertPath, err)
 	}
-	return DialTLSFingerprint(addr, Fingerprint(pinned))
+	return DialTLSFingerprintContext(ctx, addr, Fingerprint(pinned))
 }
 
 // DialTLSFingerprint dials TLS and pins the server by SHA-256 cert fingerprint (hex).
 func DialTLSFingerprint(addr, certFP string) (Conn, error) {
+	return DialTLSFingerprintContext(context.Background(), addr, certFP)
+}
+
+// DialTLSFingerprintContext is DialTLSFingerprint with cancellation.
+func DialTLSFingerprintContext(ctx context.Context, addr, certFP string) (Conn, error) {
 	wantFP := strings.ToLower(strings.TrimSpace(certFP))
 	if wantFP == "" {
 		return nil, fmt.Errorf("tls: empty certificate fingerprint")
@@ -178,11 +188,17 @@ func DialTLSFingerprint(addr, certFP string) (Conn, error) {
 		},
 		ServerName: "tyd",
 	}
-	c, err := tls.Dial("tcp", addr, cfg)
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	raw, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial tls %s: %w", addr, err)
 	}
-	return Wrap(c, Info{
+	tc := tls.Client(raw, cfg)
+	if err := tc.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, fmt.Errorf("dial tls %s: %w", addr, err)
+	}
+	return Wrap(tc, Info{
 		Transport: KindTLS,
 		TLS:       true,
 		CertFP:    ShortFP(wantFP),

@@ -67,6 +67,11 @@ func (l *quicListener) Addr() net.Addr { return l.ql.Addr() }
 
 // DialQUICFingerprint dials QUIC and pins the server by SHA-256 cert fingerprint (hex).
 func DialQUICFingerprint(addr, certFP string) (Conn, error) {
+	return DialQUICFingerprintContext(context.Background(), addr, certFP)
+}
+
+// DialQUICFingerprintContext is DialQUICFingerprint with cancellation.
+func DialQUICFingerprintContext(ctx context.Context, addr, certFP string) (Conn, error) {
 	wantFP := strings.ToLower(strings.TrimSpace(certFP))
 	if wantFP == "" {
 		return nil, fmt.Errorf("quic: empty certificate fingerprint")
@@ -91,15 +96,18 @@ func DialQUICFingerprint(addr, certFP string) (Conn, error) {
 			return nil
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	sess, err := quic.DialAddr(ctx, addr, tlsConf, &quic.Config{
+	sess, err := quic.DialAddr(dctx, addr, tlsConf, &quic.Config{
 		MaxIdleTimeout: 2 * time.Minute,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dial quic %s: %w", addr, err)
 	}
-	stream, err := sess.OpenStreamSync(ctx)
+	stream, err := sess.OpenStreamSync(dctx)
 	if err != nil {
 		_ = sess.CloseWithError(0, "open stream failed")
 		return nil, fmt.Errorf("quic open stream %s: %w", addr, err)
