@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -262,8 +263,8 @@ func TestCopyInputSendsWriteThenDetach(t *testing.T) {
 		_ = inW.Close()
 	}()
 
-	if err := copyInput(c, inR); err != nil {
-		t.Fatal(err)
+	if err := copyInput(c, inR); !errors.Is(err, errUserDetach) {
+		t.Fatalf("want detached, got %v", err)
 	}
 	_ = a.Close()
 
@@ -387,6 +388,37 @@ func TestWatchClientAPI(t *testing.T) {
 	t.Fatalf("watch did not finish; got %q", acc)
 }
 
+func TestDrainPendingInput(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.Write([]byte("\n\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	drainPendingInput(r)
+	buf := make([]byte, 8)
+	_ = r.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	n, _ := r.Read(buf)
+	if n != 0 {
+		t.Fatalf("expected drained stdin, got %q", buf[:n])
+	}
+}
+
+func TestDrainSignals(t *testing.T) {
+	ch := make(chan os.Signal, 4)
+	ch <- os.Interrupt
+	ch <- os.Interrupt
+	drainSignals(ch)
+	select {
+	case <-ch:
+		t.Fatal("expected empty")
+	default:
+	}
+}
+
 func TestCopyOutputStopsOnDetach(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()
@@ -412,8 +444,8 @@ func TestCopyOutputStopsOnDetach(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, errUserDetach) {
+			t.Fatalf("copyOutput: want detached, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("copyOutput did not return")

@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,10 @@ type Endpoint struct {
 	CertPath   string   // TLS pin via cert file (optional if CertFP set)
 	CertFP     string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
 	Candidates []string // extra dial addresses tried after Address (peer data-plane)
+	OnDial     func(addr string)
+	OnAttach   func()
+	OnReady    func()
+	OnLeave    func(msg string)
 }
 
 func (e Endpoint) String() string {
@@ -63,6 +68,9 @@ func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 
 	var errs []string
 	for _, addr := range addrs {
+		if ep.OnDial != nil {
+			ep.OnDial(addr)
+		}
 		try := ep
 		try.Address = addr
 		try.Candidates = nil
@@ -250,12 +258,34 @@ func Reject(ep Endpoint, key ed25519.PrivateKey, id string) error {
 
 const detachByte = 0x1c // Ctrl-\
 
+var (
+	errUserDetach   = errors.New("detached")
+	errSessionEnded = errors.New("session ended")
+)
+
+func attachStopError(err error) error {
+	if err == nil || errors.Is(err, errUserDetach) || errors.Is(err, errSessionEnded) {
+		return nil
+	}
+	return err
+}
+
+func leaveMessage(err error) string {
+	if errors.Is(err, errSessionEnded) {
+		return "session ended"
+	}
+	return "detaching"
+}
+
 func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) error {
 	c, err := Dial(ep, key)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
+	if ep.OnAttach != nil {
+		ep.OnAttach()
+	}
 
 	if err := c.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: id}); err != nil {
 		return err
@@ -269,6 +299,9 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 	}
 	if resp.Type != protocol.TypeWatching && resp.Type != protocol.TypeAttached {
 		return fmt.Errorf("unexpected watch reply %q", resp.Type)
+	}
+	if ep.OnReady != nil {
+		ep.OnReady()
 	}
 
 	sigCh := make(chan os.Signal, 1)
@@ -291,7 +324,10 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 
 	err = <-errCh
 	_ = c.Close()
-	return err
+	if ep.OnLeave != nil {
+		ep.OnLeave(leaveMessage(err))
+	}
+	return attachStopError(err)
 }
 
 func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
@@ -300,15 +336,20 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		return err
 	}
 	defer c.Close()
+	if ep.OnAttach != nil {
+		ep.OnAttach()
+	}
 
 	req := protocol.Frame{Type: protocol.TypeAttach, SessionID: id}
 	restore := func() {}
 	fd := int(stdin.Fd())
+	var lastCols, lastRows uint16
 	if term.IsTerminal(fd) {
 		cols, rows, err := term.GetSize(fd)
 		if err == nil {
 			req.Rows = uint16(rows)
 			req.Cols = uint16(cols)
+			lastCols, lastRows = req.Cols, req.Rows
 		}
 		old, err := term.MakeRaw(fd)
 		if err != nil {
@@ -316,6 +357,8 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		}
 		restore = func() { _ = term.Restore(fd, old) }
 		defer restore()
+		// Drop Enter/keys typed while connecting so they don't spam the remote shell.
+		drainPendingInput(stdin)
 	}
 
 	if err := c.Send(req); err != nil {
@@ -331,6 +374,9 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 	if resp.Type != protocol.TypeAttached {
 		return fmt.Errorf("unexpected attach reply %q", resp.Type)
 	}
+	if ep.OnReady != nil {
+		ep.OnReady()
+	}
 
 	errCh := make(chan error, 2)
 	go func() {
@@ -341,16 +387,23 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 	}()
 
 	if term.IsTerminal(fd) {
-		winCh := make(chan os.Signal, 1)
+		winCh := make(chan os.Signal, 4)
 		signal.Notify(winCh, syscall.SIGWINCH)
 		defer signal.Stop(winCh)
+		// MakeRaw often synthesizes SIGWINCH; ignore no-op resizes that reprint the prompt.
+		drainSignals(winCh)
 		go func() {
 			for range winCh {
 				cols, rows, err := term.GetSize(fd)
 				if err != nil {
 					continue
 				}
-				_ = c.Send(protocol.Frame{Type: protocol.TypeResize, Rows: uint16(rows), Cols: uint16(cols)})
+				c16, r16 := uint16(cols), uint16(rows)
+				if c16 == lastCols && r16 == lastRows {
+					continue
+				}
+				lastCols, lastRows = c16, r16
+				_ = c.Send(protocol.Frame{Type: protocol.TypeResize, Rows: r16, Cols: c16})
 			}
 		}()
 	}
@@ -359,12 +412,45 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 	_ = c.Close()
 	_ = stdin.SetReadDeadline(time.Now())
 	select {
-	case <-errCh:
+	case second := <-errCh:
+		if err == nil {
+			err = second
+		}
 	case <-time.After(500 * time.Millisecond):
 	}
 	restore()
 	_ = stdin.SetReadDeadline(time.Time{})
-	return err
+	if ep.OnLeave != nil {
+		ep.OnLeave(leaveMessage(err))
+	}
+	return attachStopError(err)
+}
+
+// drainPendingInput discards bytes already buffered on stdin (usually Enter
+// pressed while waiting to connect).
+func drainPendingInput(stdin *os.File) {
+	if stdin == nil {
+		return
+	}
+	_ = stdin.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+	buf := make([]byte, 256)
+	for {
+		n, err := stdin.Read(buf)
+		if n == 0 || err != nil {
+			break
+		}
+	}
+	_ = stdin.SetReadDeadline(time.Time{})
+}
+
+func drainSignals(ch <-chan os.Signal) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
 }
 
 func copyOutput(c *Conn, stdout *os.File) error {
@@ -382,9 +468,9 @@ func copyOutput(c *Conn, stdout *os.File) error {
 				return err
 			}
 		case protocol.TypeExit:
-			return nil
+			return errSessionEnded
 		case protocol.TypeDetached:
-			return nil
+			return errUserDetach
 		case protocol.TypeError:
 			return fmt.Errorf("%s", f.Error)
 		}
@@ -407,7 +493,7 @@ func copyInput(c *Conn, stdin *os.File) error {
 					if err := c.Send(protocol.Frame{Type: protocol.TypeDetach}); err != nil {
 						return err
 					}
-					return nil
+					return errUserDetach
 				}
 			}
 			if err := c.Send(protocol.Frame{Type: protocol.TypeWrite, Data: append([]byte(nil), data...)}); err != nil {
@@ -417,7 +503,7 @@ func copyInput(c *Conn, stdin *os.File) error {
 		if err != nil {
 			_ = c.Send(protocol.Frame{Type: protocol.TypeDetach})
 			if err == io.EOF {
-				return nil
+				return errUserDetach
 			}
 			return err
 		}

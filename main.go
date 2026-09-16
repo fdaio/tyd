@@ -189,6 +189,28 @@ func rememberPeerSession(opts options, peerID, sessionID string) {
 	_ = recent.Remember(opts.recent, peerID, sessionID)
 }
 
+func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
+	if ep == nil {
+		return
+	}
+	kind := string(ep.Kind)
+	if kind == "" {
+		kind = "unix"
+	}
+	ep.OnDial = func(addr string) {
+		st.Step(2, 4, fmt.Sprintf("connecting %s %s", kind, addr))
+	}
+	ep.OnAttach = func() {
+		st.Step(3, 4, fmt.Sprintf("attaching %s", kind))
+	}
+	ep.OnReady = func() {
+		st.Clear()
+	}
+	ep.OnLeave = func(msg string) {
+		st.Leave(msg)
+	}
+}
+
 // resolveSessionRef maps alias → session id, or uses recent session when ref is empty.
 func resolveSessionRef(opts options, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
@@ -242,9 +264,23 @@ func runSession(opts options) error {
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
+	st := newConnectStatus(os.Stderr)
+	live := sub == "attach" || sub == "watch"
+	if live {
+		st.Step(1, 4, "looking up endpoint")
+	}
 	ep, peerID, err := endpoint(opts)
 	if err != nil {
+		st.Clear()
 		return err
+	}
+	if live {
+		bindSessionProgress(&ep, st)
+		if peerID != "" {
+			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+		} else {
+			st.Step(1, 4, "local "+string(ep.Kind))
+		}
 	}
 	switch sub {
 	case "create":
@@ -299,8 +335,9 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", sid)
-		return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		err = client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		st.Clear()
+		return err
 	case "watch":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
@@ -311,8 +348,9 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", sid)
-		return client.Watch(ep, key, sid, os.Stdout)
+		err = client.Watch(ep, key, sid, os.Stdout)
+		st.Clear()
+		return err
 	case "close":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
@@ -543,6 +581,13 @@ func shortFP(fp string) string {
 		return fp[:16]
 	}
 	return fp
+}
+
+func shortPeer(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
