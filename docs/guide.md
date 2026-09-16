@@ -142,6 +142,8 @@ id=$(./tyd session create --detach)
 
 Default `session create` **attaches** after create (use `--detach` to print the id only).
 Connect progress is off by default. With `-v` / `--verbose`, create/attach/watch print SSH-style `debug1:` lines on stderr (resolve → dial → attach).
+Each dial candidate is capped (~12s for connect + TLS + auth); Ctrl-C cancels create/attach/watch before the session is live.
+If attach uses a cached `sessions.json` address that fails, tyd refreshes the peer endpoint from CP and retries once.
 
 ### Session aliases
 

@@ -43,6 +43,14 @@ type Conn struct {
 	wmu  sync.Mutex
 }
 
+const (
+	defaultDialAttemptTimeout = 12 * time.Second
+)
+
+// dialAttemptTimeout caps TCP/TLS/QUIC dial + handshake + auth per address.
+// Tests may lower this.
+var dialAttemptTimeout = defaultDialAttemptTimeout
+
 func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 	return DialContext(context.Background(), ep, key)
 }
@@ -89,7 +97,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		if err == nil {
 			return c, nil
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errInterrupted) {
+		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
 			return nil, errInterrupted
 		}
 		errs = append(errs, fmt.Sprintf("%s: %v", addr, err))
@@ -98,34 +106,52 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 }
 
 func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
+	defer cancel()
+
 	var (
 		nc  transport.Conn
 		err error
 	)
 	switch ep.Kind {
 	case transport.KindUnix, "":
-		nc, err = transport.DialUnixContext(ctx, ep.Address)
+		nc, err = transport.DialUnixContext(attemptCtx, ep.Address)
 	case transport.KindTLS:
 		if ep.CertFP != "" {
-			nc, err = transport.DialTLSFingerprintContext(ctx, ep.Address, ep.CertFP)
+			nc, err = transport.DialTLSFingerprintContext(attemptCtx, ep.Address, ep.CertFP)
 		} else {
-			nc, err = transport.DialTLSContext(ctx, ep.Address, ep.CertPath)
+			nc, err = transport.DialTLSContext(attemptCtx, ep.Address, ep.CertPath)
 		}
 	case transport.KindQUIC:
 		if ep.CertFP == "" {
 			return nil, fmt.Errorf("quic requires certificate fingerprint")
 		}
-		nc, err = transport.DialQUICFingerprintContext(ctx, ep.Address, ep.CertFP)
+		nc, err = transport.DialQUICFingerprintContext(attemptCtx, ep.Address, ep.CertFP)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("dial %s: %w (is 'tyd up' running on the peer?)", ep, err)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
-	if err := c.Authenticate(key); err != nil {
+	if dl, ok := attemptCtx.Deadline(); ok {
+		_ = c.SetDeadline(dl)
+	}
+	authErr := c.Authenticate(key)
+	_ = c.SetDeadline(time.Time{})
+	if authErr != nil {
 		_ = c.Close()
-		return nil, err
+		if errors.Is(authErr, context.Canceled) || errors.Is(authErr, context.DeadlineExceeded) {
+			return nil, authErr
+		}
+		// net timeouts from SetDeadline surface as os.ErrDeadlineExceeded / net timeout
+		if ne, ok := authErr.(net.Error); ok && ne.Timeout() {
+			return nil, fmt.Errorf("auth %s: %w", ep, authErr)
+		}
+		return nil, authErr
 	}
 	return c, nil
 }
@@ -185,11 +211,23 @@ func (c *Conn) SetDeadline(d time.Time) error {
 }
 
 func rpc(ep Endpoint, key ed25519.PrivateKey, req protocol.Frame) (protocol.Frame, error) {
-	c, err := Dial(ep, key)
+	ctx, cancel := context.WithTimeout(context.Background(), dialAttemptTimeout)
+	defer cancel()
+	return rpcContext(ctx, ep, key, req)
+}
+
+func rpcContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, req protocol.Frame) (protocol.Frame, error) {
+	c, err := DialContext(ctx, ep, key)
 	if err != nil {
 		return protocol.Frame{}, err
 	}
 	defer c.Close()
+	if dl, ok := ctx.Deadline(); ok {
+		_ = c.SetDeadline(dl)
+	} else {
+		_ = c.SetDeadline(time.Now().Add(dialAttemptTimeout))
+	}
+	defer c.SetDeadline(time.Time{})
 	if err := c.Send(req); err != nil {
 		return protocol.Frame{}, err
 	}
@@ -217,7 +255,9 @@ func Create(ep Endpoint, key ed25519.PrivateKey, opts CreateOpts) (protocol.Sess
 	if opts.Cols == 0 {
 		opts.Cols = 80
 	}
-	resp, err := rpc(ep, key, protocol.Frame{
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	resp, err := rpcContext(ctx, ep, key, protocol.Frame{
 		Type:  protocol.TypeCreate,
 		Rows:  opts.Rows,
 		Cols:  opts.Cols,
@@ -225,12 +265,36 @@ func Create(ep Endpoint, key ed25519.PrivateKey, opts CreateOpts) (protocol.Sess
 		Cwd:   opts.Cwd,
 	})
 	if err != nil {
-		return protocol.SessionInfo{}, err
+		return protocol.SessionInfo{}, asInterrupted(err)
 	}
 	if resp.Session == nil {
 		return protocol.SessionInfo{}, fmt.Errorf("create: empty session")
 	}
 	return *resp.Session, nil
+}
+
+// IsRetryableDial reports whether err looks like a stale/unreachable endpoint
+// worth refreshing from the Control Panel.
+func IsRetryableDial(err error) bool {
+	if err == nil || errors.Is(err, errInterrupted) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"connection refused",
+		"i/o timeout",
+		"deadline exceeded",
+		"no route to host",
+		"network is unreachable",
+		"direct dial failed",
+		"connection reset",
+		"broken pipe",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func List(ep Endpoint, key ed25519.PrivateKey) ([]protocol.SessionInfo, error) {
@@ -299,7 +363,7 @@ func asInterrupted(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errInterrupted) {
+	if errors.Is(err, errInterrupted) || errors.Is(err, context.Canceled) {
 		return errInterrupted
 	}
 	return err
@@ -323,7 +387,9 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 	if err := c.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: id}); err != nil {
 		return asInterrupted(err)
 	}
+	_ = c.SetDeadline(time.Now().Add(dialAttemptTimeout))
 	resp, err := c.Recv()
+	_ = c.SetDeadline(time.Time{})
 	if err != nil {
 		return asInterrupted(err)
 	}
@@ -395,7 +461,9 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 	if err := c.Send(req); err != nil {
 		return asInterrupted(err)
 	}
+	_ = c.SetDeadline(time.Now().Add(dialAttemptTimeout))
 	resp, err := c.Recv()
+	_ = c.SetDeadline(time.Time{})
 	if err != nil {
 		return asInterrupted(err)
 	}

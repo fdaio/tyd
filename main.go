@@ -273,17 +273,91 @@ func endpointFromRecord(rec catalog.Record) (client.Endpoint, bool) {
 	}, true
 }
 
-func endpointForSession(opts options, sessionID string) (client.Endpoint, string, error) {
+func endpointForSession(opts options, sessionID string) (client.Endpoint, string, bool, error) {
 	cat := loadLocalCatalog(opts)
 	if rec, ok := cat.Get(sessionID); ok {
 		if ep, ok := endpointFromRecord(rec); ok {
-			return ep, rec.PeerID, nil
+			return ep, rec.PeerID, true, nil
 		}
 		if rec.PeerID != "" && opts.peer == "" {
 			opts.peer = rec.PeerID
 		}
 	}
-	return endpoint(opts)
+	ep, peerID, err := endpoint(opts)
+	return ep, peerID, false, err
+}
+
+func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return client.Endpoint{}, fmt.Errorf("empty peer id")
+	}
+	platform, err := platformFor(opts)
+	if err != nil {
+		return client.Endpoint{}, err
+	}
+	cli := cpclient.New(platform)
+	ep, err := cli.GetEndpointFull(peerID)
+	if err != nil {
+		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: %w", peerID, err)
+	}
+	kind := transport.KindTLS
+	if strings.EqualFold(ep.Transport, "quic") {
+		kind = transport.KindQUIC
+	}
+	addrs := endpointDialOrder(ep)
+	if len(addrs) == 0 {
+		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
+	}
+	return client.Endpoint{
+		Kind:       kind,
+		Address:    addrs[0],
+		CertFP:     ep.CertFP,
+		Candidates: addrs[1:],
+	}, nil
+}
+
+func updateCatalogEndpoint(opts options, sessionID, peerID string, ep client.Endpoint) {
+	if sessionID == "" || ep.Address == "" {
+		return
+	}
+	rec := catalog.Record{
+		ID:         sessionID,
+		PeerID:     peerID,
+		Addr:       ep.Address,
+		CertFP:     ep.CertFP,
+		Transport:  string(ep.Kind),
+		Candidates: append([]string(nil), ep.Candidates...),
+	}
+	if cur, ok := loadLocalCatalog(opts).Get(sessionID); ok {
+		rec.State = cur.State
+		rec.CreatedAt = cur.CreatedAt
+		if rec.PeerID == "" {
+			rec.PeerID = cur.PeerID
+		}
+	}
+	rememberSession(opts, rec)
+}
+
+// withEndpointRetry runs op; if it fails on a catalog-cached dial and peerID is
+// set, refreshes the endpoint from CP, updates the catalog, and retries once.
+func withEndpointRetry(opts options, st *connectStatus, sessionID, peerID string, ep client.Endpoint, fromCatalog bool, op func(client.Endpoint) error) error {
+	bindSessionProgress(&ep, st)
+	err := op(ep)
+	if err == nil || !fromCatalog || peerID == "" || !client.IsRetryableDial(err) {
+		return err
+	}
+	st.Log("Cached endpoint unreachable; refreshing from Control Panel.")
+	fresh, rerr := endpointFromCPPeer(opts, peerID)
+	if rerr != nil {
+		return fmt.Errorf("%w\n(also failed to refresh endpoint: %v)", err, rerr)
+	}
+	updateCatalogEndpoint(opts, sessionID, peerID, fresh)
+	if peerID != "" {
+		st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), fresh.Kind))
+	}
+	bindSessionProgress(&fresh, st)
+	return op(fresh)
 }
 
 // resolveSessionRef maps alias → session id, or uses recent session when ref is empty.
@@ -388,12 +462,11 @@ func runSession(opts options) error {
 			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
 		st.Log("Resolving endpoint.")
-		ep, peerID, err := endpointForSession(opts, sid)
+		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
 			return err
 		}
-		bindSessionProgress(&ep, st)
 		if peerID != "" {
 			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
@@ -405,7 +478,9 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		err = client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		err = withEndpointRetry(opts, st, sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+			return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		})
 		st.Clear()
 		return err
 	case "watch":
@@ -414,12 +489,11 @@ func runSession(opts options) error {
 			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
 		st.Log("Resolving endpoint.")
-		ep, peerID, err := endpointForSession(opts, sid)
+		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
 			return err
 		}
-		bindSessionProgress(&ep, st)
 		if peerID != "" {
 			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
@@ -431,7 +505,9 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		err = client.Watch(ep, key, sid, os.Stdout)
+		err = withEndpointRetry(opts, st, sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+			return client.Watch(ep, key, sid, os.Stdout)
+		})
 		st.Clear()
 		return err
 	case "close":
@@ -439,7 +515,7 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session close [session_id|alias]: %w", err)
 		}
-		ep, peerID, err := endpointForSession(opts, sid)
+		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
 		if err != nil {
 			return err
 		}
@@ -448,7 +524,10 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		if err := client.CloseSession(ep, key, sid); err != nil {
+		err = withEndpointRetry(opts, newConnectStatus(os.Stderr, false), sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+			return client.CloseSession(ep, key, sid)
+		})
+		if err != nil {
 			return err
 		}
 		if rec, ok := loadLocalCatalog(opts).Get(sid); ok {
