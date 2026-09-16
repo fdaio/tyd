@@ -159,7 +159,7 @@ These guide Step 2+; not implemented in Step 1.
 
 - `~/.tyd/sessions.json`: create records id + dial addr; list is local-only
 - `session create` attaches by default (`--detach` for scripts)
-- Attach/watch show a vanishing connect progress line (transport + addr)
+- Attach/watch connect logs are silent by default; `-v` prints SSH-style `debug1:` lines
 
 ## Step 5 deliverables
 

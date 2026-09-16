@@ -59,6 +59,7 @@ type options struct {
 	key        string
 	noWait     bool
 	detach     bool
+	verbose    bool
 	cmd        string
 	rest       []string
 }
@@ -200,16 +201,24 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 		kind = "unix"
 	}
 	ep.OnDial = func(addr string) {
-		st.Step(2, 4, fmt.Sprintf("connecting %s %s", kind, addr))
+		st.Log(dialDebugMsg(kind, addr))
 	}
 	ep.OnAttach = func() {
-		st.Step(3, 4, fmt.Sprintf("attaching %s", kind))
+		st.Log("Connection established.")
+		st.Log("Attaching session over " + kind + ".")
 	}
 	ep.OnReady = func() {
-		st.Clear()
+		st.Log("Attached.")
 	}
 	ep.OnLeave = func(msg string) {
-		st.Leave(msg)
+		switch msg {
+		case "interrupted":
+			st.Leave("Interrupted.")
+		case "session ended":
+			st.Leave("Session ended.")
+		default:
+			st.Leave("Detaching.")
+		}
 	}
 }
 
@@ -328,10 +337,10 @@ func runSession(opts options) error {
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
-	st := newConnectStatus(os.Stderr)
+	st := newConnectStatus(os.Stderr, opts.verbose)
 	switch sub {
 	case "create":
-		st.Step(1, 4, "looking up endpoint")
+		st.Log("Resolving endpoint.")
 		ep, peerID, err := endpoint(opts)
 		if err != nil {
 			st.Clear()
@@ -339,9 +348,9 @@ func runSession(opts options) error {
 		}
 		bindSessionProgress(&ep, st)
 		if peerID != "" {
-			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
-			st.Step(1, 4, "local "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Local %s.", ep.Kind))
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -376,7 +385,7 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
-		st.Step(1, 4, "looking up endpoint")
+		st.Log("Resolving endpoint.")
 		ep, peerID, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
@@ -384,9 +393,9 @@ func runSession(opts options) error {
 		}
 		bindSessionProgress(&ep, st)
 		if peerID != "" {
-			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
-			st.Step(1, 4, "local "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Local %s.", ep.Kind))
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -402,7 +411,7 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
-		st.Step(1, 4, "looking up endpoint")
+		st.Log("Resolving endpoint.")
 		ep, peerID, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
@@ -410,9 +419,9 @@ func runSession(opts options) error {
 		}
 		bindSessionProgress(&ep, st)
 		if peerID != "" {
-			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
-			st.Step(1, 4, "local "+string(ep.Kind))
+			st.Log(fmt.Sprintf("Local %s.", ep.Kind))
 		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -1426,6 +1435,8 @@ func parseArgs(args []string) (options, error) {
 			opts.noWait = true
 		case a == "--detach":
 			opts.detach = true
+		case a == "-v" || a == "--verbose":
+			opts.verbose = true
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -1654,6 +1665,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
+		{"-v, --verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
@@ -1694,6 +1706,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
 	fmt.Fprintln(w, "  create --detach          Print session id only (for scripts).")
+	fmt.Fprintln(w, "  -v / --verbose           SSH-style connect debug on stderr.")
 	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only; Ctrl-C / Ctrl-\\ stops.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")

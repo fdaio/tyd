@@ -6,38 +6,42 @@ import (
 	"testing"
 )
 
-func TestConnectStatusNoTTYSilent(t *testing.T) {
+func TestConnectStatusSilentByDefault(t *testing.T) {
 	var buf bytes.Buffer
-	s := &connectStatus{w: &buf, tty: false}
-	s.Step(1, 4, "connecting")
+	s := &connectStatus{w: &buf, verbose: false}
+	s.Log("Connecting to 10.0.0.1 port 1.")
 	s.Clear()
-	if buf.Len() != 0 {
-		t.Fatalf("non-tty wrote %q", buf.String())
+	s.Leave("Detaching.")
+	if buf.String() != "\n" {
+		t.Fatalf("silent leave want newline only, got %q", buf.String())
 	}
 }
 
-func TestConnectStatusBarThenClear(t *testing.T) {
+func TestConnectStatusVerboseSSHStyle(t *testing.T) {
 	var buf bytes.Buffer
-	s := &connectStatus{w: &buf, tty: true}
-	s.Step(2, 4, "connecting 10.0.0.1:1")
+	s := &connectStatus{w: &buf, verbose: true}
+	s.Log("Connecting to 10.0.0.1 port 22.")
+	s.Log("Connection established.")
 	got := buf.String()
-	if !strings.Contains(got, "[==--]") || !strings.Contains(got, "connecting 10.0.0.1:1") {
-		t.Fatalf("bar: %q", got)
+	if !strings.Contains(got, "debug1: Connecting to 10.0.0.1 port 22.\n") {
+		t.Fatalf("connect: %q", got)
 	}
-	s.Clear()
-	if !strings.HasSuffix(buf.String(), "\r\033[K") {
-		t.Fatalf("clear: %q", buf.String())
+	if !strings.Contains(got, "debug1: Connection established.\n") {
+		t.Fatalf("established: %q", got)
+	}
+	s.Leave("Detaching.")
+	if !strings.HasSuffix(buf.String(), "debug1: Detaching.\n") {
+		t.Fatalf("leave: %q", buf.String())
 	}
 }
 
-func TestConnectStatusLeaveEndsWithNewline(t *testing.T) {
-	var buf bytes.Buffer
-	s := &connectStatus{w: &buf, tty: true}
-	s.Leave("detaching")
-	if !strings.HasSuffix(buf.String(), "\n") {
-		t.Fatalf("want trailing newline, got %q", buf.String())
+func TestDialDebugMsg(t *testing.T) {
+	got := dialDebugMsg("tls", "100.101.29.23:34759")
+	if got != "Connecting to 100.101.29.23 port 34759." {
+		t.Fatalf("%q", got)
 	}
-	if strings.HasSuffix(buf.String(), "detaching\n") {
-		t.Fatal("leave status should be cleared before newline")
+	got = dialDebugMsg("unix", "/tmp/tyd.sock")
+	if got != "Connecting to unix /tmp/tyd.sock." {
+		t.Fatalf("%q", got)
 	}
 }

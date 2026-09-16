@@ -3,65 +3,71 @@ package main
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
-	"time"
-
-	"golang.org/x/term"
 )
 
-// connectStatus is a single-line TTY progress bar on stderr.
-// It is cleared when the session is live so the PTY owns the screen.
+// connectStatus prints SSH-style verbose connect logs on stderr when enabled.
+// Default is silent. Leave always ends with a newline so zsh does not print '%'.
 type connectStatus struct {
-	w     io.Writer
-	tty   bool
-	on    bool
-	pause time.Duration
+	w       io.Writer
+	verbose bool
 }
 
-func newConnectStatus(w *os.File) *connectStatus {
+func newConnectStatus(w *os.File, verbose bool) *connectStatus {
 	if w == nil {
 		return &connectStatus{}
 	}
-	return &connectStatus{w: w, tty: term.IsTerminal(int(w.Fd())), pause: 150 * time.Millisecond}
+	return &connectStatus{w: w, verbose: verbose}
 }
 
-func (s *connectStatus) Step(n, total int, msg string) {
-	if s == nil || !s.tty || s.w == nil {
+func (s *connectStatus) enabled() bool {
+	return s != nil && s.verbose && s.w != nil
+}
+
+// Log writes one SSH-style debug line when verbose.
+func (s *connectStatus) Log(msg string) {
+	if !s.enabled() {
 		return
 	}
-	if total < 1 {
-		total = 1
-	}
-	if n < 0 {
-		n = 0
-	}
-	if n > total {
-		n = total
-	}
-	bar := strings.Repeat("=", n) + strings.Repeat("-", total-n)
-	s.on = true
-	fmt.Fprintf(s.w, "\r[%s] %s\033[K", bar, msg)
-}
-
-func (s *connectStatus) Clear() {
-	if s == nil || !s.tty || !s.on || s.w == nil {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
 		return
 	}
-	fmt.Fprint(s.w, "\r\033[K")
-	s.on = false
+	fmt.Fprintf(s.w, "debug1: %s\n", msg)
 }
 
-// Leave flashes a final status, clears it, then writes a newline so zsh
-// does not print PROMPT_EOL_MARK ("%") for a partial line.
+// Clear is a no-op for line-oriented verbose logs (kept for call sites).
+func (s *connectStatus) Clear() {}
+
+// Leave logs an optional final message (when verbose) and always writes a newline.
 func (s *connectStatus) Leave(msg string) {
-	if s == nil || !s.tty || s.w == nil {
+	if s == nil || s.w == nil {
 		return
 	}
-	s.Step(4, 4, msg)
-	if s.pause > 0 {
-		time.Sleep(s.pause)
+	if s.verbose {
+		msg = strings.TrimSpace(msg)
+		if msg != "" {
+			fmt.Fprintf(s.w, "debug1: %s\n", msg)
+			return
+		}
 	}
-	s.Clear()
 	fmt.Fprint(s.w, "\n")
+}
+
+func dialDebugMsg(kind, addr string) string {
+	kind = strings.TrimSpace(kind)
+	addr = strings.TrimSpace(addr)
+	if kind == "" {
+		kind = "tcp"
+	}
+	if kind == "unix" || strings.HasPrefix(addr, "/") {
+		return fmt.Sprintf("Connecting to unix %s.", addr)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Sprintf("Connecting to %s %s.", kind, addr)
+	}
+	return fmt.Sprintf("Connecting to %s port %s.", host, port)
 }

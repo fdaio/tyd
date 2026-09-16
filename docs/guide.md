@@ -122,7 +122,8 @@ Session operations live under the `session` subcommand (`tyd session help` lists
 id=$(./tyd session create --detach)
 ./tyd session list                   # local catalog; alive first, newest first; no PID/SIZE
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
-./tyd session attach jammy           # progress bar on connect, then clears; Ctrl-\ detaches
+./tyd session attach jammy           # silent by default; Ctrl-\ detaches
+./tyd session attach jammy -v        # SSH-style debug1: lines on stderr
 ./tyd session watch                  # omit → recent session
 ./tyd session attach "$id"           # reattach; shell still running
 ./tyd session close jammy            # kill shell; catalog marks CLOSED
@@ -130,7 +131,7 @@ id=$(./tyd session create --detach)
 ```
 
 Default `session create` **attaches** after create (use `--detach` to print the id only).
-Attach/watch show a one-line stderr progress (`looking up` → `connecting <transport> <addr>` → `attaching`) that clears when live.
+Connect progress is off by default. With `-v` / `--verbose`, create/attach/watch print SSH-style `debug1:` lines on stderr (resolve → dial → attach).
 
 ### Session aliases
 
