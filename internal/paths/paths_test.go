@@ -35,6 +35,9 @@ func TestDefaultSocketUsesHome(t *testing.T) {
 	if DefaultPlatform() != "https://app.getfda.dev" {
 		t.Fatalf("platform %q", DefaultPlatform())
 	}
+	if DefaultAdvertise() != "" {
+		t.Fatalf("advertise default %q, want empty", DefaultAdvertise())
+	}
 	if DefaultServerCert() != filepath.Join(home, ".tyd", "server.crt") {
 		t.Fatalf("cert %q", DefaultServerCert())
 	}
