@@ -70,12 +70,17 @@ func ExpandCandidates(listenAddr, advertise string) []string {
 
 // PreferNonLoopback reorders dial targets so loopback addresses are tried last.
 func PreferNonLoopback(addrs []string) []string {
+	seen := map[string]struct{}{}
 	var primary, loop []string
 	for _, a := range addrs {
 		a = strings.TrimSpace(a)
 		if a == "" {
 			continue
 		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
 		host, _, err := net.SplitHostPort(a)
 		if err != nil {
 			host = a
