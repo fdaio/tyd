@@ -192,11 +192,15 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 	if ep == nil {
 		return
 	}
+	kind := string(ep.Kind)
+	if kind == "" {
+		kind = "unix"
+	}
 	ep.OnDial = func(addr string) {
-		st.Step(2, 4, "connecting "+addr)
+		st.Step(2, 4, fmt.Sprintf("connecting %s %s", kind, addr))
 	}
 	ep.OnAttach = func() {
-		st.Step(3, 4, "attaching")
+		st.Step(3, 4, fmt.Sprintf("attaching %s", kind))
 	}
 	ep.OnReady = func() {
 		st.Clear()
@@ -262,7 +266,7 @@ func runSession(opts options) error {
 	st := newConnectStatus(os.Stderr)
 	live := sub == "attach" || sub == "watch"
 	if live {
-		st.Step(1, 4, "looking up peer")
+		st.Step(1, 4, "looking up endpoint")
 	}
 	ep, peerID, err := endpoint(opts)
 	if err != nil {
@@ -271,6 +275,11 @@ func runSession(opts options) error {
 	}
 	if live {
 		bindSessionProgress(&ep, st)
+		if peerID != "" {
+			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+		} else {
+			st.Step(1, 4, "local "+string(ep.Kind))
+		}
 	}
 	switch sub {
 	case "create":
@@ -565,6 +574,13 @@ func shortFP(fp string) string {
 		return fp[:16]
 	}
 	return fp
+}
+
+func shortPeer(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
