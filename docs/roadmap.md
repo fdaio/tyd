@@ -46,7 +46,8 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - Data frames never through CP — client dials peer directly
 - `tyd up --data-listen auto` starts data-plane when registered; publishes/refreshes endpoint
 - **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md))
-- Session targeting: `--peer <id|nickname>`; recent peer / single-outbound defaults; `~/.tyd/recent.json`
+- Session targeting: `--peer <id|nickname>` for dialing commands; recent peer / single-outbound defaults; `~/.tyd/recent.json`
+- Client catalog `~/.tyd/sessions.json`: `session list` is local-only; create stores dial addr for later attach
 
 ### Step 3 — Approval modes (done)
 
@@ -62,6 +63,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `attach` / `watch` / `close` / `approve` / `reject` accept alias or omit id → recent session
 - Recent-session peer placeholder defaults (Step 2 `--peer` / `recent.json`) + help placeholder
 - `status` shows CP registration, peers, recent, session aliases, and daemon connections
+- Later: create-then-attach (optional `--detach`); connect progress bar; local session catalog for list
 
 ### Step 5 — Revoke + hardening (done)
 

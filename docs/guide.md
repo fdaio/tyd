@@ -23,6 +23,8 @@ Writes:
 - `~/.tyd/id_ed25519` — private identity (mode 0600)
 - `~/.tyd/id_ed25519.pub` — public key
 - `~/.tyd/trusted.json` — bootstrap trust (this key gets `list` + `create`) if the file did not exist
+- Later, as a **client**: `~/.tyd/sessions.json` — local session catalog (written on create; read by `session list`)
+- `~/.tyd/aliases.json` / `~/.tyd/recent.json` — client-local names and last peer/session
 
 Prints the public key (base64) on stdout.
 
@@ -97,16 +99,20 @@ are in-tree for the next flip to default-QUIC.
 
 See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay (Phase 3).
 
-Session commands on a paired peer (direct TLS; not through CP):
+Peer **create / attach / watch / close** (direct TLS/QUIC; data plane not through CP):
 
 ```bash
-./tyd --peer laptop session create
-./tyd --peer <cp-id> session list
+./tyd --peer laptop session create   # CP GetEndpoint (or catalog addr later) + direct dial; attaches by default
+./tyd session list                   # local catalog only — ignores --peer; no CP / daemon
+./tyd session attach amy             # prefer dial addr stored in sessions.json; else resolve peer endpoint
 ```
 
-If `--peer` is omitted: use `~/.tyd/recent.json` when present; else exactly one outbound peer;
+`--peer` applies to commands that dial a daemon (`create`, `attach`, `watch`, `close`).
+If `--peer` is omitted for those: use `~/.tyd/recent.json` when present; else exactly one outbound peer;
 else zero outbound → local unix socket; many outbound → error asking for `--peer`.
 `--addr` still overrides for manual TLS.
+
+`session list` never dials: it merges `sessions.json` with aliases/recent.
 
 ## Session lifecycle
 
@@ -116,12 +122,15 @@ Session operations live under the `session` subcommand (`tyd session help` lists
 id=$(./tyd session create --detach)
 ./tyd session list                   # local catalog; no CP or daemon
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
-./tyd session attach jammy           # id, alias, or omit id to reuse recent
+./tyd session attach jammy           # progress bar on connect, then clears; Ctrl-\ detaches
 ./tyd session watch                  # omit → recent session
 ./tyd session attach "$id"           # reattach; shell still running
-./tyd session close jammy            # kill shell; session stays listed as CLOSED
+./tyd session close jammy            # kill shell; catalog marks CLOSED
 ./tyd session watch jammy            # dump history from ring, then end
 ```
+
+Default `session create` **attaches** after create (use `--detach` to print the id only).
+Attach/watch show a one-line stderr progress (`looking up` → `connecting <transport> <addr>` → `attaching`) that clears when live.
 
 ### Session aliases
 
@@ -164,7 +173,7 @@ Detach / watch-exit keys:
 | `Ctrl-\` (attach) | Detach; PTY/shell keep running |
 | `Ctrl-C` / `Ctrl-\` (watch) | Stop watching; session unchanged |
 | Client crash / socket drop | Same: session stays |
-| `tyd session close <id>` | Kill shell; keep session as `CLOSED` until daemon restart |
+| `tyd session close <id>` | Kill shell; mark `CLOSED` in the local catalog |
 
 ## Status
 
