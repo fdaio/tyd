@@ -480,9 +480,9 @@ func runSession(opts options) error {
 func runSessionList(opts options) error {
 	cat := loadLocalCatalog(opts)
 	adoc, _ := alias.Load(opts.aliases)
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SESSION\tALIAS\tPEER\tPID\tSTATE\tSIZE\tCREATED")
-	for _, it := range cat.List() {
+	items := cat.List()
+	rows := make([]sessionListRow, 0, len(items))
+	for _, it := range items {
 		an := ""
 		if adoc != nil {
 			an = adoc.NameFor(it.ID)
@@ -491,9 +491,13 @@ func runSessionList(opts options) error {
 		if peer == "" {
 			peer = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, peer, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
+		rows = append(rows, sessionListRow{
+			ID: it.ID, Alias: an, Peer: peer, PID: fmt.Sprintf("%d", it.PID),
+			State: it.State, Created: it.CreatedAt,
+		})
 	}
-	return tw.Flush()
+	writeSessionList(os.Stdout, rows, colorEnabled(os.Stdout))
+	return nil
 }
 
 func firstArg(args []string) string {
@@ -1454,6 +1458,52 @@ func colorEnabled(w io.Writer) bool {
 	return ok && term.IsTerminal(int(f.Fd()))
 }
 
+type sessionListRow struct {
+	ID, Alias, Peer, PID, State, Created string
+}
+
+func padCell(s string, width int) string {
+	if width < len(s) {
+		width = len(s)
+	}
+	return fmt.Sprintf("%-*s", width, s)
+}
+
+func paintCell(s string, width int, color bool) string {
+	padded := padCell(s, width)
+	if !color {
+		return padded
+	}
+	return ansiCyan + padded + ansiReset
+}
+
+func writeSessionList(w io.Writer, rows []sessionListRow, color bool) {
+	idW, aliasW, peerW, pidW, stateW, createdW := len("SESSION"), len("ALIAS"), len("PEER"), len("PID"), len("STATE"), len("CREATED")
+	for _, r := range rows {
+		idW = max(idW, len(r.ID))
+		aliasW = max(aliasW, len(r.Alias))
+		peerW = max(peerW, len(r.Peer))
+		pidW = max(pidW, len(r.PID))
+		stateW = max(stateW, len(r.State))
+		createdW = max(createdW, len(r.Created))
+	}
+	const gap = "  "
+	fmt.Fprint(w, padCell("SESSION", idW), gap)
+	fmt.Fprint(w, paintCell("ALIAS", aliasW, color), gap)
+	fmt.Fprint(w, padCell("PEER", peerW), gap)
+	fmt.Fprint(w, padCell("PID", pidW), gap)
+	fmt.Fprint(w, paintCell("STATE", stateW, color), gap)
+	fmt.Fprintln(w, padCell("CREATED", createdW))
+	for _, r := range rows {
+		fmt.Fprint(w, padCell(r.ID, idW), gap)
+		fmt.Fprint(w, paintCell(r.Alias, aliasW, color && r.Alias != ""), gap)
+		fmt.Fprint(w, padCell(r.Peer, peerW), gap)
+		fmt.Fprint(w, padCell(r.PID, pidW), gap)
+		fmt.Fprint(w, paintCell(r.State, stateW, color && r.State != ""), gap)
+		fmt.Fprintln(w, padCell(r.Created, createdW))
+	}
+}
+
 type inviteResult struct {
 	Kind      string // registered | invite
 	URL       string
@@ -1558,7 +1608,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Common commands:")
 	writeHelpRows(w, []helpRow{
 		{"session create", "Create a session and attach (use --detach for id only)"},
-		{"session list", "List locally remembered sessions (no CP / daemon)"},
+		{"session list", "List local sessions (alive first, newest first)"},
 		{"session attach", "Attach to a session (id, alias, or recent)"},
 		{"session watch", "Follow session output (read-only)"},
 		{"session approve", "Approve a PENDING remote session (local unix)"},
@@ -1629,7 +1679,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Commands:")
 	writeHelpRows(w, []helpRow{
 		{"create", "Create and attach (interactive; Ctrl-\\ detaches)"},
-		{"list", "List local session catalog (no CP / daemon)"},
+		{"list", "List local sessions (alive first, newest first)"},
 		{"attach", "Attach (id, alias, or omit for recent)"},
 		{"watch", "Follow output (id, alias, or omit for recent)"},
 		{"approve", "Approve PENDING session (local unix only)"},

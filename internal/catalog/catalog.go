@@ -16,18 +16,18 @@ import (
 )
 
 type Record struct {
-	ID          string    `json:"id"`
-	PeerID      string    `json:"peer_id,omitempty"`
-	State       string    `json:"state,omitempty"`
-	PID         int       `json:"pid,omitempty"`
-	Cols        uint16    `json:"cols,omitempty"`
-	Rows        uint16    `json:"rows,omitempty"`
-	CreatedAt   string    `json:"created_at,omitempty"`
-	Addr        string    `json:"addr,omitempty"`
-	CertFP      string    `json:"cert_fp,omitempty"`
-	Transport   string    `json:"transport,omitempty"`
-	Candidates  []string  `json:"candidates,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID         string    `json:"id"`
+	PeerID     string    `json:"peer_id,omitempty"`
+	State      string    `json:"state,omitempty"`
+	PID        int       `json:"pid,omitempty"`
+	Cols       uint16    `json:"cols,omitempty"`
+	Rows       uint16    `json:"rows,omitempty"`
+	CreatedAt  string    `json:"created_at,omitempty"`
+	Addr       string    `json:"addr,omitempty"`
+	CertFP     string    `json:"cert_fp,omitempty"`
+	Transport  string    `json:"transport,omitempty"`
+	Candidates []string  `json:"candidates,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type File struct {
@@ -142,6 +142,16 @@ func (f *File) MergeRecent(r *recent.File) {
 	})
 }
 
+func listKey(r Record) string {
+	if r.CreatedAt != "" {
+		return r.CreatedAt
+	}
+	if !r.UpdatedAt.IsZero() {
+		return r.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
 func (f *File) List() []Record {
 	out := append([]Record(nil), f.Sessions...)
 	sort.Slice(out, func(i, j int) bool {
@@ -150,7 +160,7 @@ func (f *File) List() []Record {
 		if closedI != closedJ {
 			return !closedI
 		}
-		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		return listKey(out[i]) > listKey(out[j]) // newest CreatedAt first
 	})
 	return out
 }
