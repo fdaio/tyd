@@ -19,6 +19,7 @@ import (
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
+	"tyd/internal/epcache"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/recent"
@@ -50,6 +51,7 @@ type options struct {
 	peers      string
 	recent     string
 	aliases    string
+	endpoints  string
 	platform   string
 	approval   string
 	as         string
@@ -78,6 +80,10 @@ func main() {
 }
 
 func endpoint(opts options) (client.Endpoint, string, error) {
+	return endpointAt(opts, false)
+}
+
+func endpointAt(opts options, forceRefresh bool) (client.Endpoint, string, error) {
 	if opts.addr != "" {
 		return client.Endpoint{
 			Kind:     transport.KindTLS,
@@ -95,6 +101,17 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 			Address: opts.socket,
 		}, "", nil
 	}
+	cachePath := opts.endpoints
+	if cachePath == "" {
+		cachePath = paths.DefaultEndpoints()
+	}
+	if !forceRefresh {
+		if cached, ok := epcache.Get(cachePath, peerID); ok {
+			return clientEndpointFromCP(peerID, cached)
+		}
+	} else {
+		_ = epcache.Invalidate(cachePath, peerID)
+	}
 	platform, err := platformFor(opts)
 	if err != nil {
 		return client.Endpoint{}, "", err
@@ -104,6 +121,11 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	if err != nil {
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
+	_ = epcache.Put(cachePath, peerID, ep)
+	return clientEndpointFromCP(peerID, ep)
+}
+
+func clientEndpointFromCP(peerID string, ep *controlpanel.EndpointResponse) (client.Endpoint, string, error) {
 	kind := transport.KindTLS
 	if strings.EqualFold(ep.Transport, "quic") {
 		kind = transport.KindQUIC
@@ -118,6 +140,40 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 		CertFP:     ep.CertFP,
 		Candidates: addrs[1:],
 	}, peerID, nil
+}
+
+// withPeerEndpoint runs fn; on dial failure against a cached peer endpoint,
+// invalidates the cache, refreshes from CP once, and retries.
+func withPeerEndpoint(opts options, fn func(client.Endpoint, string) error) error {
+	ep, peerID, err := endpointAt(opts, false)
+	if err != nil {
+		return err
+	}
+	err = fn(ep, peerID)
+	if err == nil || peerID == "" || opts.addr != "" || !looksLikeDialErr(err) {
+		return err
+	}
+	ep, peerID, err2 := endpointAt(opts, true)
+	if err2 != nil {
+		return err
+	}
+	if err2 := fn(ep, peerID); err2 != nil {
+		return err2
+	}
+	return nil
+}
+
+func looksLikeDialErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "dial") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "i/o timeout") ||
+		strings.Contains(s, "no route") ||
+		strings.Contains(s, "network is unreachable") ||
+		strings.Contains(s, "certificate")
 }
 
 func endpointDialOrder(ep *controlpanel.EndpointResponse) []string {
@@ -241,82 +297,88 @@ func runSession(opts options) error {
 	}
 	sub := opts.rest[0]
 	args := opts.rest[1:]
-	ep, peerID, err := endpoint(opts)
-	if err != nil {
-		return err
-	}
 	switch sub {
 	case "create":
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		info, err := client.Create(ep, key, client.CreateOpts{})
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, info.ID)
-		if info.State == string(session.StatePending) {
-			fmt.Fprintln(os.Stderr, "pending approval")
-		}
-		fmt.Println(info.ID)
-		return nil
-	case "list":
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		items, err := client.List(ep, key)
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, "")
-		adoc, _ := alias.Load(opts.aliases)
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "SESSION\tALIAS\tPID\tSTATE\tSIZE\tCREATED")
-		for _, it := range items {
-			an := ""
-			if adoc != nil {
-				an = adoc.NameFor(it.ID)
+		return withPeerEndpoint(opts, func(ep client.Endpoint, peerID string) error {
+			key, err := loadIdentity(opts.identity)
+			if err != nil {
+				return err
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
-		}
-		return tw.Flush()
+			info, err := client.Create(ep, key, client.CreateOpts{})
+			if err != nil {
+				return err
+			}
+			rememberPeerSession(opts, peerID, info.ID)
+			if info.State == string(session.StatePending) {
+				fmt.Fprintln(os.Stderr, "pending approval")
+			}
+			fmt.Println(info.ID)
+			return nil
+		})
+	case "list":
+		return withPeerEndpoint(opts, func(ep client.Endpoint, peerID string) error {
+			key, err := loadIdentity(opts.identity)
+			if err != nil {
+				return err
+			}
+			items, err := client.List(ep, key)
+			if err != nil {
+				return err
+			}
+			rememberPeerSession(opts, peerID, "")
+			adoc, _ := alias.Load(opts.aliases)
+			tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "SESSION\tALIAS\tPID\tSTATE\tSIZE\tCREATED")
+			for _, it := range items {
+				an := ""
+				if adoc != nil {
+					an = adoc.NameFor(it.ID)
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
+			}
+			return tw.Flush()
+		})
 	case "attach":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, sid)
-		fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", sid)
-		return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		return withPeerEndpoint(opts, func(ep client.Endpoint, peerID string) error {
+			key, err := loadIdentity(opts.identity)
+			if err != nil {
+				return err
+			}
+			rememberPeerSession(opts, peerID, sid)
+			fmt.Fprintf(os.Stderr, "attached to %s  detach: Ctrl-\\\n", sid)
+			return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
+		})
 	case "watch":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, sid)
-		fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", sid)
-		return client.Watch(ep, key, sid, os.Stdout)
+		return withPeerEndpoint(opts, func(ep client.Endpoint, peerID string) error {
+			key, err := loadIdentity(opts.identity)
+			if err != nil {
+				return err
+			}
+			rememberPeerSession(opts, peerID, sid)
+			fmt.Fprintf(os.Stderr, "watching %s  exit: Ctrl-C or Ctrl-\\\n", sid)
+			return client.Watch(ep, key, sid, os.Stdout)
+		})
 	case "close":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session close [session_id|alias]: %w", err)
 		}
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, sid)
-		return client.CloseSession(ep, key, sid)
+		return withPeerEndpoint(opts, func(ep client.Endpoint, peerID string) error {
+			key, err := loadIdentity(opts.identity)
+			if err != nil {
+				return err
+			}
+			rememberPeerSession(opts, peerID, sid)
+			return client.CloseSession(ep, key, sid)
+		})
 	case "approve":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
@@ -1139,6 +1201,7 @@ func parseArgs(args []string) (options, error) {
 		peers:      paths.DefaultPeers(),
 		recent:     paths.DefaultRecent(),
 		aliases:    paths.DefaultAliases(),
+		endpoints:  paths.DefaultEndpoints(),
 		platform:   paths.DefaultPlatform(),
 		approval:   controlpanel.DefaultApproval,
 		cert:       paths.DefaultServerCert(),

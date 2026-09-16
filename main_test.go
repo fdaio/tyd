@@ -15,6 +15,7 @@ import (
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
+	"tyd/internal/epcache"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/server"
@@ -615,6 +616,44 @@ func TestParseNoWaitFlag(t *testing.T) {
 	}
 	if !opts.noWait || opts.cmd != "register" {
 		t.Fatalf("%+v", opts)
+	}
+}
+
+func TestLooksLikeDialErr(t *testing.T) {
+	if !looksLikeDialErr(fmt.Errorf("direct dial failed; tried: x")) {
+		t.Fatal("dial")
+	}
+	if looksLikeDialErr(fmt.Errorf("session not found")) {
+		t.Fatal("non-dial")
+	}
+}
+
+func TestEndpointUsesCache(t *testing.T) {
+	dir := t.TempDir()
+	peersPath := filepath.Join(dir, "peers.json")
+	cachePath := filepath.Join(dir, "endpoints.json")
+	recentPath := filepath.Join(dir, "recent.json")
+	doc := &peers.File{
+		Platform: "http://127.0.0.1:1",
+		Peers: []peers.Peer{{
+			ID: "peer1", PublicKey: "pk", Direction: "outbound", PairedAt: time.Now(),
+		}},
+	}
+	if err := peers.Save(peersPath, doc); err != nil {
+		t.Fatal(err)
+	}
+	if err := epcache.Put(cachePath, "peer1", &controlpanel.EndpointResponse{
+		Addr: "127.0.0.1:9", CertFP: "deadbeef", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	opts := options{peers: peersPath, endpoints: cachePath, recent: recentPath, peer: "peer1"}
+	ep, peerID, err := endpoint(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peerID != "peer1" || ep.Address != "127.0.0.1:9" || ep.CertFP != "deadbeef" {
+		t.Fatalf("%+v %s", ep, peerID)
 	}
 }
 

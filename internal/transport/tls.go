@@ -178,7 +178,7 @@ func DialTLSFingerprint(addr, certFP string) (Conn, error) {
 		},
 		ServerName: "tyd",
 	}
-	c, err := tls.Dial("tcp", addr, cfg)
+	c, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("dial tls %s: %w", addr, err)
 	}

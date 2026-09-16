@@ -37,6 +37,10 @@ func DefaultAliases() string {
 	return filepath.Join(DefaultDir(), "aliases.json")
 }
 
+func DefaultEndpoints() string {
+	return filepath.Join(DefaultDir(), "endpoints.json")
+}
+
 // DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
 	return "off"
