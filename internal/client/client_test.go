@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -262,8 +263,8 @@ func TestCopyInputSendsWriteThenDetach(t *testing.T) {
 		_ = inW.Close()
 	}()
 
-	if err := copyInput(c, inR); err != nil {
-		t.Fatal(err)
+	if err := copyInput(c, inR); !errors.Is(err, errUserDetach) {
+		t.Fatalf("want detached, got %v", err)
 	}
 	_ = a.Close()
 
@@ -412,8 +413,8 @@ func TestCopyOutputStopsOnDetach(t *testing.T) {
 
 	select {
 	case err := <-errCh:
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, errUserDetach) {
+			t.Fatalf("copyOutput: want detached, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("copyOutput did not return")
