@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -19,10 +20,11 @@ import (
 )
 
 type Endpoint struct {
-	Kind     transport.Kind
-	Address  string
-	CertPath string // TLS pin via cert file (optional if CertFP set)
-	CertFP   string // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
+	Kind       transport.Kind
+	Address    string
+	CertPath   string   // TLS pin via cert file (optional if CertFP set)
+	CertFP     string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
+	Candidates []string // extra dial addresses tried after Address (peer data-plane)
 }
 
 func (e Endpoint) String() string {
@@ -36,6 +38,44 @@ type Conn struct {
 }
 
 func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	addrs := make([]string, 0, 1+len(ep.Candidates))
+	if strings.TrimSpace(ep.Address) != "" {
+		addrs = append(addrs, ep.Address)
+	}
+	seen := map[string]struct{}{}
+	for _, a := range addrs {
+		seen[a] = struct{}{}
+	}
+	for _, a := range ep.Candidates {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		addrs = append(addrs, a)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("dial: empty address")
+	}
+
+	var errs []string
+	for _, addr := range addrs {
+		try := ep
+		try.Address = addr
+		try.Candidates = nil
+		c, err := dialOnce(try, key)
+		if err == nil {
+			return c, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", addr, err))
+	}
+	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
+}
+
+func dialOnce(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 	var (
 		nc  transport.Conn
 		err error
@@ -49,11 +89,16 @@ func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 		} else {
 			nc, err = transport.DialTLS(ep.Address, ep.CertPath)
 		}
+	case transport.KindQUIC:
+		if ep.CertFP == "" {
+			return nil, fmt.Errorf("quic requires certificate fingerprint")
+		}
+		nc, err = transport.DialQUICFingerprint(ep.Address, ep.CertFP)
 	default:
 		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w (is 'tyd serve' running?)", ep, err)
+		return nil, fmt.Errorf("dial %s: %w (is 'tyd up' running on the peer?)", ep, err)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
 	if err := c.Authenticate(key); err != nil {
@@ -393,6 +438,8 @@ func WaitReady(ep Endpoint, timeout time.Duration) error {
 			} else {
 				c, err = transport.DialTLS(ep.Address, ep.CertPath)
 			}
+		case transport.KindQUIC:
+			c, err = transport.DialQUICFingerprint(ep.Address, ep.CertFP)
 		default:
 			c, err = transport.DialUnix(ep.Address)
 		}

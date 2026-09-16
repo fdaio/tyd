@@ -136,19 +136,35 @@ func TestDataPlanePeerSession(t *testing.T) {
 		t.Fatal("missing data-plane addr")
 	}
 	fp := srv.TLSFingerprintFull()
-	if err := cp.PublishEndpoint(reg.ID, sPub, dp, fp, controlpanel.DefaultEndpointTTL); err != nil {
+	cands := transport.ExpandCandidates(dp, "")
+	if err := cp.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
+		PublicKey:  sPub,
+		Addr:       dp,
+		CertFP:     fp,
+		Transport:  "tls",
+		Candidates: cands,
+		TTLSeconds: int(controlpanel.DefaultEndpointTTL / time.Second),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	addr, certFP, err := cp.GetEndpoint(reg.ID)
+	got, err := cp.GetEndpointFull(reg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr != dp || certFP != fp {
-		t.Fatalf("endpoint addr=%s fp=%s want %s / %s", addr, certFP, dp, fp)
+	if got.Addr != dp || got.CertFP != fp || got.Transport != "tls" {
+		t.Fatalf("endpoint %+v want addr=%s fp=%s tls", got, dp, fp)
+	}
+	if len(got.Candidates) == 0 {
+		t.Fatal("expected candidates")
 	}
 
-	ep := client.Endpoint{Kind: transport.KindTLS, Address: addr, CertFP: certFP}
+	ep := client.Endpoint{
+		Kind:       transport.KindTLS,
+		Address:    got.Addr,
+		CertFP:     got.CertFP,
+		Candidates: got.Candidates,
+	}
 	if err := client.WaitReady(ep, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}

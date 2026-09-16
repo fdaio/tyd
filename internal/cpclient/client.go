@@ -93,39 +93,52 @@ func (c *Client) ListPeers(daemonID, publicKey string) ([]controlpanel.Peer, err
 }
 
 func (c *Client) PublishEndpoint(daemonID, publicKey, addr, certFP string, ttl time.Duration) error {
-	ttlSec := 0
-	if ttl > 0 {
-		ttlSec = int(ttl / time.Second)
-	}
+	return c.PublishEndpointFull(daemonID, controlpanel.PublishEndpointRequest{
+		PublicKey: publicKey,
+		Addr:      addr,
+		CertFP:    certFP,
+		TTLSeconds: func() int {
+			if ttl > 0 {
+				return int(ttl / time.Second)
+			}
+			return 0
+		}(),
+	})
+}
+
+func (c *Client) PublishEndpointFull(daemonID string, req controlpanel.PublishEndpointRequest) error {
 	var out controlpanel.EndpointResponse
-	return c.put("/v1/daemons/"+url.PathEscape(daemonID)+"/endpoint", controlpanel.PublishEndpointRequest{
-		PublicKey:  publicKey,
-		Addr:       addr,
-		CertFP:     certFP,
-		TTLSeconds: ttlSec,
-	}, &out)
+	return c.put("/v1/daemons/"+url.PathEscape(daemonID)+"/endpoint", req, &out)
 }
 
 func (c *Client) GetEndpoint(daemonID string) (addr, certFP string, err error) {
-	u := c.BaseURL + "/v1/daemons/" + url.PathEscape(daemonID) + "/endpoint"
-	req, err := http.NewRequest(http.MethodGet, u, nil)
+	ep, err := c.GetEndpointFull(daemonID)
 	if err != nil {
 		return "", "", err
 	}
+	return ep.Addr, ep.CertFP, nil
+}
+
+func (c *Client) GetEndpointFull(daemonID string) (*controlpanel.EndpointResponse, error) {
+	u := c.BaseURL + "/v1/daemons/" + url.PathEscape(daemonID) + "/endpoint"
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
 	res, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer res.Body.Close()
 	body, _ := io.ReadAll(res.Body)
 	if res.StatusCode >= 300 {
-		return "", "", fmt.Errorf("cp get endpoint: %s: %s", res.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("cp get endpoint: %s: %s", res.Status, strings.TrimSpace(string(body)))
 	}
 	var out controlpanel.EndpointResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", "", err
+		return nil, err
 	}
-	return out.Addr, out.CertFP, nil
+	return &out, nil
 }
 
 func (c *Client) RevokeInvite(token, daemonID, publicKey string) error {
