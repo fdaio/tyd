@@ -14,8 +14,7 @@ import (
 
 const tydQUICALPN = "tyd"
 
-// ListenQUIC listens for QUIC connections. Accept() waits for a client-opened
-// bidirectional stream and returns it as net.Conn (same pattern as TLS Accept).
+// ListenQUIC listens for QUIC. Accept blocks until a client opens a stream.
 func ListenQUIC(addr, certPath, keyPath string) (net.Listener, string, error) {
 	cert, err := EnsureServerCert(certPath, keyPath)
 	if err != nil {
@@ -63,8 +62,7 @@ func (l *quicListener) Accept() (net.Conn, error) {
 	}), nil
 }
 
-func (l *quicListener) Close() error { return l.ql.Close() }
-
+func (l *quicListener) Close() error   { return l.ql.Close() }
 func (l *quicListener) Addr() net.Addr { return l.ql.Addr() }
 
 // DialQUICFingerprint dials QUIC and pins the server by SHA-256 cert fingerprint (hex).

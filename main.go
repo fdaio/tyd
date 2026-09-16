@@ -640,7 +640,7 @@ func runUp(opts options) error {
 				}
 			}
 		}
-		fmt.Fprintf(os.Stderr, "tyd data-plane quic %s (%d candidates published to CP)\n", pubAddr, len(cands))
+		fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (%d candidates published to CP)\n", pubAddr, len(cands))
 		if err := syncPeersAndTrust(opts, trust); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 		}
@@ -718,7 +718,7 @@ func publishDataEndpoint(opts options, addr, certFP string, candidates []string)
 		PublicKey:  pub,
 		Addr:       addr,
 		CertFP:     certFP,
-		Transport:  "quic",
+		Transport:  "tls",
 		Candidates: candidates,
 		TTLSeconds: ttlSec,
 	})

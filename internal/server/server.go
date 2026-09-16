@@ -110,7 +110,7 @@ func (s *Server) Start() error {
 		go s.accept(ln)
 	}
 	if s.cfg.DataListen != "" && s.cfg.DataListen != "off" {
-		ln, fp, err := transport.ListenQUIC(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
+		ln, fp, err := transport.ListenTLS(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
 		if err != nil {
 			_ = s.Close()
 			return err
