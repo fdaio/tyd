@@ -63,7 +63,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `attach` / `watch` / `close` / `approve` / `reject` accept alias or omit id → recent session
 - Recent-session peer placeholder defaults (Step 2 `--peer` / `recent.json`) + help placeholder
 - `status` shows CP registration, peers, recent, session aliases, and daemon connections
-- Later: create-then-attach (optional `--detach`); connect progress bar; local session catalog for list
+- Later: create-then-attach (optional `--detach`); SSH-style `-v` connect debug; local session catalog for list
 
 ### Step 5 — Revoke + hardening (done)
 
