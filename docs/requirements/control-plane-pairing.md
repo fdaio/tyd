@@ -71,10 +71,13 @@ Enforcement is Step 3 (declared at register; applied by the daemon from `peers.j
 ## Client UX
 
 - `tyd alias` is for **sessions** (not peers). Stored client-side in `~/.tyd/aliases.json`.
-- Peer targeting for `session create` etc.:
+- Client session catalog: `~/.tyd/sessions.json` (written on create; `session list` is file-only).
+- Peer targeting for dialing commands (`session create` / `attach` / `watch` / `close`):
   - `--peer <cp-id>` or peer nickname set at accept (`--as`)
   - If omitted: recent peer from `recent.json` if still known; else 1 outbound → use it;
     0 outbound → local unix; many outbound → error (no interactive prompt).
+  - Attach prefers dial address stored in the catalog when present (skips CP).
+- `session list` **ignores** `--peer` / CP / daemon — merges catalog + aliases + recent.
 - Session id targeting: pass id, pass alias, or omit → most recent session id.
 - `status` shows CP registration + peers + recent + aliases + live connections.
 
@@ -124,7 +127,7 @@ These guide Step 2+; not implemented in Step 1.
 - Peer pubs from CP sync → in-memory trust (`EnsurePeer` with `list`+`create`); dynamic Add is enough for Step 2
 - Client dials peer by cert fingerprint (`DialTLSFingerprint`); session I/O never through CP
 - `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
-- Integration test: CP + pair + publish + remote session create/list over TLS
+- Integration test: CP + pair + publish + remote session **create** over TLS (list is client-local)
 
 ## Explicitly out of Step 1–5
 
@@ -147,10 +150,16 @@ These guide Step 2+; not implemented in Step 1.
 
 - `tyd alias [<session_id>] <name>` / `tyd alias list` / `tyd alias rm <name>` → `~/.tyd/aliases.json`
 - Session commands resolve alias names; omitting id uses `recent.json` session placeholder
-- `session list` shows an ALIAS column
+- `session list` shows ALIAS / PEER columns from the **client catalog** (`sessions.json`)
 - `tyd status` prints Control Panel / Peers / Recent / Session aliases / Connections
 - Help tips show recent session as placeholder when available
 - Docs (roadmap, guide, README) updated
+
+### Client catalog + attach UX (post Step 4)
+
+- `~/.tyd/sessions.json`: create records id + dial addr; list is local-only
+- `session create` attaches by default (`--detach` for scripts)
+- Attach/watch show a vanishing connect progress line (transport + addr)
 
 ## Step 5 deliverables
 

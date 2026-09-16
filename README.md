@@ -4,7 +4,7 @@
 
 It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing including data-plane, approval modes, session aliases, and peer/invite revoke.
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing including data-plane, approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and connect progress on attach.
 
 ## Documentation
 
@@ -22,23 +22,25 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 make build
 ./tyd up                             # unix socket; TLS listen off by default
 
-id=$(./tyd session create --detach)
-# interactive (default): ./tyd session create
+id=$(./tyd session create --detach)   # scripts: print id only
+# interactive (default): ./tyd session create  → create then attach
 ./tyd alias work                     # name the recent session
-./tyd session list
+./tyd session list                   # local catalog (~/.tyd/sessions.json); no CP/daemon
 ./tyd status
 ./tyd session attach work            # or omit id to reuse recent; Ctrl-\ detaches
 ./tyd session watch                  # recent session; Ctrl-C / Ctrl-\ stops
-./tyd session close work             # marks CLOSED; kept in list until daemon restart
+./tyd session close work             # marks CLOSED in the local catalog
 ```
 
 Identity is created automatically on first `up` / `register` / `accept` (optional `tyd keygen`).
+
+A **client** machine does not need `tyd up` to list sessions. The peer (or local) daemon is required for `create` / `attach` / `watch` / `close`.
 
 TLS (opt-in):
 
 ```bash
 ./tyd up --listen 127.0.0.1:61211
-./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt session create
+./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt session create --detach
 ```
 
 ## Control Panel pairing
@@ -50,7 +52,8 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 register   # prints accept line; waits until peer accepts (Ctrl-C revokes)
 ./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
 # production: tyd register  →  peer pastes stdout; use --no-wait to print and exit
-./tyd --peer peer-nick session create
+./tyd --peer peer-nick session create   # CP signaling once, then direct dial; attaches by default
+./tyd session list                      # still local — does not hit CP
 ./tyd revoke peer-nick
 ```
 
@@ -91,6 +94,7 @@ CP stores pairing metadata (ids + public keys) only — never session/TTY data.
 | Peers file | `~/.tyd/peers.json` |
 | Recent | `~/.tyd/recent.json` |
 | Session aliases | `~/.tyd/aliases.json` |
+| Session catalog | `~/.tyd/sessions.json` (client-local; used by `session list`) |
 | Platform | `https://app.getfda.dev` |
 | Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
 

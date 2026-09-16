@@ -17,7 +17,8 @@ import (
 	"tyd/internal/transport"
 )
 
-// TestDataPlanePeerSession: CP signaling + peer AuthN + direct TLS session create/list.
+// TestDataPlanePeerSession: CP signaling + peer AuthN + direct TLS session create
+// (client list is local-catalog and is not exercised here).
 func TestDataPlanePeerSession(t *testing.T) {
 	svc := controlpanel.New()
 	cpAddr, cpSrv, err := controlpanel.ListenAndServe("127.0.0.1:0", svc)

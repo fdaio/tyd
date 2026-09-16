@@ -37,7 +37,11 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
 
 Control Panel pairing (ids + peer public keys only; no TTY) is documented in
 [requirements/control-plane-pairing.md](requirements/control-plane-pairing.md).
-Session aliases and recent-session placeholders are client-local (`aliases.json` / `recent.json`).
+Session aliases, recent-session placeholders, and the **session catalog** are
+client-local (`aliases.json` / `recent.json` / `sessions.json`).
+`tyd session list` reads the catalog only — it does not contact the Control Panel
+or any daemon. Create writes the catalog (including the dial address when known);
+attach/close reuse that address when present.
 
 Layers from bottom to top:
 
@@ -56,10 +60,10 @@ QUIC direct is the current data-plane after pairing; WireGuard and relay are not
 ## Process model
 
 - One binary: `tyd`
-- `tyd serve` holds sessions in memory
-- Other subcommands are clients
+- `tyd up` holds sessions in memory on the **target** (daemon) host
+- Other subcommands are clients; a client host need not run a daemon to `session list`
 - Client disconnect or `Ctrl-\` detach does **not** kill the shell
-- Daemon restart **does** drop all sessions (no persist yet)
+- Daemon restart **does** drop in-memory sessions on that host (client catalog may still list them)
 
 ## Security model (completed)
 

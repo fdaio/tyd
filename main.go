@@ -1607,7 +1607,8 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  While attached, Ctrl-\\ detaches; the shell keeps running.")
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
-	fmt.Fprintln(w, "  Use --peer <id|nickname> to create/list sessions on a paired peer.")
+	fmt.Fprintln(w, "  Use --peer <id|nickname> for create/attach/watch/close on a paired peer.")
+	fmt.Fprintln(w, "  session list is local (sessions.json); it does not use --peer or CP.")
 	fmt.Fprintln(w, "  tyd revoke <peer> drops a pairing; tyd invite revoke <token> drops an unused invite.")
 	fmt.Fprintln(w, "  register/invite wait for accept by default; Ctrl-C revokes the invite; --no-wait skips wait.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
@@ -1644,7 +1645,8 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  Omit the id to reuse the most recent session (recent.json).")
-	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer (CP signaling + direct TLS).")
+	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer for dialing commands.")
+	fmt.Fprintln(w, "  session list              Local catalog only (no CP / daemon).")
 	fmt.Fprintln(w, "  tyd alias <name>          Name the recent session for later use.")
 }
 
