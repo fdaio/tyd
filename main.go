@@ -842,9 +842,31 @@ func formatRemaining(d time.Duration) string {
 	return d.String()
 }
 
+// After printInviteResult, stderr looks like:
+//
+//	invite ttl …
+//	<blank>
+//	Copy and run on the peer:
+//	  tyd accept …
+//
+// From the line after the accept command, move up to rewrite the ttl row.
+const (
+	inviteTTLCursorUp   = 4
+	inviteTTLCursorDown = 3
+)
+
+func rewriteInviteTTL(expiresAt time.Time, color bool, desc string) {
+	if desc == "" {
+		desc = formatRemaining(time.Until(expiresAt))
+	}
+	fmt.Fprintf(os.Stderr, "\033[%dA\r\033[K", inviteTTLCursorUp)
+	writeHelpRows(os.Stderr, []helpRow{{"invite ttl", desc}}, color)
+	fmt.Fprintf(os.Stderr, "\033[%dB", inviteTTLCursorDown)
+}
+
 // waitForInviteAccept keeps the process alive until a peer accepts the invite,
 // the TTL expires, or the user cancels (Ctrl-C revokes the invite).
-// On a TTY, the trailing "invite ttl" help row is refreshed in place.
+// On a TTY, the "invite ttl" help row is refreshed in place.
 func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, token string, expiresAt time.Time, baseline map[string]struct{}) error {
 	if opts.noWait {
 		return nil
@@ -862,21 +884,12 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 
 	tty := colorEnabled(os.Stderr)
 	color := tty
-	refreshTTL := func() {
-		if !tty {
-			return
-		}
-		// Move to the previous line (invite ttl), clear, rewrite.
-		fmt.Fprint(os.Stderr, "\033[1A\r\033[K")
-		writeHelpRows(os.Stderr, []helpRow{{"invite ttl", formatRemaining(time.Until(expiresAt))}}, color)
-	}
 
 	for {
 		remaining := time.Until(expiresAt)
 		if remaining <= 0 {
 			if tty {
-				fmt.Fprint(os.Stderr, "\033[1A\r\033[K")
-				writeHelpRows(os.Stderr, []helpRow{{"invite ttl", "expired"}}, color)
+				rewriteInviteTTL(expiresAt, color, "expired")
 			}
 			return fmt.Errorf("invite expired")
 		}
@@ -887,7 +900,9 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 			}
 			return fmt.Errorf("invite revoked")
 		case <-ticker.C:
-			refreshTTL()
+			if tty {
+				rewriteInviteTTL(expiresAt, color, "")
+			}
 			remote, err := cli.ListPeers(daemonID, pub)
 			if err != nil {
 				continue
@@ -1291,13 +1306,18 @@ func printInviteResult(errW, outW io.Writer, r inviteResult) {
 		fmt.Fprintln(errW, "Invite minted.")
 	}
 	fmt.Fprintln(errW)
-	rows := make([]helpRow, 0, 2)
+	ttl := r.TTL.String()
+	if !r.ExpiresAt.IsZero() {
+		ttl = formatRemaining(time.Until(r.ExpiresAt))
+	}
+	rows := make([]helpRow, 0, 3)
 	if r.URL != "" {
 		rows = append(rows, helpRow{"url", r.URL})
 	}
 	if r.Approval != "" {
 		rows = append(rows, helpRow{"approval", r.Approval})
 	}
+	rows = append(rows, helpRow{"invite ttl", ttl})
 	writeHelpRows(errW, rows, color)
 	fmt.Fprintln(errW)
 	fmt.Fprintln(errW, "Copy and run on the peer:")
@@ -1307,13 +1327,11 @@ func printInviteResult(errW, outW io.Writer, r inviteResult) {
 	} else {
 		fmt.Fprintf(errW, "  %s\n", cmd)
 	}
-	fmt.Fprintln(outW, cmd)
-	// Trailing TTL row: wait loop refreshes this line in place on a TTY.
-	ttl := r.TTL.String()
-	if !r.ExpiresAt.IsZero() {
-		ttl = formatRemaining(time.Until(r.ExpiresAt))
+	// Avoid a duplicate line when both stderr and stdout are the terminal.
+	// Scripts that capture stdout still get the command (stdout is then a pipe).
+	if !colorEnabled(outW) || !colorEnabled(errW) {
+		fmt.Fprintln(outW, cmd)
 	}
-	writeHelpRows(errW, []helpRow{{"invite ttl", ttl}}, color)
 }
 
 func writeHelpRows(w io.Writer, rows []helpRow, color bool) {

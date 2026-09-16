@@ -381,11 +381,14 @@ func TestPrintInviteResult(t *testing.T) {
 	if strings.Contains(errOut, "waiting for accept") {
 		t.Fatalf("unexpected waiting line in:\n%s", errOut)
 	}
-	// TTL is the trailing help row (below the accept hint).
-	ttlIdx := strings.LastIndex(errOut, "invite ttl")
+	ttlIdx := strings.Index(errOut, "invite ttl")
 	copyIdx := strings.Index(errOut, "Copy and run on the peer:")
-	if ttlIdx < 0 || copyIdx < 0 || ttlIdx < copyIdx {
-		t.Fatalf("invite ttl should follow copy hint:\n%s", errOut)
+	if ttlIdx < 0 || copyIdx < 0 || ttlIdx > copyIdx {
+		t.Fatalf("invite ttl should sit with metadata above copy hint:\n%s", errOut)
+	}
+	// Command appears once under the copy hint (not also as a bare duplicate line).
+	if strings.Count(errOut, "tyd accept tok1") != 1 {
+		t.Fatalf("accept command should appear once on stderr:\n%s", errOut)
 	}
 	if got := strings.TrimSpace(outBuf.String()); got != "tyd accept tok1" {
 		t.Fatalf("stdout %q", got)
