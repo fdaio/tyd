@@ -8,7 +8,8 @@ import (
 
 // ExpandCandidates builds dial targets for a data-plane listener.
 // listenAddr is the actual bound address (may be 0.0.0.0:port).
-// advertise, when set, is tried first (operator override / public hostname).
+// advertise, when set to a non-loopback host, is tried first (operator override).
+// Loopback is always last (same-host / CI only).
 func ExpandCandidates(listenAddr, advertise string) []string {
 	host, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
@@ -33,8 +34,10 @@ func ExpandCandidates(listenAddr, advertise string) []string {
 		out = append(out, addr)
 	}
 
-	add(advertise)
-	if host != "" && host != "0.0.0.0" && host != "::" {
+	if adv := strings.TrimSpace(advertise); adv != "" && !isLoopbackHost(adv) {
+		add(adv)
+	}
+	if host != "" && host != "0.0.0.0" && host != "::" && !isLoopbackHost(host) {
 		add(host)
 	}
 
@@ -52,9 +55,7 @@ func ExpandCandidates(listenAddr, advertise string) []string {
 			}
 			if v4 := ip.To4(); v4 != nil {
 				extras = append(extras, v4.String())
-				continue
 			}
-			// skip IPv6 for Phase 1 dial simplicity (still publish if needed later)
 		}
 		sort.Strings(extras)
 		for _, h := range extras {
@@ -65,4 +66,39 @@ func ExpandCandidates(listenAddr, advertise string) []string {
 	// Same-host / CI: always offer loopback last.
 	add("127.0.0.1")
 	return out
+}
+
+// PreferNonLoopback reorders dial targets so loopback addresses are tried last.
+func PreferNonLoopback(addrs []string) []string {
+	seen := map[string]struct{}{}
+	var primary, loop []string
+	for _, a := range addrs {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if _, ok := seen[a]; ok {
+			continue
+		}
+		seen[a] = struct{}{}
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			host = a
+		}
+		if isLoopbackHost(host) {
+			loop = append(loop, a)
+			continue
+		}
+		primary = append(primary, a)
+	}
+	return append(primary, loop...)
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

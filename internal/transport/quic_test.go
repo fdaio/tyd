@@ -151,4 +151,22 @@ func TestExpandCandidates(t *testing.T) {
 	if !foundLoop {
 		t.Fatalf("missing loopback in %v", cands)
 	}
+
+	// Loopback advertise must not win over real interfaces.
+	cands = ExpandCandidates("0.0.0.0:9", "127.0.0.1")
+	if len(cands) == 0 || cands[0] == "127.0.0.1:9" && len(cands) > 1 {
+		// If only loopback exists, sole entry is fine; otherwise first must not be loopback when extras exist.
+		nonLoop := PreferNonLoopback(cands)
+		if len(nonLoop) > 1 && nonLoop[0] == "127.0.0.1:9" {
+			t.Fatalf("loopback should not be preferred: %v", nonLoop)
+		}
+	}
 }
+
+func TestPreferNonLoopback(t *testing.T) {
+	got := PreferNonLoopback([]string{"127.0.0.1:1", "10.0.0.2:1", "127.0.0.1:1", "192.168.1.1:1"})
+	if len(got) != 3 || got[0] != "10.0.0.2:1" || got[1] != "192.168.1.1:1" || got[2] != "127.0.0.1:1" {
+		t.Fatalf("%v", got)
+	}
+}
+

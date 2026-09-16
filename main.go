@@ -141,7 +141,7 @@ func endpointDialOrder(ep *controlpanel.EndpointResponse) []string {
 	for _, c := range ep.Candidates {
 		add(c)
 	}
-	return out
+	return transport.PreferNonLoopback(out)
 }
 
 func resolvePeerTarget(opts options) (peerID string, useLocal bool, err error) {
@@ -624,30 +624,20 @@ func runUp(opts options) error {
 
 	stop := make(chan struct{})
 	if srv.DataPlaneAddr() != "" {
-		cands := transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise)
-		pubAddr := cands[0]
-		if opts.advertise != "" {
-			// Prefer explicit advertise as primary when present in candidate set.
-			wantPort := ""
-			if _, p, err := net.SplitHostPort(srv.DataPlaneAddr()); err == nil {
-				wantPort = p
+		cands := transport.PreferNonLoopback(transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise))
+		if len(cands) == 0 {
+			fmt.Fprintln(os.Stderr, "tyd data-plane: no dial candidates")
+		} else {
+			pubAddr := cands[0]
+			fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (%d candidates published to CP)\n", pubAddr, len(cands))
+			if err := syncPeersAndTrust(opts, trust); err != nil {
+				fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 			}
-			pref := net.JoinHostPort(strings.TrimSpace(opts.advertise), wantPort)
-			for _, c := range cands {
-				if c == pref {
-					pubAddr = c
-					break
-				}
+			if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
+				fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
 			}
+			go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
 		}
-		fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (%d candidates published to CP)\n", pubAddr, len(cands))
-		if err := syncPeersAndTrust(opts, trust); err != nil {
-			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
-		}
-		if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
-			fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
-		}
-		go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
 	} else {
 		if err := syncPeersFromCP(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
@@ -685,11 +675,11 @@ func resolveDataListen(opts options) (string, error) {
 
 func advertisedAddr(host, listenAddr string) string {
 	host = strings.TrimSpace(host)
-	if host == "" {
-		host = paths.DefaultAdvertise()
-	}
 	_, port, err := net.SplitHostPort(listenAddr)
 	if err != nil {
+		return listenAddr
+	}
+	if host == "" {
 		return listenAddr
 	}
 	return net.JoinHostPort(host, port)
@@ -1444,7 +1434,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
 		{"--listen ADDR|off", fmt.Sprintf("Manual TLS listen for up (default %s)", paths.DefaultListen())},
 		{"--data-listen MODE", "Data-plane TLS: auto|off|HOST:PORT (default auto)"},
-		{"--advertise HOST", fmt.Sprintf("Host published to CP (default %s)", paths.DefaultAdvertise())},
+		{"--advertise HOST", "Host to prefer in CP candidates (default: auto interface IPs)"},
 		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
 		{"--peer ID|NICK", "Target paired peer for session commands"},
 		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},

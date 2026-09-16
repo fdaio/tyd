@@ -47,9 +47,10 @@ func DefaultDataListen() string {
 	return "auto"
 }
 
-// DefaultAdvertise is the host published in CP endpoint signaling.
+// DefaultAdvertise is empty: tyd publishes interface IPs automatically.
+// Pass --advertise HOST only for a public hostname / explicit override.
 func DefaultAdvertise() string {
-	return "127.0.0.1"
+	return ""
 }
 
 // DefaultPlatform is the production Control Panel base URL.
