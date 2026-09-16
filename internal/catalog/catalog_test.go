@@ -51,3 +51,19 @@ func TestClosedSortsLast(t *testing.T) {
 		t.Fatalf("%+v", list)
 	}
 }
+
+func TestListNewestCreatedFirstWithinGroup(t *testing.T) {
+	f := &File{Sessions: []Record{
+		{ID: "old-live", State: "DETACHED", CreatedAt: "2024-01-01T00:00:00Z"},
+		{ID: "new-live", State: "DETACHED", CreatedAt: "2024-01-03T00:00:00Z"},
+		{ID: "old-closed", State: "CLOSED", CreatedAt: "2024-01-02T00:00:00Z"},
+		{ID: "new-closed", State: "CLOSED", CreatedAt: "2024-01-04T00:00:00Z"},
+	}}
+	list := f.List()
+	want := []string{"new-live", "old-live", "new-closed", "old-closed"}
+	for i, id := range want {
+		if list[i].ID != id {
+			t.Fatalf("pos %d: got %s want %s (%+v)", i, list[i].ID, id, list)
+		}
+	}
+}

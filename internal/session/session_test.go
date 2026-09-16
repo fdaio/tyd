@@ -184,26 +184,34 @@ func TestListSortAliveThenClosedByCreatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s4, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s1.CreatedAt = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	s2.CreatedAt = time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
 	s3.CreatedAt = time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+	s4.CreatedAt = time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC)
 
 	if err := m.Close(s2.ID); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.Close(s4.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	list := m.List()
-	if len(list) != 3 {
+	if len(list) != 4 {
 		t.Fatalf("len=%d", len(list))
 	}
-	// alive first (older first): s1, s3; then closed: s2
-	want := []string{s1.ID, s3.ID, s2.ID}
+	// alive newest first: s3, s1; then closed newest first: s4, s2
+	want := []string{s3.ID, s1.ID, s4.ID, s2.ID}
 	for i, id := range want {
 		if list[i].ID != id {
-			t.Fatalf("pos %d: got %s want %s (states %v)", i, list[i].ID, id, []string{list[0].State, list[1].State, list[2].State})
+			t.Fatalf("pos %d: got %s want %s (states %v)", i, list[i].ID, id, []string{list[0].State, list[1].State, list[2].State, list[3].State})
 		}
 	}
-	if list[2].State != string(StateClosed) {
+	if list[2].State != string(StateClosed) || list[3].State != string(StateClosed) {
 		t.Fatalf("closed should be last group: %+v", list)
 	}
 }
@@ -455,4 +463,3 @@ func TestOnClosedCallback(t *testing.T) {
 		t.Fatal("timeout waiting for onClosed")
 	}
 }
-

@@ -167,7 +167,7 @@ func (m *Manager) List() []protocol.SessionInfo {
 		if iClosed != jClosed {
 			return !iClosed // alive (non-CLOSED, including PENDING) first
 		}
-		return out[i].CreatedAt < out[j].CreatedAt
+		return out[i].CreatedAt > out[j].CreatedAt // newest first within group
 	})
 	return out
 }
