@@ -403,6 +403,67 @@ func TestDialContextCanceled(t *testing.T) {
 	}
 }
 
+func TestDialTLSHandshakeTimeout(t *testing.T) {
+	old := dialAttemptTimeout
+	dialAttemptTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { dialAttemptTimeout = old })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accept TCP but never complete TLS — client must time out.
+			time.Sleep(2 * time.Second)
+			_ = c.Close()
+		}
+	}()
+
+	_, key, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = Dial(Endpoint{
+		Kind:    transport.KindTLS,
+		Address: ln.Addr().String(),
+		CertFP:  strings.Repeat("ab", 32),
+	}, key)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if errors.Is(err, errInterrupted) {
+		t.Fatalf("timeout must not look like interrupt: %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("dial hung too long: %v", elapsed)
+	}
+	if !IsRetryableDial(err) && !strings.Contains(strings.ToLower(err.Error()), "timeout") &&
+		!strings.Contains(strings.ToLower(err.Error()), "deadline") &&
+		!strings.Contains(strings.ToLower(err.Error()), "direct dial failed") {
+		t.Fatalf("want retryable/timeout error, got %v", err)
+	}
+}
+
+func TestIsRetryableDial(t *testing.T) {
+	if !IsRetryableDial(fmt.Errorf("direct dial failed; tried: x: connection refused")) {
+		t.Fatal("refused")
+	}
+	if IsRetryableDial(errInterrupted) {
+		t.Fatal("interrupt not retryable")
+	}
+	if IsRetryableDial(fmt.Errorf("permission denied: attach")) {
+		t.Fatal("permission not retryable")
+	}
+}
+
 func TestDrainPendingInput(t *testing.T) {
 	r, w, err := os.Pipe()
 	if err != nil {
