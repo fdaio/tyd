@@ -526,13 +526,10 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		t.Fatalf("client identity not auto-created: %v", err)
 	}
 
-	// Sync server peers after accept.
-	sOpts.cmd = "register"
-	_ = captureStdout(t, func() {
-		if err := run(sOpts); err != nil {
-			t.Fatal(err)
-		}
-	})
+	// Sync server peers after accept (CP list → peers.json); do not re-register.
+	if err := syncPeersFromCP(sOpts); err != nil {
+		t.Fatal(err)
+	}
 	sPeers, err := peers.Load(sOpts.peers)
 	if err != nil {
 		t.Fatal(err)

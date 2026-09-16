@@ -159,7 +159,9 @@ These guide Step 2+; not implemented in Step 1.
 
 - `~/.tyd/sessions.json`: create records id + dial addr; list is local-only
 - `session create` attaches by default (`--detach` for scripts)
-- Attach/watch connect logs are silent by default; `-v` prints SSH-style `debug1:` lines
+- `tyd up` reuses local registration; restores missing CP daemon via `/v1/restore`
+- `tyd register` when already registered requires `--force` or TTY confirm (invalidates peers)
+- Attach/watch: missing session → not found; present without cap → permission denied
 
 ## Step 5 deliverables
 

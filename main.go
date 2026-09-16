@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ed25519"
 	"fmt"
 	"io"
@@ -60,6 +61,7 @@ type options struct {
 	noWait     bool
 	detach     bool
 	verbose    bool
+	force      bool
 	cmd        string
 	rest       []string
 }
@@ -790,6 +792,9 @@ func runUp(opts options) error {
 	}
 
 	stop := make(chan struct{})
+	if err := ensureCPRegistration(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "cp registration restore skipped: %v\n", err)
+	}
 	if srv.DataPlaneAddr() != "" {
 		cands := transport.PreferNonLoopback(transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise))
 		if len(cands) == 0 {
@@ -850,6 +855,63 @@ func advertisedAddr(host, listenAddr string) string {
 		return listenAddr
 	}
 	return net.JoinHostPort(host, port)
+}
+
+func ensureCPRegistration(opts options) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if !doc.HasRegistration() {
+		return nil
+	}
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	key, err := auth.LoadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	if doc.Registration.PublicKey != "" && doc.Registration.PublicKey != pub {
+		return fmt.Errorf("peers.json registration public key does not match identity")
+	}
+	cli := cpclient.New(platform)
+	if _, err := cli.ListPeers(doc.Registration.ID, pub); err == nil {
+		return nil
+	} else if !cpNotFound(err) {
+		return err
+	}
+	cpPeers := make([]controlpanel.Peer, 0, len(doc.Peers))
+	for _, p := range doc.Peers {
+		cpPeers = append(cpPeers, controlpanel.Peer{
+			ID:        p.ID,
+			PublicKey: p.PublicKey,
+			Nickname:  p.Nickname,
+			PairedAt:  p.PairedAt,
+			Direction: p.Direction,
+		})
+	}
+	resp, err := cli.Restore(controlpanel.RestoreRequest{
+		ID:           doc.Registration.ID,
+		PublicKey:    pub,
+		ApprovalMode: doc.Registration.ApprovalMode,
+		Peers:        cpPeers,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "tyd restored CP registration %s\n", resp.ID)
+	return nil
+}
+
+func cpNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
 }
 
 func publishDataEndpoint(opts options, addr, certFP string, candidates []string) error {
@@ -940,16 +1002,28 @@ func runRegister(opts options) error {
 		return err
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
-	cli := cpclient.New(opts.platform)
-	reg, err := cli.Register(pub, opts.approval)
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	force := opts.force
+	if doc.HasRegistration() {
+		if err := confirmReregister(force); err != nil {
+			return err
+		}
+		force = true
+		fmt.Fprintln(os.Stderr, "warning: re-registering replaces this daemon on the Control Panel and invalidates existing peer pairings.")
+	}
+	platform := opts.platform
+	if !force && doc.Platform != "" {
+		platform = doc.Platform
+	}
+	cli := cpclient.New(platform)
+	reg, err := cli.RegisterOpts(pub, opts.approval, force)
 	if err != nil {
 		return err
 	}
 	inv, err := cli.CreateInvite(reg.ID, pub)
-	if err != nil {
-		return err
-	}
-	doc, err := peers.Load(opts.peers)
 	if err != nil {
 		return err
 	}
@@ -962,7 +1036,10 @@ func runRegister(opts options) error {
 		RegisteredAt: time.Now().UTC(),
 	}
 	var baseline map[string]struct{}
-	if remote, err := cli.ListPeers(reg.ID, pub); err == nil {
+	if force {
+		doc.Peers = nil
+		baseline = map[string]struct{}{}
+	} else if remote, err := cli.ListPeers(reg.ID, pub); err == nil {
 		doc.MergePeers(cpPeersToLocal(remote))
 		baseline = peerIDSet(remote)
 	} else {
@@ -981,6 +1058,25 @@ func runRegister(opts options) error {
 		ExpiresAt: inv.ExpiresAt,
 	})
 	return waitForInviteAccept(opts, cli, reg.ID, pub, inv.Token, inv.ExpiresAt, baseline)
+}
+
+func confirmReregister(force bool) error {
+	if force {
+		return nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stderr.Fd())) {
+		return fmt.Errorf("already registered; re-register requires --force (invalidates existing peers)")
+	}
+	fmt.Fprint(os.Stderr, "Already registered. Re-registering invalidates all existing peers. Continue? [y/N] ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return err
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	if ans != "y" && ans != "yes" {
+		return fmt.Errorf("aborted")
+	}
+	return nil
 }
 
 func runInvite(opts options) error {
@@ -1437,6 +1533,8 @@ func parseArgs(args []string) (options, error) {
 			opts.detach = true
 		case a == "-v" || a == "--verbose":
 			opts.verbose = true
+		case a == "--force":
+			opts.force = true
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -1636,6 +1734,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
 		{"register", "Register; print tyd accept … and wait for peer"},
+		{"--force", "register: replace existing registration (invalidates peers)"},
 		{"invite", "Mint invite; print tyd accept … and wait (10m TTL)"},
 		{"accept", "Accept a peer invite (token or pasted accept line)"},
 		{"revoke", "Revoke a paired peer (either side)"},

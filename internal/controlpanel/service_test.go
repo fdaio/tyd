@@ -337,6 +337,120 @@ func TestAcceptOwnInviteRejected(t *testing.T) {
 	}
 }
 
+func TestRegisterForceReplacesIDAndDropsPeers(t *testing.T) {
+	s := New()
+	reg, err := s.Register(RegisterRequest{PublicKey: "pk-s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "pk-s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "pk-c"}); err != nil {
+		t.Fatal(err)
+	}
+	peers, err := s.ListPeers(reg.ID, "pk-s")
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("peers before force: %v %v", peers, err)
+	}
+	again, err := s.Register(RegisterRequest{PublicKey: "pk-s", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID == reg.ID {
+		t.Fatalf("expected new id after force, got %s", again.ID)
+	}
+	peers, err = s.ListPeers(again.ID, "pk-s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 0 {
+		t.Fatalf("expected no peers after force, got %+v", peers)
+	}
+	if _, err := s.GetDaemon(reg.ID); err != ErrNotFound {
+		t.Fatalf("old daemon should be gone: %v", err)
+	}
+}
+
+func TestRestoreRehydratesIDAndPeers(t *testing.T) {
+	s := New()
+	reg, err := s.Register(RegisterRequest{PublicKey: "pk-s", ApprovalMode: ApprovalPre})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "pk-s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "pk-c", Nickname: "laptop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peers, err := s.ListPeers(reg.ID, "pk-s")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate CP restart: empty service, restore from local snapshot.
+	s2 := New()
+	resp, err := s2.Restore(RestoreRequest{
+		ID:           reg.ID,
+		PublicKey:    "pk-s",
+		ApprovalMode: ApprovalPre,
+		Peers:        peers,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ID != reg.ID || resp.ApprovalMode != ApprovalPre {
+		t.Fatalf("%+v", resp)
+	}
+	got, err := s2.ListPeers(reg.ID, "pk-s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != acc.SelfID || got[0].PublicKey != "pk-c" {
+		t.Fatalf("%+v", got)
+	}
+	clientPeers, err := s2.ListPeers(acc.SelfID, "pk-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clientPeers) != 1 || clientPeers[0].ID != reg.ID {
+		t.Fatalf("reciprocal missing: %+v", clientPeers)
+	}
+}
+
+func TestHTTPRestore(t *testing.T) {
+	s := New()
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	body, _ := json.Marshal(RestoreRequest{
+		ID:        "deadbeefcafebabe",
+		PublicKey: "pk-restore",
+		Peers: []Peer{{
+			ID: "peer111122223333", PublicKey: "pk-peer", Direction: "outbound",
+		}},
+	})
+	res, err := http.Post(ts.URL+"/v1/restore", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	var out RegisterResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ID != "deadbeefcafebabe" {
+		t.Fatalf("%+v", out)
+	}
+}
+
 func TestHTTPRevokePeer(t *testing.T) {
 	s := New()
 	ts := httptest.NewServer(s.Handler())

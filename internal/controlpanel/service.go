@@ -106,6 +106,7 @@ type Invite struct {
 type RegisterRequest struct {
 	PublicKey    string `json:"public_key"`
 	ApprovalMode string `json:"approval_mode,omitempty"`
+	Force        bool   `json:"force,omitempty"` // replace existing registration (new id; drops old peers)
 }
 
 type RegisterResponse struct {
@@ -113,6 +114,15 @@ type RegisterResponse struct {
 	URL          string `json:"url"`
 	ApprovalMode string `json:"approval_mode"`
 	PublicKey    string `json:"public_key"`
+}
+
+// RestoreRequest rehydrates a daemon that already exists in local peers.json
+// onto a CP that lost in-memory state (same id + public key).
+type RestoreRequest struct {
+	ID           string `json:"id"`
+	PublicKey    string `json:"public_key"`
+	ApprovalMode string `json:"approval_mode,omitempty"`
+	Peers        []Peer `json:"peers,omitempty"`
 }
 
 type CreateInviteRequest struct {
@@ -195,9 +205,12 @@ func (s *Service) Register(req RegisterRequest) (*RegisterResponse, error) {
 	defer s.mu.Unlock()
 
 	if id, ok := s.byPub[pub]; ok {
-		d := s.daemons[id]
-		d.ApprovalMode = mode
-		return s.registerRespLocked(d), nil
+		if !req.Force {
+			d := s.daemons[id]
+			d.ApprovalMode = mode
+			return s.registerRespLocked(d), nil
+		}
+		s.deleteDaemonLocked(id)
 	}
 
 	id, err := randomHex(idBytes)
@@ -214,6 +227,140 @@ func (s *Service) Register(req RegisterRequest) (*RegisterResponse, error) {
 	s.daemons[id] = d
 	s.byPub[pub] = id
 	return s.registerRespLocked(d), nil
+}
+
+// Restore upserts a daemon by the client-known id so tyd up can reuse
+// peers.json after a CP restart without minting a new registration.
+func (s *Service) Restore(req RestoreRequest) (*RegisterResponse, error) {
+	id := strings.TrimSpace(req.ID)
+	pub := strings.TrimSpace(req.PublicKey)
+	if id == "" || pub == "" {
+		return nil, ErrInvalidPublicKey
+	}
+	mode, err := NormalizeApproval(req.ApprovalMode)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existingID, ok := s.byPub[pub]; ok && existingID != id {
+		return nil, fmt.Errorf("public key already registered as %s; use register --force to replace", existingID)
+	}
+	if d, ok := s.daemons[id]; ok {
+		if d.PublicKey != pub {
+			return nil, ErrUnauthorized
+		}
+		d.ApprovalMode = mode
+		if err := s.applyPeersLocked(d, req.Peers); err != nil {
+			return nil, err
+		}
+		return s.registerRespLocked(d), nil
+	}
+
+	d := &Daemon{
+		ID:           id,
+		PublicKey:    pub,
+		ApprovalMode: mode,
+		RegisteredAt: s.now(),
+	}
+	s.daemons[id] = d
+	s.byPub[pub] = id
+	if err := s.applyPeersLocked(d, req.Peers); err != nil {
+		delete(s.daemons, id)
+		delete(s.byPub, pub)
+		return nil, err
+	}
+	return s.registerRespLocked(d), nil
+}
+
+func (s *Service) deleteDaemonLocked(id string) {
+	d, ok := s.daemons[id]
+	if !ok {
+		return
+	}
+	delete(s.byPub, d.PublicKey)
+	delete(s.daemons, id)
+	delete(s.endpoints, id)
+	for _, other := range s.daemons {
+		filtered := other.Peers[:0]
+		for _, p := range other.Peers {
+			if p.ID == id {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		other.Peers = filtered
+	}
+}
+
+func (s *Service) applyPeersLocked(self *Daemon, peers []Peer) error {
+	self.Peers = nil
+	for _, p := range peers {
+		p.ID = strings.TrimSpace(p.ID)
+		p.PublicKey = strings.TrimSpace(p.PublicKey)
+		if p.ID == "" || p.PublicKey == "" || p.ID == self.ID {
+			continue
+		}
+		dir := strings.TrimSpace(p.Direction)
+		if dir == "" {
+			dir = "outbound"
+		}
+		peerDaemon, err := s.ensureDaemonWithIDLocked(p.ID, p.PublicKey, DefaultApproval)
+		if err != nil {
+			return err
+		}
+		// Local peer list may carry a stale id if CP already mapped the pub elsewhere.
+		p.ID = peerDaemon.ID
+		p.Direction = dir
+		if p.PairedAt.IsZero() {
+			p.PairedAt = s.now()
+		}
+		self.Peers = append(self.Peers, p)
+		s.ensureReciprocalPeerLocked(self, peerDaemon, oppositeDirection(dir), p.PairedAt)
+	}
+	return nil
+}
+
+func oppositeDirection(dir string) string {
+	if dir == "inbound" {
+		return "outbound"
+	}
+	return "inbound"
+}
+
+func (s *Service) ensureDaemonWithIDLocked(id, pub, mode string) (*Daemon, error) {
+	if d, ok := s.daemons[id]; ok {
+		if d.PublicKey != pub {
+			return nil, ErrUnauthorized
+		}
+		return d, nil
+	}
+	if existingID, ok := s.byPub[pub]; ok {
+		return s.daemons[existingID], nil
+	}
+	d := &Daemon{
+		ID:           id,
+		PublicKey:    pub,
+		ApprovalMode: mode,
+		RegisteredAt: s.now(),
+	}
+	s.daemons[id] = d
+	s.byPub[pub] = id
+	return d, nil
+}
+
+func (s *Service) ensureReciprocalPeerLocked(self, peer *Daemon, dir string, pairedAt time.Time) {
+	if peerIndex(peer.Peers, self.ID) >= 0 {
+		return
+	}
+	peer.Peers = append(peer.Peers, Peer{
+		ID:        self.ID,
+		PublicKey: self.PublicKey,
+		PairedAt:  pairedAt,
+		Direction: dir,
+	})
 }
 
 func (s *Service) registerRespLocked(d *Daemon) *RegisterResponse {
@@ -548,6 +695,7 @@ func (s *Service) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/v1/register", s.handleRegister)
+	mux.HandleFunc("/v1/restore", s.handleRestore)
 	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)
 	mux.HandleFunc("/v1/invites", s.handleCreateInvite)
 	mux.HandleFunc("/v1/accept", s.handleAccept)
@@ -566,6 +714,24 @@ func (s *Service) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := s.Register(req)
+	if err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Service) handleRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req RestoreRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	resp, err := s.Restore(req)
 	if err != nil {
 		writeServiceErr(w, err)
 		return

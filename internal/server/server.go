@@ -403,14 +403,14 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if f.SessionID == "" {
 			return fmt.Errorf("session_id required")
 		}
-		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
-			return err
-		}
 		if st.att != nil || st.watcher != nil {
 			return fmt.Errorf("connection already attached")
 		}
 		sess, err := s.cfg.Mgr.Get(f.SessionID)
 		if err != nil {
+			return err
+		}
+		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
 		att, snap, err := sess.Attach()
@@ -447,14 +447,14 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if f.SessionID == "" {
 			return fmt.Errorf("session_id required")
 		}
-		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
-			return err
-		}
 		if st.att != nil || st.watcher != nil {
 			return fmt.Errorf("connection already attached")
 		}
 		sess, err := s.cfg.Mgr.Get(f.SessionID)
 		if err != nil {
+			return err
+		}
+		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
 		w, snap, err := sess.Watch()
