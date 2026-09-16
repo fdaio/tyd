@@ -102,7 +102,35 @@ func (f *File) Upsert(rec Record) {
 			return
 		}
 	}
+	if rec.CreatedAt == "" {
+		rec.CreatedAt = rec.UpdatedAt.UTC().Format(time.RFC3339)
+	}
 	f.Sessions = append(f.Sessions, rec)
+}
+
+func CreatedDisplay(r Record) string {
+	if r.CreatedAt != "" {
+		return r.CreatedAt
+	}
+	if !r.UpdatedAt.IsZero() {
+		return r.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
+func (f *File) BackfillCreated() bool {
+	changed := false
+	for i := range f.Sessions {
+		if f.Sessions[i].CreatedAt != "" {
+			continue
+		}
+		if f.Sessions[i].UpdatedAt.IsZero() {
+			continue
+		}
+		f.Sessions[i].CreatedAt = f.Sessions[i].UpdatedAt.UTC().Format(time.RFC3339)
+		changed = true
+	}
+	return changed
 }
 
 func (f *File) MergeAliases(adoc *alias.File) {

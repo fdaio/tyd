@@ -120,7 +120,7 @@ Session operations live under the `session` subcommand (`tyd session help` lists
 
 ```bash
 id=$(./tyd session create --detach)
-./tyd session list                   # local catalog; alive first, newest first; no SIZE
+./tyd session list                   # local catalog; alive first, newest first; no PID/SIZE
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
 ./tyd session attach jammy           # progress bar on connect, then clears; Ctrl-\ detaches
 ./tyd session watch                  # omit → recent session
@@ -264,7 +264,7 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 | Command | Role |
 |---------|------|
 | `session create` | Create and attach; `--detach` prints `session_id` only (PENDING never attaches) |
-| `session list` | List local catalog (alive first, newest first; no SIZE) |
+| `session list` | List local catalog (alive first, newest first; no PID/SIZE) |
 | `session attach <id>` | Attach interactive I/O (exclusive) |
 | `session watch <id>` | Read-only follow / history dump (`attach` cap) |
 | `session approve <id>` | Approve PENDING session (local unix only) |

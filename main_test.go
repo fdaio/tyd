@@ -329,15 +329,18 @@ func TestSessionHelpColor(t *testing.T) {
 func TestWriteSessionListPlainHidesSize(t *testing.T) {
 	var buf bytes.Buffer
 	writeSessionList(&buf, []sessionListRow{
-		{ID: "aaa", Alias: "amy", Peer: "-", PID: "1", State: "DETACHED", Created: "2026-09-16T07:44:54Z"},
-		{ID: "bbb", Alias: "", Peer: "-", PID: "2", State: "CLOSED", Created: "2026-09-16T06:37:33Z"},
+		{ID: "aaa", Alias: "amy", Peer: "-", State: "DETACHED", Created: "2026-09-16T07:44:54Z"},
+		{ID: "bbb", Alias: "", Peer: "-", State: "CLOSED", Created: "2026-09-16T06:37:33Z"},
 	}, false)
 	out := buf.String()
-	if strings.Contains(out, "SIZE") || strings.Contains(out, "80x24") || strings.Contains(out, "\033[") {
+	if strings.Contains(out, "SIZE") || strings.Contains(out, "PID") || strings.Contains(out, "\033[") {
 		t.Fatalf("plain list: %q", out)
 	}
-	if !strings.Contains(out, "SESSION") || !strings.Contains(out, "ALIAS") || !strings.Contains(out, "STATE") || !strings.Contains(out, "PEER") {
+	if !strings.Contains(out, "SESSION") || !strings.Contains(out, "ALIAS") || !strings.Contains(out, "STATE") || !strings.Contains(out, "PEER") || !strings.Contains(out, "CREATED") {
 		t.Fatalf("missing headers: %q", out)
+	}
+	if !strings.Contains(out, "2026-09-16T07:44:54Z") {
+		t.Fatalf("missing created: %q", out)
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 	if len(lines) != 3 {
@@ -345,24 +348,29 @@ func TestWriteSessionListPlainHidesSize(t *testing.T) {
 	}
 }
 
-func TestWriteSessionListColorAliasAndState(t *testing.T) {
+func TestWriteSessionListColorAliasAndLiveState(t *testing.T) {
 	var buf bytes.Buffer
 	writeSessionList(&buf, []sessionListRow{
-		{ID: "aaa", Alias: "amy", Peer: "-", PID: "1", State: "DETACHED", Created: "t"},
-		{ID: "bbb", Alias: "", Peer: "-", PID: "2", State: "CLOSED", Created: "t"},
+		{ID: "aaa", Alias: "amy", Peer: "-", State: "DETACHED", Created: "t"},
+		{ID: "bbb", Alias: "", Peer: "-", State: "CLOSED", Created: "t"},
+		{ID: "ccc", Alias: "", Peer: "-", State: "PENDING", Created: "t"},
 	}, true)
 	out := buf.String()
+	header := strings.Split(out, "\n")[0]
+	if strings.Contains(header, ansiCyan) {
+		t.Fatalf("headers must be plain: %q", header)
+	}
 	if !strings.Contains(out, ansiCyan+"amy") {
 		t.Fatalf("alias should be cyan: %q", out)
 	}
 	if !strings.Contains(out, ansiCyan+"DETACHED") {
-		t.Fatalf("state should be cyan: %q", out)
+		t.Fatalf("live state should be cyan: %q", out)
 	}
-	if !strings.Contains(out, ansiCyan+"CLOSED") {
-		t.Fatalf("CLOSED should be cyan: %q", out)
+	if !strings.Contains(out, ansiCyan+"PENDING") {
+		t.Fatalf("PENDING should be cyan: %q", out)
 	}
-	if strings.Contains(out, ansiCyan+ansiReset) {
-		t.Fatalf("empty alias should not be painted: %q", out)
+	if strings.Contains(out, ansiCyan+"CLOSED") {
+		t.Fatalf("CLOSED must not be cyan: %q", out)
 	}
 }
 
