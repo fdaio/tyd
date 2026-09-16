@@ -55,9 +55,11 @@ See [requirements/control-plane-pairing.md](requirements/control-plane-pairing.m
 ```bash
 go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 register
+# stays open with TTL countdown until peer accepts (Ctrl-C revokes invite)
 ./tyd --platform http://127.0.0.1:8080 accept <invite> --as laptop
 ./tyd --peer laptop session create
-./tyd invite                              # another 10-minute invite
+./tyd invite                              # another invite; waits like register
+./tyd invite --no-wait                    # print accept line and exit
 ./tyd invite revoke <token>               # unused invite
 ./tyd revoke laptop                       # drop pairing (either side)
 ```
@@ -236,8 +238,8 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 | `keygen` | Create identity (+ bootstrap trust if missing); also auto on first up/register/accept |
 | `up` | Daemon (`serve` is a deprecated alias) |
 | `status` | CP registration, peers, aliases, connections |
-| `register` | Register with CP and print an invite |
-| `invite` | Mint a new invite (10m TTL) |
+| `register` | Register with CP, print `tyd accept …`, wait for peer (or `--no-wait`) |
+| `invite` | Mint invite, print accept line, wait for peer (10m TTL; or `--no-wait`) |
 | `invite revoke` | Invalidate an unused invite |
 | `accept` | Accept an invite; store peer public key |
 | `revoke` | Revoke a paired peer |
