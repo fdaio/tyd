@@ -16,6 +16,7 @@ import (
 
 	"tyd/internal/alias"
 	"tyd/internal/auth"
+	"tyd/internal/catalog"
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
@@ -50,6 +51,7 @@ type options struct {
 	peers      string
 	recent     string
 	aliases    string
+	sessions   string
 	platform   string
 	approval   string
 	as         string
@@ -211,6 +213,65 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 	}
 }
 
+func sessionsPath(opts options) string {
+	if opts.sessions != "" {
+		return opts.sessions
+	}
+	return paths.DefaultSessions()
+}
+
+func loadLocalCatalog(opts options) *catalog.File {
+	path := sessionsPath(opts)
+	f, err := catalog.Load(path)
+	if err != nil {
+		f = &catalog.File{}
+	}
+	n := len(f.Sessions)
+	adoc, _ := alias.Load(opts.aliases)
+	f.MergeAliases(adoc)
+	rec, _ := recent.Load(opts.recent)
+	f.MergeRecent(rec)
+	if len(f.Sessions) > n {
+		_ = catalog.Save(path, f)
+	}
+	return f
+}
+
+func rememberSession(opts options, rec catalog.Record) {
+	_ = catalog.Remember(sessionsPath(opts), rec)
+}
+
+func endpointFromRecord(rec catalog.Record) (client.Endpoint, bool) {
+	if rec.Addr == "" {
+		return client.Endpoint{}, false
+	}
+	kind := transport.KindTLS
+	if strings.EqualFold(rec.Transport, "quic") {
+		kind = transport.KindQUIC
+	} else if strings.EqualFold(rec.Transport, "unix") || rec.CertFP == "" {
+		kind = transport.KindUnix
+	}
+	return client.Endpoint{
+		Kind:       kind,
+		Address:    rec.Addr,
+		CertFP:     rec.CertFP,
+		Candidates: append([]string(nil), rec.Candidates...),
+	}, true
+}
+
+func endpointForSession(opts options, sessionID string) (client.Endpoint, string, error) {
+	cat := loadLocalCatalog(opts)
+	if rec, ok := cat.Get(sessionID); ok {
+		if ep, ok := endpointFromRecord(rec); ok {
+			return ep, rec.PeerID, nil
+		}
+		if rec.PeerID != "" && opts.peer == "" {
+			opts.peer = rec.PeerID
+		}
+	}
+	return endpoint(opts)
+}
+
 // resolveSessionRef maps alias → session id, or uses recent session when ref is empty.
 func resolveSessionRef(opts options, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
@@ -265,73 +326,68 @@ func runSession(opts options) error {
 	sub := opts.rest[0]
 	args := opts.rest[1:]
 	st := newConnectStatus(os.Stderr)
-	live := sub == "attach" || sub == "watch"
-	if live {
+	switch sub {
+	case "create":
 		st.Step(1, 4, "looking up endpoint")
-	}
-	ep, peerID, err := endpoint(opts)
-	if err != nil {
-		st.Clear()
-		return err
-	}
-	if live {
+		ep, peerID, err := endpoint(opts)
+		if err != nil {
+			st.Clear()
+			return err
+		}
 		bindSessionProgress(&ep, st)
 		if peerID != "" {
 			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
 		} else {
 			st.Step(1, 4, "local "+string(ep.Kind))
 		}
-	}
-	switch sub {
-	case "create":
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
+			st.Clear()
 			return err
 		}
 		info, err := client.Create(ep, key, client.CreateOpts{})
 		if err != nil {
+			st.Clear()
 			return err
 		}
 		rememberPeerSession(opts, peerID, info.ID)
+		rememberSession(opts, catalog.FromInfo(info, peerID, ep.Address, ep.CertFP, string(ep.Kind), ep.Candidates))
 		if info.State == string(session.StatePending) {
+			st.Clear()
 			fmt.Fprintln(os.Stderr, "pending approval")
 			fmt.Println(info.ID)
 			return nil
 		}
 		if opts.detach {
+			st.Clear()
 			fmt.Println(info.ID)
 			return nil
 		}
-		fmt.Fprintf(os.Stderr, "created %s  detach: Ctrl-\\\n", info.ID)
-		return client.Attach(ep, key, info.ID, os.Stdin, os.Stdout)
+		err = client.Attach(ep, key, info.ID, os.Stdin, os.Stdout)
+		st.Clear()
+		return err
 	case "list":
-		key, err := loadIdentity(opts.identity)
-		if err != nil {
-			return err
-		}
-		items, err := client.List(ep, key)
-		if err != nil {
-			return err
-		}
-		rememberPeerSession(opts, peerID, "")
-		adoc, _ := alias.Load(opts.aliases)
-		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "SESSION\tALIAS\tPID\tSTATE\tSIZE\tCREATED")
-		for _, it := range items {
-			an := ""
-			if adoc != nil {
-				an = adoc.NameFor(it.ID)
-			}
-			fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
-		}
-		return tw.Flush()
+		return runSessionList(opts)
 	case "attach":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
+		st.Step(1, 4, "looking up endpoint")
+		ep, peerID, err := endpointForSession(opts, sid)
+		if err != nil {
+			st.Clear()
+			return err
+		}
+		bindSessionProgress(&ep, st)
+		if peerID != "" {
+			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+		} else {
+			st.Step(1, 4, "local "+string(ep.Kind))
+		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
+			st.Clear()
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
@@ -343,8 +399,21 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
+		st.Step(1, 4, "looking up endpoint")
+		ep, peerID, err := endpointForSession(opts, sid)
+		if err != nil {
+			st.Clear()
+			return err
+		}
+		bindSessionProgress(&ep, st)
+		if peerID != "" {
+			st.Step(1, 4, "peer "+shortPeer(peerID)+" · "+string(ep.Kind))
+		} else {
+			st.Step(1, 4, "local "+string(ep.Kind))
+		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
+			st.Clear()
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
@@ -356,12 +425,23 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session close [session_id|alias]: %w", err)
 		}
+		ep, peerID, err := endpointForSession(opts, sid)
+		if err != nil {
+			return err
+		}
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		return client.CloseSession(ep, key, sid)
+		if err := client.CloseSession(ep, key, sid); err != nil {
+			return err
+		}
+		if rec, ok := loadLocalCatalog(opts).Get(sid); ok {
+			rec.State = string(session.StateClosed)
+			rememberSession(opts, rec)
+		}
+		return nil
 	case "approve":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
@@ -395,6 +475,25 @@ func runSession(opts options) error {
 	default:
 		return fmt.Errorf("unknown session command %q\n%s", sub, sessionUsage())
 	}
+}
+
+func runSessionList(opts options) error {
+	cat := loadLocalCatalog(opts)
+	adoc, _ := alias.Load(opts.aliases)
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "SESSION\tALIAS\tPEER\tPID\tSTATE\tSIZE\tCREATED")
+	for _, it := range cat.List() {
+		an := ""
+		if adoc != nil {
+			an = adoc.NameFor(it.ID)
+		}
+		peer := it.PeerID
+		if peer == "" {
+			peer = "-"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%dx%d\t%s\n", it.ID, an, peer, it.PID, it.State, it.Cols, it.Rows, it.CreatedAt)
+	}
+	return tw.Flush()
 }
 
 func firstArg(args []string) string {
@@ -1191,6 +1290,7 @@ func parseArgs(args []string) (options, error) {
 		peers:      paths.DefaultPeers(),
 		recent:     paths.DefaultRecent(),
 		aliases:    paths.DefaultAliases(),
+		sessions:   paths.DefaultSessions(),
 		platform:   paths.DefaultPlatform(),
 		approval:   controlpanel.DefaultApproval,
 		cert:       paths.DefaultServerCert(),
@@ -1458,7 +1558,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Common commands:")
 	writeHelpRows(w, []helpRow{
 		{"session create", "Create a session and attach (use --detach for id only)"},
-		{"session list", "List sessions (alive first)"},
+		{"session list", "List locally remembered sessions (no CP / daemon)"},
 		{"session attach", "Attach to a session (id, alias, or recent)"},
 		{"session watch", "Follow session output (read-only)"},
 		{"session approve", "Approve a PENDING remote session (local unix)"},
@@ -1528,7 +1628,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Commands:")
 	writeHelpRows(w, []helpRow{
 		{"create", "Create and attach (interactive; Ctrl-\\ detaches)"},
-		{"list", "List sessions (alive first; PENDING counts as alive)"},
+		{"list", "List local session catalog (no CP / daemon)"},
 		{"attach", "Attach (id, alias, or omit for recent)"},
 		{"watch", "Follow output (id, alias, or omit for recent)"},
 		{"approve", "Approve PENDING session (local unix only)"},
