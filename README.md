@@ -22,7 +22,8 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 make build
 ./tyd up                             # unix socket; TLS listen off by default
 
-id=$(./tyd session create)
+id=$(./tyd session create --detach)
+# interactive (default): ./tyd session create
 ./tyd alias work                     # name the recent session
 ./tyd session list
 ./tyd status

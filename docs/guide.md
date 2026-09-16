@@ -113,7 +113,7 @@ else zero outbound → local unix socket; many outbound → error asking for `--
 Session operations live under the `session` subcommand (`tyd session help` lists them):
 
 ```bash
-id=$(./tyd session create)
+id=$(./tyd session create --detach)
 ./tyd session list                   # alive first (incl. PENDING), then CLOSED; ALIAS column
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
 ./tyd session attach jammy           # id, alias, or omit id to reuse recent
@@ -254,7 +254,7 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 
 | Command | Role |
 |---------|------|
-| `session create` | Create session; print `session_id` (stderr notes `pending approval` if PENDING) |
+| `session create` | Create and attach; `--detach` prints `session_id` only (PENDING never attaches) |
 | `session list` | List sessions (alive incl. PENDING first, then closed) |
 | `session attach <id>` | Attach interactive I/O (exclusive) |
 | `session watch <id>` | Read-only follow / history dump (`attach` cap) |
@@ -273,7 +273,7 @@ Untrusted identity:
 ./tyd --socket /tmp/tyd.sock --trust /tmp/trust-a.json --listen off serve
 # other terminal:
 ./tyd --identity /tmp/tyd-b --trust /tmp/trust-b.json keygen
-./tyd --socket /tmp/tyd.sock --identity /tmp/tyd-b session create   # expect untrusted
+./tyd --socket /tmp/tyd.sock --identity /tmp/tyd-b session create --detach   # expect untrusted
 ```
 
 Automated coverage: `go test ./internal/auth ./internal/server ./internal/transport`.

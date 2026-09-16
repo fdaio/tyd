@@ -56,6 +56,7 @@ type options struct {
 	cert       string
 	key        string
 	noWait     bool
+	detach     bool
 	cmd        string
 	rest       []string
 }
@@ -258,9 +259,15 @@ func runSession(opts options) error {
 		rememberPeerSession(opts, peerID, info.ID)
 		if info.State == string(session.StatePending) {
 			fmt.Fprintln(os.Stderr, "pending approval")
+			fmt.Println(info.ID)
+			return nil
 		}
-		fmt.Println(info.ID)
-		return nil
+		if opts.detach {
+			fmt.Println(info.ID)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "created %s  detach: Ctrl-\\\n", info.ID)
+		return client.Attach(ep, key, info.ID, os.Stdin, os.Stdout)
 	case "list":
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -1265,6 +1272,8 @@ func parseArgs(args []string) (options, error) {
 			opts.as = strings.TrimPrefix(a, "--as=")
 		case a == "--no-wait":
 			opts.noWait = true
+		case a == "--detach":
+			opts.detach = true
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -1403,7 +1412,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Common commands:")
 	writeHelpRows(w, []helpRow{
-		{"session create", "Create a persistent PTY session"},
+		{"session create", "Create a session and attach (use --detach for id only)"},
 		{"session list", "List sessions (alive first)"},
 		{"session attach", "Attach to a session (id, alias, or recent)"},
 		{"session watch", "Follow session output (read-only)"},
@@ -1445,6 +1454,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
+		{"--detach", "session create: print id only (do not attach)"},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
@@ -1472,7 +1482,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Commands:")
 	writeHelpRows(w, []helpRow{
-		{"create", "Create a persistent PTY session"},
+		{"create", "Create and attach (interactive; Ctrl-\\ detaches)"},
 		{"list", "List sessions (alive first; PENDING counts as alive)"},
 		{"attach", "Attach (id, alias, or omit for recent)"},
 		{"watch", "Follow output (id, alias, or omit for recent)"},
@@ -1483,6 +1493,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
+	fmt.Fprintln(w, "  create --detach          Print session id only (for scripts).")
 	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only; Ctrl-C / Ctrl-\\ stops.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
