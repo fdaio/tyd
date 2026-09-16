@@ -55,6 +55,7 @@ type options struct {
 	as         string
 	cert       string
 	key        string
+	noWait     bool
 	cmd        string
 	rest       []string
 }
@@ -747,8 +748,12 @@ func runRegister(opts options) error {
 		URL:          reg.URL,
 		RegisteredAt: time.Now().UTC(),
 	}
+	var baseline map[string]struct{}
 	if remote, err := cli.ListPeers(reg.ID, pub); err == nil {
 		doc.MergePeers(cpPeersToLocal(remote))
+		baseline = peerIDSet(remote)
+	} else {
+		baseline = map[string]struct{}{}
 	}
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
@@ -761,7 +766,7 @@ func runRegister(opts options) error {
 		Token:    inv.Token,
 		TTL:      controlpanel.InviteTTL,
 	})
-	return nil
+	return waitForInviteAccept(opts, cli, reg.ID, pub, inv.Token, inv.ExpiresAt, baseline)
 }
 
 func runInvite(opts options) error {
@@ -802,6 +807,12 @@ func runInvite(opts options) error {
 			url = strings.TrimRight(cli.BaseURL, "/") + "/" + doc.Registration.ID
 		}
 	}
+	baseline := map[string]struct{}{}
+	if remote, err := cli.ListPeers(doc.Registration.ID, pub); err == nil {
+		doc.MergePeers(cpPeersToLocal(remote))
+		_ = peers.Save(opts.peers, doc)
+		baseline = peerIDSet(remote)
+	}
 	printInviteResult(os.Stderr, os.Stdout, inviteResult{
 		Kind:     "invite",
 		URL:      url,
@@ -810,7 +821,97 @@ func runInvite(opts options) error {
 		Token:    inv.Token,
 		TTL:      controlpanel.InviteTTL,
 	})
-	return nil
+	return waitForInviteAccept(opts, cli, doc.Registration.ID, pub, inv.Token, inv.ExpiresAt, baseline)
+}
+
+func peerIDSet(list []controlpanel.Peer) map[string]struct{} {
+	out := make(map[string]struct{}, len(list))
+	for _, p := range list {
+		out[p.ID] = struct{}{}
+	}
+	return out
+}
+
+func formatRemaining(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	return d.String()
+}
+
+// waitForInviteAccept keeps the process alive until a peer accepts the invite,
+// the TTL expires, or the user cancels (Ctrl-C revokes the invite).
+func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, token string, expiresAt time.Time, baseline map[string]struct{}) error {
+	if opts.noWait {
+		return nil
+	}
+	if baseline == nil {
+		baseline = map[string]struct{}{}
+	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	tty := colorEnabled(os.Stderr)
+	clearLine := func() {
+		if tty {
+			fmt.Fprint(os.Stderr, "\r\033[K")
+		}
+	}
+	if tty {
+		fmt.Fprintf(os.Stderr, "\r  waiting for accept… expires in %s", formatRemaining(time.Until(expiresAt)))
+	} else {
+		fmt.Fprintf(os.Stderr, "waiting for accept… expires in %s\n", formatRemaining(time.Until(expiresAt)))
+	}
+
+	for {
+		remaining := time.Until(expiresAt)
+		if remaining <= 0 {
+			clearLine()
+			return fmt.Errorf("invite expired")
+		}
+		select {
+		case <-sig:
+			clearLine()
+			if err := cli.RevokeInvite(token, daemonID, pub); err != nil {
+				return fmt.Errorf("invite cancelled (revoke failed: %v)", err)
+			}
+			return fmt.Errorf("invite revoked")
+		case <-ticker.C:
+			if tty {
+				fmt.Fprintf(os.Stderr, "\r  waiting for accept… expires in %s", formatRemaining(time.Until(expiresAt)))
+			}
+			remote, err := cli.ListPeers(daemonID, pub)
+			if err != nil {
+				continue
+			}
+			for _, p := range remote {
+				if _, seen := baseline[p.ID]; seen {
+					continue
+				}
+				clearLine()
+				doc, err := peers.Load(opts.peers)
+				if err != nil {
+					return err
+				}
+				doc.MergePeers(cpPeersToLocal(remote))
+				if err := peers.Save(opts.peers, doc); err != nil {
+					return err
+				}
+				if p.Nickname != "" {
+					fmt.Fprintf(os.Stderr, "paired %s (%s)\n", p.ID, p.Nickname)
+				} else {
+					fmt.Fprintf(os.Stderr, "paired %s\n", p.ID)
+				}
+				return nil
+			}
+		}
+	}
 }
 
 func runRevokeInvite(opts options, token string) error {
@@ -1100,6 +1201,8 @@ func parseArgs(args []string) (options, error) {
 			opts.as = args[i]
 		case strings.HasPrefix(a, "--as="):
 			opts.as = strings.TrimPrefix(a, "--as=")
+		case a == "--no-wait":
+			opts.noWait = true
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -1242,8 +1345,8 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Identity / pairing:")
 	writeHelpRows(w, []helpRow{
 		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
-		{"register", "Register with Control Panel; print tyd accept …"},
-		{"invite", "Mint invite; print tyd accept … (10m TTL)"},
+		{"register", "Register; print tyd accept … and wait for peer"},
+		{"invite", "Mint invite; print tyd accept … and wait (10m TTL)"},
 		{"accept", "Accept a peer invite (token or pasted accept line)"},
 		{"revoke", "Revoke a paired peer (either side)"},
 	}, color)
@@ -1270,6 +1373,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
+		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
@@ -1279,6 +1383,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> to create/list sessions on a paired peer.")
 	fmt.Fprintln(w, "  tyd revoke <peer> drops a pairing; tyd invite revoke <token> drops an unused invite.")
+	fmt.Fprintln(w, "  register/invite wait for accept by default; Ctrl-C revokes the invite; --no-wait skips wait.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
