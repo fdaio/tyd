@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
+	"tyd/internal/cpclient"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/server"
@@ -420,6 +422,7 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		peers:    filepath.Join(serverDir, "peers.json"),
 		platform: platform,
 		approval: "full",
+		noWait:   true,
 		cmd:      "register",
 	}
 	acceptLine := strings.TrimSpace(captureStdout(t, func() {
@@ -489,6 +492,117 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 	}
 	if cPeers.Peers[0].ID != sPeers.Registration.ID {
 		t.Fatalf("client peer id %s want %s", cPeers.Peers[0].ID, sPeers.Registration.ID)
+	}
+}
+
+func TestRegisterWaitsForAccept(t *testing.T) {
+	dir := t.TempDir()
+	addr, srv, err := startTestCP(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	serverDir := filepath.Join(dir, "server")
+	clientDir := filepath.Join(dir, "client")
+	_ = os.MkdirAll(serverDir, 0o700)
+	_ = os.MkdirAll(clientDir, 0o700)
+
+	platform := "http://" + addr
+	sOpts := options{
+		identity: filepath.Join(serverDir, "id_ed25519"),
+		trust:    filepath.Join(serverDir, "trusted.json"),
+		peers:    filepath.Join(serverDir, "peers.json"),
+		platform: platform,
+		approval: "full",
+		cmd:      "register",
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut := os.Stdout
+	os.Stdout = w
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- run(sOpts)
+		_ = w.Close()
+	}()
+
+	var acceptLine string
+	deadline := time.Now().Add(5 * time.Second)
+	buf := make([]byte, 0, 256)
+	tmp := make([]byte, 64)
+	for time.Now().Before(deadline) {
+		_ = r.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		n, readErr := r.Read(tmp)
+		if n > 0 {
+			buf = append(buf, tmp[:n]...)
+			if i := strings.IndexByte(string(buf), '\n'); i >= 0 {
+				acceptLine = strings.TrimSpace(string(buf[:i]))
+				break
+			}
+		}
+		if readErr != nil && !errors.Is(readErr, os.ErrDeadlineExceeded) {
+			break
+		}
+	}
+	os.Stdout = oldOut
+	if acceptLine == "" {
+		t.Fatal("timed out waiting for accept command on stdout")
+	}
+	token := parseInviteToken(acceptLine)
+	if token == "" {
+		t.Fatalf("bad accept line %q", acceptLine)
+	}
+
+	cOpts := options{
+		identity: filepath.Join(clientDir, "id_ed25519"),
+		trust:    filepath.Join(clientDir, "trusted.json"),
+		peers:    filepath.Join(clientDir, "peers.json"),
+		platform: platform,
+		as:       "laptop",
+		cmd:      "accept",
+		rest:     []string{token},
+	}
+	if err := run(cOpts); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("register wait: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("register did not exit after accept")
+	}
+
+	sPeers, err := peers.Load(sOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sPeers.Peers) != 1 {
+		t.Fatalf("server peers %+v", sPeers.Peers)
+	}
+}
+
+func TestWaitForInviteExpired(t *testing.T) {
+	cli := cpclient.New("http://127.0.0.1:1")
+	err := waitForInviteAccept(options{}, cli, "d", "pk", "tok", time.Now().Add(-time.Second), nil)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("want expired, got %v", err)
+	}
+}
+
+func TestParseNoWaitFlag(t *testing.T) {
+	opts, err := parseArgs([]string{"--no-wait", "register"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.noWait || opts.cmd != "register" {
+		t.Fatalf("%+v", opts)
 	}
 }
 
