@@ -146,6 +146,7 @@ func TestRunSessionCreateListStatusClose(t *testing.T) {
 		create := cli
 		create.cmd = "session"
 		create.rest = []string{"create"}
+		create.detach = true
 		if err := run(create); err != nil {
 			t.Fatal(err)
 		}
@@ -614,6 +615,16 @@ func TestParseNoWaitFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !opts.noWait || opts.cmd != "register" {
+		t.Fatalf("%+v", opts)
+	}
+}
+
+func TestParseDetachFlag(t *testing.T) {
+	opts, err := parseArgs([]string{"--detach", "session", "create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.detach || opts.cmd != "session" {
 		t.Fatalf("%+v", opts)
 	}
 }
