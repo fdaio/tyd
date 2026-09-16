@@ -1466,12 +1466,7 @@ type sessionListRow struct {
 }
 
 func liveState(state string) bool {
-	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case "PENDING", "ATTACHED", "DETACHED":
-		return true
-	default:
-		return false
-	}
+	return strings.EqualFold(strings.TrimSpace(state), "ATTACHED")
 }
 
 func padCell(s string, width int) string {

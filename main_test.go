@@ -354,6 +354,7 @@ func TestWriteSessionListColorAliasAndLiveState(t *testing.T) {
 		{ID: "aaa", Alias: "amy", Peer: "-", State: "DETACHED", Created: "t"},
 		{ID: "bbb", Alias: "", Peer: "-", State: "CLOSED", Created: "t"},
 		{ID: "ccc", Alias: "", Peer: "-", State: "PENDING", Created: "t"},
+		{ID: "ddd", Alias: "", Peer: "-", State: "ATTACHED", Created: "t"},
 	}, true)
 	out := buf.String()
 	header := strings.Split(out, "\n")[0]
@@ -363,14 +364,13 @@ func TestWriteSessionListColorAliasAndLiveState(t *testing.T) {
 	if !strings.Contains(out, ansiCyan+"amy") {
 		t.Fatalf("alias should be cyan: %q", out)
 	}
-	if !strings.Contains(out, ansiCyan+"DETACHED") {
-		t.Fatalf("live state should be cyan: %q", out)
+	if !strings.Contains(out, ansiCyan+"ATTACHED") {
+		t.Fatalf("ATTACHED should be cyan: %q", out)
 	}
-	if !strings.Contains(out, ansiCyan+"PENDING") {
-		t.Fatalf("PENDING should be cyan: %q", out)
-	}
-	if strings.Contains(out, ansiCyan+"CLOSED") {
-		t.Fatalf("CLOSED must not be cyan: %q", out)
+	for _, st := range []string{"DETACHED", "PENDING", "CLOSED"} {
+		if strings.Contains(out, ansiCyan+st) {
+			t.Fatalf("%s must not be cyan: %q", st, out)
+		}
 	}
 }
 
