@@ -29,6 +29,9 @@ func TestDefaultSocketUsesHome(t *testing.T) {
 	if DefaultAliases() != filepath.Join(home, ".tyd", "aliases.json") {
 		t.Fatalf("aliases %q", DefaultAliases())
 	}
+	if DefaultSessions() != filepath.Join(home, ".tyd", "sessions.json") {
+		t.Fatalf("sessions %q", DefaultSessions())
+	}
 	if DefaultListen() != "off" {
 		t.Fatalf("listen %q", DefaultListen())
 	}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/alias"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
@@ -141,6 +142,7 @@ func TestRunSessionCreateListStatusClose(t *testing.T) {
 	cli := options{
 		socket: sock, identity: idPath, trust: trustPath, listen: "off",
 		recent: filepath.Join(dir, "recent.json"), aliases: filepath.Join(dir, "aliases.json"),
+		sessions: filepath.Join(dir, "sessions.json"),
 	}
 	id := strings.TrimSpace(captureStdout(t, func() {
 		create := cli
@@ -626,6 +628,33 @@ func TestParseDetachFlag(t *testing.T) {
 	}
 	if !opts.detach || opts.cmd != "session" {
 		t.Fatalf("%+v", opts)
+	}
+}
+
+func TestSessionListIsLocalCatalog(t *testing.T) {
+	dir := t.TempDir()
+	aliases := filepath.Join(dir, "aliases.json")
+	sessions := filepath.Join(dir, "sessions.json")
+	adoc := &alias.File{}
+	if err := adoc.Set("amy", "878144071a28b83c", "8a6592c332eba2b2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := alias.Save(aliases, adoc); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		err := run(options{
+			cmd: "session", rest: []string{"list"},
+			aliases: aliases, sessions: sessions, recent: filepath.Join(dir, "recent.json"),
+			// no socket, no identity, no CP — list must still work
+			platform: "http://127.0.0.1:1",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "878144071a28b83c") || !strings.Contains(out, "amy") {
+		t.Fatalf("local list: %q", out)
 	}
 }
 
