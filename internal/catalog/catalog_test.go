@@ -67,3 +67,31 @@ func TestListNewestCreatedFirstWithinGroup(t *testing.T) {
 		}
 	}
 }
+
+func TestCreatedDisplayAndBackfill(t *testing.T) {
+	ts := time.Date(2024, 2, 3, 4, 5, 6, 0, time.UTC)
+	r := Record{ID: "x", UpdatedAt: ts}
+	if got := CreatedDisplay(r); got != "2024-02-03T04:05:06Z" {
+		t.Fatalf("display=%s", got)
+	}
+	r.CreatedAt = "2024-01-01T00:00:00Z"
+	if got := CreatedDisplay(r); got != r.CreatedAt {
+		t.Fatalf("prefer created_at: %s", got)
+	}
+
+	f := &File{Sessions: []Record{{ID: "a", UpdatedAt: ts}}}
+	if !f.BackfillCreated() || f.Sessions[0].CreatedAt != "2024-02-03T04:05:06Z" {
+		t.Fatalf("%+v", f.Sessions)
+	}
+	if f.BackfillCreated() {
+		t.Fatal("second backfill should be no-op")
+	}
+}
+
+func TestUpsertStampsCreatedAt(t *testing.T) {
+	f := &File{}
+	f.Upsert(Record{ID: "n", State: "DETACHED"})
+	if f.Sessions[0].CreatedAt == "" {
+		t.Fatalf("%+v", f.Sessions[0])
+	}
+}

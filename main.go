@@ -231,6 +231,9 @@ func loadLocalCatalog(opts options) *catalog.File {
 	f.MergeAliases(adoc)
 	rec, _ := recent.Load(opts.recent)
 	f.MergeRecent(rec)
+	if f.BackfillCreated() {
+		n = -1
+	}
 	if len(f.Sessions) > n {
 		_ = catalog.Save(path, f)
 	}
@@ -492,8 +495,8 @@ func runSessionList(opts options) error {
 			peer = "-"
 		}
 		rows = append(rows, sessionListRow{
-			ID: it.ID, Alias: an, Peer: peer, PID: fmt.Sprintf("%d", it.PID),
-			State: it.State, Created: it.CreatedAt,
+			ID: it.ID, Alias: an, Peer: peer,
+			State: it.State, Created: catalog.CreatedDisplay(it),
 		})
 	}
 	writeSessionList(os.Stdout, rows, colorEnabled(os.Stdout))
@@ -1459,7 +1462,16 @@ func colorEnabled(w io.Writer) bool {
 }
 
 type sessionListRow struct {
-	ID, Alias, Peer, PID, State, Created string
+	ID, Alias, Peer, State, Created string
+}
+
+func liveState(state string) bool {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "PENDING", "ATTACHED", "DETACHED":
+		return true
+	default:
+		return false
+	}
 }
 
 func padCell(s string, width int) string {
@@ -1478,28 +1490,25 @@ func paintCell(s string, width int, color bool) string {
 }
 
 func writeSessionList(w io.Writer, rows []sessionListRow, color bool) {
-	idW, aliasW, peerW, pidW, stateW, createdW := len("SESSION"), len("ALIAS"), len("PEER"), len("PID"), len("STATE"), len("CREATED")
+	idW, aliasW, peerW, stateW, createdW := len("SESSION"), len("ALIAS"), len("PEER"), len("STATE"), len("CREATED")
 	for _, r := range rows {
 		idW = max(idW, len(r.ID))
 		aliasW = max(aliasW, len(r.Alias))
 		peerW = max(peerW, len(r.Peer))
-		pidW = max(pidW, len(r.PID))
 		stateW = max(stateW, len(r.State))
 		createdW = max(createdW, len(r.Created))
 	}
 	const gap = "  "
 	fmt.Fprint(w, padCell("SESSION", idW), gap)
-	fmt.Fprint(w, paintCell("ALIAS", aliasW, color), gap)
+	fmt.Fprint(w, padCell("ALIAS", aliasW), gap)
 	fmt.Fprint(w, padCell("PEER", peerW), gap)
-	fmt.Fprint(w, padCell("PID", pidW), gap)
-	fmt.Fprint(w, paintCell("STATE", stateW, color), gap)
+	fmt.Fprint(w, padCell("STATE", stateW), gap)
 	fmt.Fprintln(w, padCell("CREATED", createdW))
 	for _, r := range rows {
 		fmt.Fprint(w, padCell(r.ID, idW), gap)
 		fmt.Fprint(w, paintCell(r.Alias, aliasW, color && r.Alias != ""), gap)
 		fmt.Fprint(w, padCell(r.Peer, peerW), gap)
-		fmt.Fprint(w, padCell(r.PID, pidW), gap)
-		fmt.Fprint(w, paintCell(r.State, stateW, color && r.State != ""), gap)
+		fmt.Fprint(w, paintCell(r.State, stateW, color && liveState(r.State)), gap)
 		fmt.Fprintln(w, padCell(r.Created, createdW))
 	}
 }
