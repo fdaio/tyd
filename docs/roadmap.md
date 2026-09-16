@@ -39,12 +39,13 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `tyd register` / `tyd accept` with `--platform` (default `https://app.getfda.dev`)
 - Persist paired peer keys locally (`peers.json`)
 
-### Step 2 — Data-plane self-network after pairing (done)
+### Step 2 — Data-plane self-network after pairing (done; Phase 1 QUIC in progress)
 
 - Peer AuthN with exchanged keys (inbound peers injected into server trust on sync)
-- Ephemeral CP signaling: `PUT/GET /v1/daemons/{id}/endpoint` (addr + cert fingerprint; TTL ~90s; no TTY)
-- Data frames never through CP — client dials peer TLS directly (`DialTLSFingerprint`)
-- `tyd up --data-listen auto` starts loopback data-plane TLS when registered; publishes/refreshes endpoint
+- Ephemeral CP signaling: `PUT/GET /v1/daemons/{id}/endpoint` (addr + cert fingerprint + transport + candidates; TTL ~90s; no TTY)
+- Data frames never through CP — client dials peer directly
+- `tyd up --data-listen auto` starts data-plane when registered; publishes/refreshes endpoint
+- **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md))
 - Session targeting: `--peer <id|nickname>`; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 
 ### Step 3 — Approval modes (done)
@@ -73,7 +74,9 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 
 | Item | Notes |
 |------|--------|
-| Tailcat / NetBird / STUN / custom relay | Connectivity overlay; candidate behind Step 2 signaling |
+| Tailcat / NetBird / STUN / custom relay | Superseded by [dataplane-networking.md](requirements/dataplane-networking.md): Phase1 QUIC direct, Phase2 WG, Phase3 separate relay |
+| WireGuard data plane | Phase 2 after QUIC direct |
+| Separate relay module | Phase 3 — not inside CP |
 | Bind TLS on `0.0.0.0` by default | Default stays loopback when TLS enabled |
 | SSH protocol or sshd dependency | Out of scope |
 | Switch shell to another Unix user (setuid) | Not implemented |

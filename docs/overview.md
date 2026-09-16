@@ -49,7 +49,9 @@ Layers from bottom to top:
 | Protocol | Shared frames over any byte stream |
 | Transport | How the stream is obtained: `unix` or `tls` |
 
-Connectivity overlays (WireGuard, NetBird, Tailcat) are **below or beside** Transport. They are not implemented inside tyd today.
+Connectivity overlays (WireGuard Phase 2, QUIC Phase 1, separate relay Phase 3)
+are described in [docs/requirements/dataplane-networking.md](docs/requirements/dataplane-networking.md).
+QUIC direct is the current data-plane after pairing; WireGuard and relay are not done yet.
 
 ## Process model
 

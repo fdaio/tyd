@@ -1,0 +1,38 @@
+# Data-plane networking after pairing
+
+Product decision (REQ-110): after Control Panel pairing, peers form a **1:1 data plane**
+inside tyd. Keys reuse the existing Ed25519 pair identity.
+
+## Phases
+
+| Phase | Transport | Status |
+|-------|-----------|--------|
+| **1** | **QUIC direct** | In progress — prefer direct; fail with error if unreachable |
+| **2** | WireGuard | Planned |
+| **3** | Relay | Planned — **separate deployable module**, never inside CP |
+
+## Hard rules
+
+- Session / TTY bytes **never** go through Control Panel.
+- Relay (when built) is an independent service; CP stays pairing + ephemeral signaling only.
+- Topology is **1:1** per pair (not a full mesh yet).
+
+## Lifecycle
+
+| Command | Role |
+|---------|------|
+| `tyd up` | Daemon; keep CP registration/peers in sync; listen + publish data-plane candidates |
+| `tyd register` / `tyd accept` | Establish pair; once both sides `up`, DP uses published candidates (no manual `--advertise` required for LAN/same-host) |
+
+## Phase 1 behavior
+
+1. When registered, `tyd up --data-listen auto` listens **QUIC** on `0.0.0.0:0` (all interfaces).
+2. Publishes to CP: primary `addr`, `cert_fp`, `transport=quic`, plus `candidates` (interface IPs + optional `--advertise` + loopback for local tests).
+3. Client `session` commands resolve peer endpoint from CP and **try candidates in order** until QUIC dial + AuthN succeed.
+4. If every candidate fails → clear error (no relay fallback in Phase 1).
+
+## Out of Phase 1
+
+- STUN / ICE hole punching across strict NATs (may still fail; error is OK for now)
+- WireGuard
+- Relay module

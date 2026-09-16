@@ -81,18 +81,22 @@ State is **in-memory**; restart loses pairing metadata. See `Dockerfile.controlp
 Paired peer public keys are stored in `~/.tyd/peers.json`.  
 CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon peer-sync drops inbound trust.
 
-### Data plane (Step 2)
+### Data plane (Step 2 / Phase 1 QUIC)
 
-After register, `tyd up` with `--data-listen auto` (default) starts a loopback TLS data-plane listener
-and publishes `HOST:port` + cert fingerprint to CP (ephemeral signaling only). Refresh every ~30s.
+After register, `tyd up --data-listen auto` (default) starts a **QUIC** data-plane listener
+on all interfaces (`0.0.0.0:0`), publishes `addr` + `candidates` + cert fingerprint to CP
+(ephemeral signaling only). Refresh every ~30s. Client dials try candidates in order;
+if all fail, the error lists each attempt (no relay fallback yet).
 
 ```bash
-./tyd up --platform http://127.0.0.1:8080   # auto data-plane when registered
+./tyd up --platform http://127.0.0.1:8080   # auto QUIC data-plane when registered
 ./tyd up --data-listen off                  # disable data-plane
-./tyd up --data-listen 127.0.0.1:0 --advertise 127.0.0.1
+./tyd up --advertise example.com            # put this host first in candidates
 ```
 
-Session commands on a paired peer (direct TLS; not through CP):
+See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay (Phase 3).
+
+Session commands on a paired peer (direct QUIC; not through CP):
 
 ```bash
 ./tyd --peer laptop session create

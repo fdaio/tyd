@@ -54,24 +54,30 @@ type Service struct {
 // Endpoint is ephemeral dial signaling for the data plane.
 // CP must never store session/TTY content — only addr / cert fingerprint hints.
 type Endpoint struct {
-	DaemonID  string    `json:"daemon_id"`
-	PublicKey string    `json:"public_key"`
-	Addr      string    `json:"addr"`
-	CertFP    string    `json:"cert_fp"`
-	ExpiresAt time.Time `json:"expires_at"`
+	DaemonID   string    `json:"daemon_id"`
+	PublicKey  string    `json:"public_key"`
+	Addr       string    `json:"addr"`
+	CertFP     string    `json:"cert_fp"`
+	Transport  string    `json:"transport,omitempty"` // tls|quic; default tls for older clients
+	Candidates []string  `json:"candidates,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type PublishEndpointRequest struct {
-	PublicKey  string `json:"public_key"`
-	Addr       string `json:"addr"`
-	CertFP     string `json:"cert_fp"`
-	TTLSeconds int    `json:"ttl_seconds,omitempty"`
+	PublicKey  string   `json:"public_key"`
+	Addr       string   `json:"addr"`
+	CertFP     string   `json:"cert_fp"`
+	Transport  string   `json:"transport,omitempty"`
+	Candidates []string `json:"candidates,omitempty"`
+	TTLSeconds int      `json:"ttl_seconds,omitempty"`
 }
 
 type EndpointResponse struct {
-	Addr      string    `json:"addr"`
-	CertFP    string    `json:"cert_fp"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Addr       string    `json:"addr"`
+	CertFP     string    `json:"cert_fp"`
+	Transport  string    `json:"transport,omitempty"`
+	Candidates []string  `json:"candidates,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 type Daemon struct {
@@ -456,15 +462,28 @@ func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (
 	if d.PublicKey != pub {
 		return nil, ErrUnauthorized
 	}
+	tr := strings.TrimSpace(strings.ToLower(req.Transport))
+	if tr == "" {
+		tr = "tls"
+	}
+	cands := uniqueNonEmpty(req.Candidates)
 	ep := &Endpoint{
-		DaemonID:  d.ID,
-		PublicKey: pub,
-		Addr:      addr,
-		CertFP:    fp,
-		ExpiresAt: s.now().Add(ttl),
+		DaemonID:   d.ID,
+		PublicKey:  pub,
+		Addr:       addr,
+		CertFP:     fp,
+		Transport:  tr,
+		Candidates: cands,
+		ExpiresAt:  s.now().Add(ttl),
 	}
 	s.endpoints[d.ID] = ep
-	return &EndpointResponse{Addr: ep.Addr, CertFP: ep.CertFP, ExpiresAt: ep.ExpiresAt}, nil
+	return &EndpointResponse{
+		Addr:       ep.Addr,
+		CertFP:     ep.CertFP,
+		Transport:  ep.Transport,
+		Candidates: append([]string(nil), ep.Candidates...),
+		ExpiresAt:  ep.ExpiresAt,
+	}, nil
 }
 
 func (s *Service) GetEndpoint(daemonID string) (*EndpointResponse, error) {
@@ -478,7 +497,30 @@ func (s *Service) GetEndpoint(daemonID string) (*EndpointResponse, error) {
 		delete(s.endpoints, daemonID)
 		return nil, ErrNotFound
 	}
-	return &EndpointResponse{Addr: ep.Addr, CertFP: ep.CertFP, ExpiresAt: ep.ExpiresAt}, nil
+	return &EndpointResponse{
+		Addr:       ep.Addr,
+		CertFP:     ep.CertFP,
+		Transport:  ep.Transport,
+		Candidates: append([]string(nil), ep.Candidates...),
+		ExpiresAt:  ep.ExpiresAt,
+	}, nil
+}
+
+func uniqueNonEmpty(in []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 func peerIndex(peers []Peer, id string) int {

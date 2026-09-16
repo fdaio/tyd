@@ -100,15 +100,48 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 		return client.Endpoint{}, "", err
 	}
 	cli := cpclient.New(platform)
-	addr, certFP, err := cli.GetEndpoint(peerID)
+	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
+	kind := transport.KindTLS
+	if strings.EqualFold(ep.Transport, "quic") {
+		kind = transport.KindQUIC
+	}
+	addrs := endpointDialOrder(ep)
+	if len(addrs) == 0 {
+		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
+	}
 	return client.Endpoint{
-		Kind:    transport.KindTLS,
-		Address: addr,
-		CertFP:  certFP,
+		Kind:       kind,
+		Address:    addrs[0],
+		CertFP:     ep.CertFP,
+		Candidates: addrs[1:],
 	}, peerID, nil
+}
+
+func endpointDialOrder(ep *controlpanel.EndpointResponse) []string {
+	if ep == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(a string) {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			return
+		}
+		if _, ok := seen[a]; ok {
+			return
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	add(ep.Addr)
+	for _, c := range ep.Candidates {
+		add(c)
+	}
+	return out
 }
 
 func resolvePeerTarget(opts options) (peerID string, useLocal bool, err error) {
@@ -591,15 +624,30 @@ func runUp(opts options) error {
 
 	stop := make(chan struct{})
 	if srv.DataPlaneAddr() != "" {
-		pubAddr := advertisedAddr(opts.advertise, srv.DataPlaneAddr())
-		fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (published to CP)\n", pubAddr)
+		cands := transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise)
+		pubAddr := cands[0]
+		if opts.advertise != "" {
+			// Prefer explicit advertise as primary when present in candidate set.
+			wantPort := ""
+			if _, p, err := net.SplitHostPort(srv.DataPlaneAddr()); err == nil {
+				wantPort = p
+			}
+			pref := net.JoinHostPort(strings.TrimSpace(opts.advertise), wantPort)
+			for _, c := range cands {
+				if c == pref {
+					pubAddr = c
+					break
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "tyd data-plane quic %s (%d candidates published to CP)\n", pubAddr, len(cands))
 		if err := syncPeersAndTrust(opts, trust); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 		}
-		if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull()); err != nil {
+		if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
 			fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
 		}
-		go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), stop)
+		go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
 	} else {
 		if err := syncPeersFromCP(opts); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
@@ -627,7 +675,7 @@ func resolveDataListen(opts options) (string, error) {
 			return "", err
 		}
 		if doc.HasRegistration() {
-			return "127.0.0.1:0", nil
+			return "0.0.0.0:0", nil
 		}
 		return "off", nil
 	default:
@@ -647,7 +695,7 @@ func advertisedAddr(host, listenAddr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func publishDataEndpoint(opts options, addr, certFP string) error {
+func publishDataEndpoint(opts options, addr, certFP string, candidates []string) error {
 	doc, err := peers.Load(opts.peers)
 	if err != nil {
 		return err
@@ -665,7 +713,33 @@ func publishDataEndpoint(opts options, addr, certFP string) error {
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(platform)
-	return cli.PublishEndpoint(doc.Registration.ID, pub, addr, certFP, controlpanel.DefaultEndpointTTL)
+	ttlSec := int(controlpanel.DefaultEndpointTTL / time.Second)
+	return cli.PublishEndpointFull(doc.Registration.ID, controlpanel.PublishEndpointRequest{
+		PublicKey:  pub,
+		Addr:       addr,
+		CertFP:     certFP,
+		Transport:  "quic",
+		Candidates: candidates,
+		TTLSeconds: ttlSec,
+	})
+}
+
+func dataPlaneMaintain(opts options, trust *auth.Store, addr, certFP string, candidates []string, stop <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := syncPeersAndTrust(opts, trust); err != nil {
+				fmt.Fprintf(os.Stderr, "cp peer sync: %v\n", err)
+			}
+			if err := publishDataEndpoint(opts, addr, certFP, candidates); err != nil {
+				fmt.Fprintf(os.Stderr, "cp endpoint publish: %v\n", err)
+			}
+		}
+	}
 }
 
 func injectPeerTrust(trust *auth.Store, doc *peers.File) {
@@ -701,24 +775,6 @@ func syncPeersAndTrust(opts options, trust *auth.Store) error {
 	}
 	injectPeerTrust(trust, doc)
 	return nil
-}
-
-func dataPlaneMaintain(opts options, trust *auth.Store, addr, certFP string, stop <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ticker.C:
-			if err := syncPeersAndTrust(opts, trust); err != nil {
-				fmt.Fprintf(os.Stderr, "cp peer sync: %v\n", err)
-			}
-			if err := publishDataEndpoint(opts, addr, certFP); err != nil {
-				fmt.Fprintf(os.Stderr, "cp endpoint publish: %v\n", err)
-			}
-		}
-	}
 }
 
 func runRegister(opts options) error {

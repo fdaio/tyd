@@ -136,22 +136,28 @@ func TestDataPlanePeerSession(t *testing.T) {
 		t.Fatal("missing data-plane addr")
 	}
 	fp := srv.TLSFingerprintFull()
-	if err := cp.PublishEndpoint(reg.ID, sPub, dp, fp, controlpanel.DefaultEndpointTTL); err != nil {
+	if err := cp.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
+		PublicKey:  sPub,
+		Addr:       dp,
+		CertFP:     fp,
+		Transport:  "quic",
+		Candidates: []string{dp},
+		TTLSeconds: int(controlpanel.DefaultEndpointTTL / time.Second),
+	}); err != nil {
 		t.Fatal(err)
 	}
 
-	addr, certFP, err := cp.GetEndpoint(reg.ID)
+	got, err := cp.GetEndpointFull(reg.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr != dp || certFP != fp {
-		t.Fatalf("endpoint addr=%s fp=%s want %s / %s", addr, certFP, dp, fp)
+	if got.Addr != dp || got.CertFP != fp || got.Transport != "quic" {
+		t.Fatalf("endpoint %+v want addr=%s fp=%s quic", got, dp, fp)
 	}
 
-	ep := client.Endpoint{Kind: transport.KindTLS, Address: addr, CertFP: certFP}
-	if err := client.WaitReady(ep, 2*time.Second); err != nil {
-		t.Fatal(err)
-	}
+	ep := client.Endpoint{Kind: transport.KindQUIC, Address: got.Addr, CertFP: got.CertFP}
+	// Brief settle so the accept loop is parked on Accept before we dial.
+	time.Sleep(50 * time.Millisecond)
 	info, err := client.Create(ep, cKey, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
