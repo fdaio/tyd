@@ -226,6 +226,41 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 			st.Leave("Detaching.")
 		}
 	}
+	ep.OnInputIgnored = nil
+}
+
+func bindWatchProgress(ep *client.Endpoint, st *connectStatus) {
+	if ep == nil {
+		return
+	}
+	kind := string(ep.Kind)
+	if kind == "" {
+		kind = "unix"
+	}
+	ep.OnDial = func(addr string) {
+		st.Log(dialDebugMsg(kind, addr))
+	}
+	ep.OnAttach = func() {
+		st.Log("Connection established.")
+		st.Log("Starting watch over " + kind + ".")
+	}
+	ep.OnReady = func() {
+		st.Log("Watching.")
+		st.Notice("watching (read-only) — typing ignored; Ctrl-C / Ctrl-\\ stops")
+	}
+	ep.OnLeave = func(msg string) {
+		switch msg {
+		case "interrupted":
+			st.Leave("Interrupted.")
+		case "session ended":
+			st.Leave("Session ended.")
+		default:
+			st.Leave("Stopped watching.")
+		}
+	}
+	ep.OnInputIgnored = func() {
+		st.Notice("watch is read-only — use: tyd session attach")
+	}
 }
 
 func sessionsPath(opts options) string {
@@ -519,7 +554,8 @@ func runSession(opts options) error {
 		}
 		rememberPeerSession(opts, peerID, sid)
 		err = withEndpointRetry(opts, st, sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
-			return client.Watch(ep, key, sid, os.Stdout)
+			bindWatchProgress(&ep, st)
+			return client.Watch(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
 		return err
@@ -1944,7 +1980,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
 	fmt.Fprintln(w, "  create --detach          Print session id only (for scripts).")
 	fmt.Fprintln(w, "  --verbose                SSH-style connect debug on stderr.")
-	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only; Ctrl-C / Ctrl-\\ stops.")
+	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only follow; banner + type-ignored hint.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")

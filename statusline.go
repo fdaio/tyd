@@ -32,6 +32,18 @@ func (s *connectStatus) writeln(line string) {
 	fmt.Fprintf(s.w, "%s\r\n", line)
 }
 
+// Notice always writes a user-facing line (not gated on --verbose).
+func (s *connectStatus) Notice(msg string) {
+	if s == nil || s.w == nil {
+		return
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	s.writeln(msg)
+}
+
 // Log writes one SSH-style debug line when verbose.
 func (s *connectStatus) Log(msg string) {
 	if !s.enabled() {

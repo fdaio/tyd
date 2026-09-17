@@ -6,14 +6,13 @@ import (
 	"testing"
 )
 
-func TestConnectStatusSilentByDefault(t *testing.T) {
+func TestConnectStatusNoticeAlways(t *testing.T) {
 	var buf bytes.Buffer
 	s := &connectStatus{w: &buf, verbose: false}
-	s.Log("Connecting to 10.0.0.1 port 1.")
-	s.Clear()
-	s.Leave("Detaching.")
-	if buf.String() != "\r\n" {
-		t.Fatalf("silent leave want CRLF only, got %q", buf.String())
+	s.Notice("watching (read-only)")
+	s.Log("should stay silent")
+	if buf.String() != "watching (read-only)\r\n" {
+		t.Fatalf("got %q", buf.String())
 	}
 }
 
