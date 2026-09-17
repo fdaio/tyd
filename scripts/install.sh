@@ -5,7 +5,7 @@
 set -eu
 
 REPO="${TYD_REPO:-fdaio/tyd}"
-INSTALL_URL="${TYD_INSTALL_URL:-https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh}"
+INSTALL_URL="${TYD_INSTALL_URL:-}"
 PLATFORM_URL="${TYD_PLATFORM:-}"
 ROLE=""
 ACCEPT_TOKEN=""
@@ -17,7 +17,7 @@ usage() {
 Install tyd from GitHub Releases.
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+  curl -fsSL https://app.getfda.dev/install.sh | sh
   curl -fsSL ... | sh -s -- --agent
   curl -fsSL ... | sh -s -- --client --accept TOKEN
 
@@ -87,6 +87,14 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+
+if [ -z "$INSTALL_URL" ]; then
+	base="https://app.getfda.dev"
+	if [ -n "$PLATFORM_URL" ]; then
+		base="${PLATFORM_URL%/}"
+	fi
+	INSTALL_URL="${base}/install.sh"
+fi
 
 if [ "$AGENT" -eq 1 ] && [ -z "$ROLE" ]; then
 	ROLE=server

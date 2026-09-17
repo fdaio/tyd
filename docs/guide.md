@@ -5,7 +5,7 @@
 Release binary (linux / darwin / freebsd):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
 Pairing and session steps for humans and automation: [connect.md](connect.md).

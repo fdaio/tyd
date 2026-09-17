@@ -4,10 +4,10 @@ tyd holds a persistent shell on a **server**. A **client** pairs with that serve
 
 ## Install
 
-One-click (GitHub Releases):
+One-click (Control Panel at app.getfda.dev; binaries from GitHub Releases):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
 - **Human, TTY:** choose server or client. After a server install, you can mint an invite and copy a client command.
@@ -15,10 +15,10 @@ curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh |
 
 ```bash
 # Server (non-interactive): install daemon, register, print client command
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --agent
+curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 
 # Client: install binary and accept the invite
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --client --accept TOKEN
+curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
 The daemon is started with **systemd --user** (Linux), **launchd** (macOS), or **nohup** if neither is available. Clients do not run `tyd up`.
@@ -36,7 +36,7 @@ tyd invite --no-wait
 Give the peer this one-liner (token from the invite output):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --client --accept TOKEN
+curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
 Or, if tyd is already installed on the client:
