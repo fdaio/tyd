@@ -359,7 +359,7 @@ func TestWatchClientAPI(t *testing.T) {
 	}
 	watchErr := make(chan error, 1)
 	go func() {
-		watchErr <- Watch(ep, key, info.ID, wOutW)
+		watchErr <- Watch(ep, key, info.ID, nil, wOutW)
 	}()
 	deadline = time.Now().Add(5 * time.Second)
 	acc = nil
@@ -389,6 +389,53 @@ func TestWatchClientAPI(t *testing.T) {
 		}
 	}
 	t.Fatalf("watch did not finish; got %q", acc)
+}
+
+func TestWatchIgnoresInputAndHints(t *testing.T) {
+	ep, key := startTestServer(t)
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = CloseSession(ep, key, info.ID) })
+
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hints int
+	ep.OnInputIgnored = func() { hints++ }
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Watch(ep, key, info.ID, inR, outW)
+	}()
+	// Let watch become live.
+	time.Sleep(100 * time.Millisecond)
+	if _, err := inW.Write([]byte("should-not-reach-shell\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && hints == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if hints == 0 {
+		t.Fatal("expected OnInputIgnored hint")
+	}
+	if _, err := inW.Write([]byte{detachByte}); err != nil {
+		t.Fatal(err)
+	}
+	_ = inW.Close()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	_ = outW.Close()
+	_ = outR.Close()
+	_ = inR.Close()
 }
 
 func TestDialContextCanceled(t *testing.T) {
