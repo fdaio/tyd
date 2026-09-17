@@ -1611,7 +1611,7 @@ func parseArgs(args []string) (options, error) {
 			opts.noWait = true
 		case a == "--detach":
 			opts.detach = true
-		case a == "-v" || a == "--verbose":
+		case a == "--verbose":
 			opts.verbose = true
 		case a == "--force":
 			opts.force = true
@@ -1844,7 +1844,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
-		{"-v, --verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
+		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
@@ -1885,7 +1885,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
 	fmt.Fprintln(w, "  create --detach          Print session id only (for scripts).")
-	fmt.Fprintln(w, "  -v / --verbose           SSH-style connect debug on stderr.")
+	fmt.Fprintln(w, "  --verbose                SSH-style connect debug on stderr.")
 	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only; Ctrl-C / Ctrl-\\ stops.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")

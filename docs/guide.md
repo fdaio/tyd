@@ -133,7 +133,7 @@ id=$(./tyd session create --detach)
 ./tyd session list                   # local catalog; alive first, newest first; no PID/SIZE
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
 ./tyd session attach jammy           # silent by default; Ctrl-\ detaches
-./tyd session attach jammy -v        # SSH-style debug1: lines on stderr
+./tyd session attach jammy --verbose # SSH-style debug1: lines on stderr
 ./tyd session watch                  # omit → recent session
 ./tyd session attach "$id"           # reattach; shell still running
 ./tyd session close jammy            # kill shell; catalog marks CLOSED
@@ -141,7 +141,7 @@ id=$(./tyd session create --detach)
 ```
 
 Default `session create` **attaches** after create (use `--detach` to print the id only).
-Connect progress is off by default. With `-v` / `--verbose`, create/attach/watch print SSH-style `debug1:` lines on stderr (resolve → dial → attach).
+Connect progress is off by default. With `--verbose`, create/attach/watch print SSH-style `debug1:` lines on stderr (resolve → dial → attach).
 Each dial candidate is capped (~12s for connect + TLS + auth); Ctrl-C cancels create/attach/watch before the session is live.
 If attach uses a cached `sessions.json` address that fails, tyd refreshes the peer endpoint from CP and retries once.
 
