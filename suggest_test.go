@@ -1,0 +1,48 @@
+package main
+
+import "testing"
+
+func TestSuggestCommand(t *testing.T) {
+	sessionCmds := []string{"create", "list", "attach", "watch", "approve", "reject", "close", "help"}
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"wacth", "watch"},
+		{"wach", "watch"},
+		{"attch", "attach"},
+		{"atatch", "attach"},
+		{"lsit", "list"},
+		{"creat", "create"},
+		{"clsoe", "close"},
+		{"aproove", "approve"},
+		{"help", ""}, // exact match is not a suggestion
+		{"zzzz", ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := suggestCommand(tt.in, sessionCmds)
+		if got != tt.want {
+			t.Fatalf("suggestCommand(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestSuggestTopLevel(t *testing.T) {
+	top := []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "help"}
+	if got := suggestCommand("sesion", top); got != "session" {
+		t.Fatalf("got %q", got)
+	}
+	if got := suggestCommand("statys", top); got != "status" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	if d := levenshtein("wacth", "watch"); d != 2 {
+		t.Fatalf("dist=%d", d)
+	}
+	if d := levenshtein("watch", "watch"); d != 0 {
+		t.Fatalf("dist=%d", d)
+	}
+}
