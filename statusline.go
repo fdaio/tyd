@@ -26,6 +26,12 @@ func (s *connectStatus) enabled() bool {
 	return s != nil && s.verbose && s.w != nil
 }
 
+// writeln ends with CRLF so lines stay left-aligned even when the tty is in
+// raw mode (after MakeRaw, or if a previous kill left the terminal raw).
+func (s *connectStatus) writeln(line string) {
+	fmt.Fprintf(s.w, "%s\r\n", line)
+}
+
 // Log writes one SSH-style debug line when verbose.
 func (s *connectStatus) Log(msg string) {
 	if !s.enabled() {
@@ -35,7 +41,7 @@ func (s *connectStatus) Log(msg string) {
 	if msg == "" {
 		return
 	}
-	fmt.Fprintf(s.w, "debug1: %s\n", msg)
+	s.writeln("debug1: " + msg)
 }
 
 // Clear is a no-op for line-oriented verbose logs (kept for call sites).
@@ -49,11 +55,11 @@ func (s *connectStatus) Leave(msg string) {
 	if s.verbose {
 		msg = strings.TrimSpace(msg)
 		if msg != "" {
-			fmt.Fprintf(s.w, "debug1: %s\n", msg)
+			s.writeln("debug1: " + msg)
 			return
 		}
 	}
-	fmt.Fprint(s.w, "\n")
+	fmt.Fprint(s.w, "\r\n")
 }
 
 func dialDebugMsg(kind, addr string) string {
