@@ -1899,7 +1899,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  tyd [command] [flags]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Common commands:")
+	fmt.Fprintln(w, "Sessions:")
 	writeHelpRows(w, []helpRow{
 		{"session create", "Create a session and attach (use --detach for id only)"},
 		{"session list", "List local sessions (alive first, newest first)"},
@@ -1911,27 +1911,31 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Identity / pairing:")
+	fmt.Fprintln(w, "Peers:")
 	writeHelpRows(w, []helpRow{
-		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
-		{"register", "Register; print tyd accept … and wait for peer"},
-		{"--force", "register: replace existing registration (invalidates peers)"},
-		{"invite", "Mint invite; print tyd accept … and wait (10m TTL)"},
-		{"accept", "Accept a peer invite (token or pasted accept line)"},
 		{"peer list", "List paired peers"},
 		{"peer show", "Show peer detail, endpoint, and reachability"},
 		{"peer alias", "Set or clear a peer nickname"},
 		{"revoke", "Revoke a paired peer (either side)"},
 	}, color)
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Pairing:")
+	writeHelpRows(w, []helpRow{
+		{"keygen", "Generate Ed25519 identity (optional; also auto-created)"},
+		{"register", "Register with Control Panel (--force replaces)"},
+		{"invite", "Mint invite; print tyd accept … and wait (10m TTL)"},
+		{"accept", "Accept a peer invite (token or pasted accept line)"},
+	}, color)
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Daemon:")
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
-		{"serve", "Alias for up (deprecated)"},
 		{"status", "Show CP registration, peers, and connections"},
+		{"serve", "Deprecated alias for up"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
+	fmt.Fprintln(w, "  Connection:")
 	writeHelpRows(w, []helpRow{
 		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
 		{"--listen ADDR|off", fmt.Sprintf("Manual TLS listen for up (default %s)", paths.DefaultListen())},
@@ -1939,29 +1943,35 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--advertise HOST", "Host to prefer in CP candidates (default: auto interface IPs)"},
 		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
 		{"--peer ID|NICK", "Target paired peer for session commands"},
+		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
+		{"--tls-key PATH", "Server key"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Paths / identity:")
+	writeHelpRows(w, []helpRow{
 		{"--identity PATH", fmt.Sprintf("Client identity (default %s)", paths.DefaultIdentity())},
 		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
 		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
 		{"--aliases PATH", fmt.Sprintf("Session aliases file (default %s)", paths.DefaultAliases())},
 		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  Behavior:")
+	writeHelpRows(w, []helpRow{
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
-		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
-		{"--tls-key PATH", "Server key"},
+		{"--force", "register: replace existing registration (invalidates peers)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
-	fmt.Fprintln(w, "  While connecting, Ctrl-C cancels; while attached, Ctrl-\\ detaches.")
-	fmt.Fprintln(w, "  While watching, Ctrl-C or Ctrl-\\ stops; the session is not closed.")
+	fmt.Fprintln(w, "  Connecting: Ctrl-C cancels; attached: Ctrl-\\ detaches; watch: Ctrl-C/\\ stops.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> for create/attach/watch/close on a paired peer.")
-	fmt.Fprintln(w, "  session list is local (sessions.json); it does not use --peer or CP.")
-	fmt.Fprintln(w, "  tyd revoke <peer> drops a pairing; tyd invite revoke <token> drops an unused invite.")
-	fmt.Fprintln(w, "  register/invite wait for accept by default; Ctrl-C revokes the invite; --no-wait skips wait.")
-	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
-	fmt.Fprintln(w, "  Top-level tyd alias still works but is deprecated; prefer tyd session alias.")
+	fmt.Fprintln(w, "  session list is local only; it does not use --peer or CP.")
+	fmt.Fprintln(w, "  register/invite wait by default; --no-wait skips; Ctrl-C revokes the invite.")
+	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (recent.json).")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
