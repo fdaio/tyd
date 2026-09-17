@@ -3,8 +3,10 @@ package controlpanel
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -491,5 +493,56 @@ func TestHTTPRevokePeer(t *testing.T) {
 	defer res4.Body.Close()
 	if res4.StatusCode != http.StatusOK {
 		t.Fatalf("status %d", res4.StatusCode)
+	}
+}
+
+func TestInstallScriptHTTP(t *testing.T) {
+	s := New()
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + "/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	ct := res.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content-type %q", ct)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(body, []byte("#!/bin/sh")) {
+		t.Fatalf("prefix %q", body[:min(40, len(body))])
+	}
+	if !bytes.Contains(body, []byte("https://app.getfda.dev/install.sh")) {
+		t.Fatal("expected production install URL in script")
+	}
+
+	req, err := http.NewRequest(http.MethodHead, ts.URL+"/install.sh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head.Body.Close()
+	if head.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD status %d", head.StatusCode)
+	}
+
+	post, err := http.Post(ts.URL+"/install.sh", "text/plain", bytes.NewReader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Body.Close()
+	if post.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status %d", post.StatusCode)
 	}
 }

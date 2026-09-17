@@ -20,14 +20,14 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
 TTY: choose **server** or **client**. After a server install you can invite a client and copy one command. Non-interactive / `--agent` installs a server and prints the client bootstrap on stdout. Details: [docs/connect.md](docs/connect.md).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --agent
-curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --client --accept TOKEN
+curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
+curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
 ## Quick start (from source)
@@ -80,6 +80,7 @@ Control Panel only (no TLS in the container — put Cloudflare or another edge i
 export TYD_CP_BASE_URL=https://app.getfda.dev
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz   # ok
+curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 ./tyd register                          # --platform defaults to https://app.getfda.dev
 ```
 

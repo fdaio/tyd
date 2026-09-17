@@ -30,7 +30,11 @@ func main() {
 	}
 	fmt.Fprintf(os.Stderr, "tyd control panel listening on http://%s\n", lnAddr.String())
 	if u := strings.TrimSpace(*baseURL); u != "" {
-		fmt.Fprintf(os.Stderr, "public base URL %s\n", strings.TrimRight(u, "/"))
+		u = strings.TrimRight(u, "/")
+		fmt.Fprintf(os.Stderr, "public base URL %s\n", u)
+		fmt.Fprintf(os.Stderr, "install script %s/install.sh\n", u)
+	} else {
+		fmt.Fprintf(os.Stderr, "install script http://%s/install.sh\n", lnAddr.String())
 	}
 	fmt.Fprintln(os.Stderr, "pairing metadata only; no session/TTY storage; state is in-memory")
 
