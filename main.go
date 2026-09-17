@@ -67,6 +67,7 @@ type options struct {
 }
 
 func main() {
+	repairTTY()
 	opts, err := parseArgs(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
