@@ -88,11 +88,7 @@ func runPeerShow(opts options, idOrNick string) error {
 		paired = p.PairedAt.UTC().Format(time.RFC3339)
 	}
 
-	fmt.Printf("id:          %s\n", p.ID)
-	fmt.Printf("alias:       %s\n", nick)
-	fmt.Printf("direction:   %s\n", dir)
-	fmt.Printf("paired_at:   %s\n", paired)
-	fmt.Printf("public_key:  %s\n", shortKey(p.PublicKey))
+	writePeerShowFields(os.Stdout, p.ID, nick, dir, paired, shortKey(p.PublicKey))
 
 	fmt.Println()
 	fmt.Println("Endpoint")
@@ -216,6 +212,14 @@ func runPeerAlias(opts options, args []string) error {
 	}
 	fmt.Printf("%s -> %s\n", args[1], p.ID)
 	return nil
+}
+
+func writePeerShowFields(w io.Writer, id, nick, dir, paired, key string) {
+	fmt.Fprintf(w, "%-12s %s\n", "id:", id)
+	fmt.Fprintf(w, "%-12s %s\n", "alias:", nick)
+	fmt.Fprintf(w, "%-12s %s\n", "direction:", dir)
+	fmt.Fprintf(w, "%-12s %s\n", "paired:", paired)
+	fmt.Fprintf(w, "%-12s %s\n", "public key:", key)
 }
 
 func shortKey(key string) string {

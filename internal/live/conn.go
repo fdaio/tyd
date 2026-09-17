@@ -219,6 +219,10 @@ func (c *Conn) Detach() {
 	c.mu.Lock()
 	_ = protocol.WriteFrame(c.conn, protocol.Frame{Type: protocol.TypeDetach})
 	c.mu.Unlock()
+	select {
+	case <-c.closed:
+	case <-time.After(2 * time.Second):
+	}
 	_ = c.conn.Close()
 	c.closeOut()
 }
