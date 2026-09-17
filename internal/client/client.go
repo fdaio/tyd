@@ -545,19 +545,44 @@ func closeOnDone(ctx context.Context, c *Conn) {
 
 // drainPendingInput discards bytes already buffered on stdin (usually Enter
 // pressed while waiting to connect).
+//
+// Terminals typically do not support SetReadDeadline; calling Read after a
+// failed deadline would block forever. Use non-blocking reads on TTYs.
 func drainPendingInput(stdin *os.File) {
 	if stdin == nil {
 		return
 	}
-	_ = stdin.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+	fd := int(stdin.Fd())
+	if term.IsTerminal(fd) {
+		drainNonblock(fd)
+		return
+	}
+	if err := stdin.SetReadDeadline(time.Now().Add(5 * time.Millisecond)); err != nil {
+		drainNonblock(fd)
+		return
+	}
+	defer stdin.SetReadDeadline(time.Time{})
 	buf := make([]byte, 256)
 	for {
 		n, err := stdin.Read(buf)
 		if n == 0 || err != nil {
-			break
+			return
 		}
 	}
-	_ = stdin.SetReadDeadline(time.Time{})
+}
+
+func drainNonblock(fd int) {
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return
+	}
+	defer func() { _ = syscall.SetNonblock(fd, false) }()
+	buf := make([]byte, 256)
+	for {
+		n, err := syscall.Read(fd, buf)
+		if n <= 0 || err != nil {
+			return
+		}
+	}
 }
 
 func drainSignals(ch <-chan os.Signal) {
