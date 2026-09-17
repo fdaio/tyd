@@ -737,6 +737,21 @@ func runAlias(opts options) error {
 	}
 }
 
+func formatStatusConnErr(ep client.Endpoint, err error) string {
+	if err == nil {
+		return "daemon unreachable"
+	}
+	unix := ep.Kind == transport.KindUnix || ep.Kind == ""
+	msg := strings.ToLower(err.Error())
+	if unix && (strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such file") ||
+		strings.Contains(msg, "not exist") ||
+		strings.Contains(msg, "invalid argument")) {
+		return "local daemon not running; start with tyd up"
+	}
+	return "daemon unreachable: " + err.Error()
+}
+
 func runStatus(opts options) error {
 	doc, err := peers.Load(opts.peers)
 	if err != nil {
@@ -812,7 +827,7 @@ func runStatus(opts options) error {
 	}
 	items, err := client.Status(ep, key)
 	if err != nil {
-		fmt.Printf("  (daemon unreachable: %v)\n", err)
+		fmt.Printf("  (%s)\n", formatStatusConnErr(ep, err))
 		return nil
 	}
 	if len(items) == 0 {
