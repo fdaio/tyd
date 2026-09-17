@@ -22,15 +22,16 @@ import (
 )
 
 type Endpoint struct {
-	Kind       transport.Kind
-	Address    string
-	CertPath   string   // TLS pin via cert file (optional if CertFP set)
-	CertFP     string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
-	Candidates []string // extra dial addresses tried after Address (peer data-plane)
-	OnDial     func(addr string)
-	OnAttach   func()
-	OnReady    func()
-	OnLeave    func(msg string)
+	Kind           transport.Kind
+	Address        string
+	CertPath       string   // TLS pin via cert file (optional if CertFP set)
+	CertFP         string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
+	Candidates     []string // extra dial addresses tried after Address (peer data-plane)
+	OnDial         func(addr string)
+	OnAttach       func()
+	OnReady        func()
+	OnLeave        func(msg string)
+	OnInputIgnored func() // watch: user typed while read-only
 }
 
 func (e Endpoint) String() string {
@@ -100,7 +101,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
 			return nil, errInterrupted
 		}
-		errs = append(errs, fmt.Sprintf("%s: %v", addr, err))
+		errs = append(errs, err.Error())
 	}
 	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
 }
@@ -134,7 +135,11 @@ func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("dial %s: %w (is 'tyd up' running on the peer?)", ep, err)
+		hint := "is 'tyd up' running?"
+		if ep.Kind == transport.KindTLS || ep.Kind == transport.KindQUIC {
+			hint = "is 'tyd up' running on the peer?"
+		}
+		return nil, fmt.Errorf("%w (%s)", err, hint)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
 	if dl, ok := attemptCtx.Deadline(); ok {
@@ -369,7 +374,7 @@ func asInterrupted(err error) error {
 	return err
 }
 
-func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) error {
+func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -403,31 +408,88 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdout *os.File) erro
 		ep.OnReady()
 	}
 
-	// After live: Ctrl-C / Ctrl-\ stop watching (existing behavior).
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGQUIT)
-	defer signal.Stop(sigCh)
+	restore := func() {}
+	fd := -1
+	if stdin != nil && term.IsTerminal(int(stdin.Fd())) {
+		fd = int(stdin.Fd())
+		old, err := term.MakeRaw(fd)
+		if err != nil {
+			return err
+		}
+		restore = func() { _ = term.Restore(fd, old) }
+		defer restore()
+		drainPendingInput(stdin)
+	}
 
-	done := make(chan struct{})
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		errCh <- copyOutput(c, stdout)
-		close(done)
 	}()
-	go func() {
-		select {
-		case <-sigCh:
+	if stdin != nil {
+		go func() {
+			errCh <- watchInput(c, stdin, ep.OnInputIgnored)
+		}()
+	} else {
+		// No stdin (tests): stop on SIGINT/SIGQUIT like before.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGQUIT)
+		defer signal.Stop(sigCh)
+		go func() {
+			<-sigCh
 			_ = c.Send(protocol.Frame{Type: protocol.TypeDetach})
-		case <-done:
-		}
-	}()
+			errCh <- errUserDetach
+		}()
+	}
 
 	err = <-errCh
 	_ = c.Close()
+	if stdin != nil {
+		_ = stdin.SetReadDeadline(time.Now())
+		select {
+		case second := <-errCh:
+			if err == nil {
+				err = second
+			}
+		case <-time.After(500 * time.Millisecond):
+		}
+		_ = stdin.SetReadDeadline(time.Time{})
+	}
+	restore()
 	if ep.OnLeave != nil {
 		ep.OnLeave(leaveMessage(err))
 	}
 	return attachStopError(err)
+}
+
+const interruptByte = 0x03 // Ctrl-C in raw mode
+
+// watchInput consumes local keystrokes without forwarding them to the session.
+// Ctrl-C / Ctrl-\ stop watching; other input triggers a rate-limited hint.
+func watchInput(c *Conn, stdin *os.File, onIgnored func()) error {
+	buf := make([]byte, 64)
+	var lastHint time.Time
+	for {
+		n, err := stdin.Read(buf)
+		if n > 0 {
+			for _, b := range buf[:n] {
+				if b == detachByte || b == interruptByte {
+					_ = c.Send(protocol.Frame{Type: protocol.TypeDetach})
+					return errUserDetach
+				}
+			}
+			if onIgnored != nil && time.Since(lastHint) >= 2*time.Second {
+				lastHint = time.Now()
+				onIgnored()
+			}
+		}
+		if err != nil {
+			_ = c.Send(protocol.Frame{Type: protocol.TypeDetach})
+			if err == io.EOF {
+				return errUserDetach
+			}
+			return err
+		}
+	}
 }
 
 func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdout *os.File) error {

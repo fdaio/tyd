@@ -156,3 +156,61 @@ func (f *File) Outbound() []Peer {
 func (f *File) HasRegistration() bool {
 	return f != nil && f.Registration != nil && f.Registration.ID != ""
 }
+
+// ValidateNickname matches session alias rules: no whitespace or '/'.
+func ValidateNickname(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("empty nickname")
+	}
+	if strings.ContainsAny(name, " \t\n/") {
+		return fmt.Errorf("nickname must not contain whitespace or '/'")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("nickname too long")
+	}
+	return nil
+}
+
+// SetNickname sets Nickname on the peer resolved by id or nick.
+// Clears the same nickname from any other peer first (one nick per name).
+func (f *File) SetNickname(idOrNick, name string) error {
+	if err := ValidateNickname(name); err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	p, err := f.Find(idOrNick)
+	if err != nil {
+		return err
+	}
+	for i := range f.Peers {
+		if f.Peers[i].ID == p.ID {
+			continue
+		}
+		if f.Peers[i].Nickname == name {
+			f.Peers[i].Nickname = ""
+		}
+	}
+	for i := range f.Peers {
+		if f.Peers[i].ID == p.ID {
+			f.Peers[i].Nickname = name
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown peer %q", idOrNick)
+}
+
+// ClearNickname removes the nickname from the peer resolved by id or nick.
+func (f *File) ClearNickname(idOrNick string) error {
+	p, err := f.Find(idOrNick)
+	if err != nil {
+		return err
+	}
+	for i := range f.Peers {
+		if f.Peers[i].ID == p.ID {
+			f.Peers[i].Nickname = ""
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown peer %q", idOrNick)
+}

@@ -82,3 +82,38 @@ func TestReplaceFromRemoteAndRemove(t *testing.T) {
 		t.Fatalf("%+v", f.Peers)
 	}
 }
+
+func TestSetAndClearNickname(t *testing.T) {
+	f := &File{Peers: []Peer{
+		{ID: "aaa", PublicKey: "p1", Nickname: "lap", Direction: "outbound"},
+		{ID: "bbb", PublicKey: "p2", Nickname: "box", Direction: "inbound"},
+	}}
+	if err := f.SetNickname("aaa", "box"); err != nil {
+		t.Fatal(err)
+	}
+	if f.Peers[0].Nickname != "box" {
+		t.Fatalf("aaa nick %q", f.Peers[0].Nickname)
+	}
+	if f.Peers[1].Nickname != "" {
+		t.Fatalf("conflicting nick not cleared: %+v", f.Peers[1])
+	}
+	if err := f.SetNickname("bbb", "bad name"); err == nil {
+		t.Fatal("expected whitespace validation error")
+	}
+	if err := f.ClearNickname("lap"); err == nil {
+		t.Fatal("lap nick was moved; expect unknown")
+	}
+	if err := f.ClearNickname("aaa"); err != nil {
+		t.Fatal(err)
+	}
+	if f.Peers[0].Nickname != "" {
+		t.Fatalf("clear failed: %+v", f.Peers[0])
+	}
+	if err := f.SetNickname("bbb", "desk"); err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.Find("desk")
+	if err != nil || p.ID != "bbb" {
+		t.Fatalf("%+v %v", p, err)
+	}
+}

@@ -29,11 +29,14 @@ func TestSuggestCommand(t *testing.T) {
 }
 
 func TestSuggestTopLevel(t *testing.T) {
-	top := []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "help"}
+	top := rootCommands()
 	if got := suggestCommand("sesion", top); got != "session" {
 		t.Fatalf("got %q", got)
 	}
 	if got := suggestCommand("statys", top); got != "status" {
+		t.Fatalf("got %q", got)
+	}
+	if got := suggestCommand("per", top); got != "peer" {
 		t.Fatalf("got %q", got)
 	}
 }

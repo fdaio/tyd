@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os/exec"
 	"os/user"
+	"strings"
 	"time"
 
 	"tyd/internal/live"
+	"tyd/internal/protocol"
 )
 
 // RestoredLive is a session reattached from a still-running live-agent.
@@ -330,7 +332,17 @@ func (s *Session) closeLive() error {
 }
 
 func (s *Session) attachLive() (*Attachment, []byte, error) {
-	lc, snap, info, err := live.DialAttach(s.liveDir, s.rows, s.cols)
+	var lc *live.Conn
+	var snap []byte
+	var info protocol.SessionInfo
+	var err error
+	for i := 0; i < 20; i++ {
+		lc, snap, info, err = live.DialAttach(s.liveDir, s.rows, s.cols)
+		if err == nil || !strings.Contains(err.Error(), "already attached") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	if err != nil {
 		return nil, nil, err
 	}

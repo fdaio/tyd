@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tyd/scripts"
 )
 
 const (
@@ -694,6 +696,7 @@ func (s *Service) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	mux.HandleFunc("/install.sh", handleInstallScript)
 	mux.HandleFunc("/v1/register", s.handleRegister)
 	mux.HandleFunc("/v1/restore", s.handleRestore)
 	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)
@@ -873,6 +876,23 @@ func (s *Service) handleDaemon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeErr(w, http.StatusNotFound, "not found")
+}
+
+func handleInstallScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-cache")
+	body := scripts.InstallSH
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 func writeServiceErr(w http.ResponseWriter, err error) {

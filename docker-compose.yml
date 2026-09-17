@@ -3,6 +3,7 @@
 # Local smoke (override client platform):
 #   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
+#   curl -fsSL http://127.0.0.1:8080/install.sh | sh -s -- --agent --platform http://127.0.0.1:8080
 #   tyd --platform http://127.0.0.1:8080 register
 #
 # Production: set TYD_CP_BASE_URL to the public HTTPS origin (e.g. https://app.getfda.dev).

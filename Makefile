@@ -8,6 +8,7 @@ controlpanel:
 
 test:
 	go test ./...
+	sh -n scripts/install.sh
 
 fmt:
 	go fmt ./...

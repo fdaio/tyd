@@ -117,18 +117,31 @@ func TestServerCreateDetachDropReattach(t *testing.T) {
 	waitOutput(t, c, nil, "persist-ok", 5*time.Second)
 	_ = c.Close()
 
-	listed, err := client.List(ep, key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	deadline := time.Now().Add(2 * time.Second)
 	found := false
-	for _, s := range listed {
-		if s.ID == info.ID {
+	for time.Now().Before(deadline) {
+		listed, err := client.List(ep, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found = false
+		ready := false
+		for _, s := range listed {
+			if s.ID != info.ID {
+				continue
+			}
 			found = true
 			if s.State == string(session.StateClosed) {
 				t.Fatal("session closed after client drop")
 			}
+			if s.State != string(session.StateAttached) {
+				ready = true
+			}
 		}
+		if found && ready {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if !found {
 		t.Fatal("session disappeared after client drop")

@@ -200,8 +200,8 @@ func (a *agent) handleAttach(conn net.Conn, f protocol.Frame) {
 		case protocol.TypeSignal:
 			_ = a.signal(rf.Signal)
 		case protocol.TypeDetach:
-			_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeDetached})
 			a.clearAttach(conn)
+			_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeDetached})
 			return
 		case protocol.TypeClose:
 			_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeClosed})
