@@ -1,6 +1,16 @@
 # User guide
 
-## Build
+## Install
+
+Release binary (linux / darwin / freebsd):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+```
+
+Pairing and session steps for humans and automation: [connect.md](connect.md).
+
+## Build from source
 
 ```bash
 git clone git@github.com:fdaio/tyd.git
