@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os"
 	"testing"
 
 	"github.com/creack/pty"
@@ -43,6 +42,3 @@ func TestRestoreCookedEnablesONLCR(t *testing.T) {
 		t.Fatalf("ICANON not restored: lflag=%#x", got.Lflag)
 	}
 }
-
-// silence unused import if pty path changes
-var _ = os.ErrClosed
