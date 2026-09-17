@@ -36,7 +36,7 @@ func runPeer(opts options) error {
 		writePeerHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
 	default:
-		return fmt.Errorf("unknown peer command %q\n\n%s", sub, peerUsage())
+		return unknownCommandErr("peer command", sub, peerCommands(), peerUsage())
 	}
 }
 

@@ -443,10 +443,10 @@ func run(opts options) error {
 		return runSession(opts)
 	case "peer":
 		return runPeer(opts)
-	case "create", "list", "attach", "close":
+	case "create", "list", "attach", "close", "watch":
 		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
 	default:
-		return fmt.Errorf("unknown command %q", opts.cmd)
+		return unknownCommandErr("command", opts.cmd, rootCommands(), "")
 	}
 }
 
@@ -622,7 +622,7 @@ func runSession(opts options) error {
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
 	default:
-		return fmt.Errorf("unknown session command %q\n%s", sub, sessionUsage())
+		return unknownCommandErr("session command", sub, sessionCommands(), sessionUsage())
 	}
 }
 
@@ -2040,6 +2040,22 @@ func sessionCommands() []string {
 
 func rootCommands() []string {
 	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "help"}
+}
+
+func peerCommands() []string {
+	return []string{"list", "show", "alias", "help"}
+}
+
+func unknownCommandErr(kind, got string, candidates []string, usage string) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "unknown %s %q", kind, got)
+	if s := suggestCommand(got, candidates); s != "" {
+		fmt.Fprintf(&b, "\n\nDid you mean %q?", s)
+	}
+	if usage != "" {
+		fmt.Fprintf(&b, "\n\n%s", strings.TrimRight(usage, "\n"))
+	}
+	return fmt.Errorf("%s", b.String())
 }
 
 func usage() {
