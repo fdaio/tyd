@@ -4,7 +4,7 @@
 
 It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing including data-plane, approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and optional SSH-style `-v` connect debug.
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS), Control Panel pairing including data-plane, approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and optional SSH-style `--verbose` connect debug.
 
 ## Documentation
 
