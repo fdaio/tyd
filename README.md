@@ -11,12 +11,26 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 | Doc | Contents |
 |-----|----------|
 | [docs/overview.md](docs/overview.md) | Positioning, architecture, boundaries |
+| [docs/connect.md](docs/connect.md) | Pair, connect, detach, close (human and automated) |
 | [docs/guide.md](docs/guide.md) | Install, up, session, TLS, pairing pointers |
 | [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
 | [docs/roadmap.md](docs/roadmap.md) | Done + control-plane pairing steps |
 | [docs/requirements/control-plane-pairing.md](docs/requirements/control-plane-pairing.md) | CP pairing requirements (full) |
 
-## Quick start
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh
+```
+
+TTY: choose **server** or **client**. After a server install you can invite a client and copy one command. Non-interactive / `--agent` installs a server and prints the client bootstrap on stdout. Details: [docs/connect.md](docs/connect.md).
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --agent
+curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh | sh -s -- --client --accept TOKEN
+```
+
+## Quick start (from source)
 
 ```bash
 make build
