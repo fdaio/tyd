@@ -12,8 +12,8 @@ func TestConnectStatusSilentByDefault(t *testing.T) {
 	s.Log("Connecting to 10.0.0.1 port 1.")
 	s.Clear()
 	s.Leave("Detaching.")
-	if buf.String() != "\n" {
-		t.Fatalf("silent leave want newline only, got %q", buf.String())
+	if buf.String() != "\r\n" {
+		t.Fatalf("silent leave want CRLF only, got %q", buf.String())
 	}
 }
 
@@ -23,14 +23,14 @@ func TestConnectStatusVerboseSSHStyle(t *testing.T) {
 	s.Log("Connecting to 10.0.0.1 port 22.")
 	s.Log("Connection established.")
 	got := buf.String()
-	if !strings.Contains(got, "debug1: Connecting to 10.0.0.1 port 22.\n") {
+	if !strings.Contains(got, "debug1: Connecting to 10.0.0.1 port 22.\r\n") {
 		t.Fatalf("connect: %q", got)
 	}
-	if !strings.Contains(got, "debug1: Connection established.\n") {
+	if !strings.Contains(got, "debug1: Connection established.\r\n") {
 		t.Fatalf("established: %q", got)
 	}
 	s.Leave("Detaching.")
-	if !strings.HasSuffix(buf.String(), "debug1: Detaching.\n") {
+	if !strings.HasSuffix(buf.String(), "debug1: Detaching.\r\n") {
 		t.Fatalf("leave: %q", buf.String())
 	}
 }

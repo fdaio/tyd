@@ -474,6 +474,12 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		return fmt.Errorf("unexpected attach reply %q", resp.Type)
 	}
 
+	// Log readiness while still cooked so verbose lines are not staircase-
+	// indented (raw mode treats \n as LF without CR).
+	if ep.OnReady != nil {
+		ep.OnReady()
+	}
+
 	// Keep the terminal cooked until attach succeeds so Ctrl-C stays SIGINT.
 	if term.IsTerminal(fd) {
 		old, err := term.MakeRaw(fd)
@@ -483,10 +489,6 @@ func Attach(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdo
 		restore = func() { _ = term.Restore(fd, old) }
 		defer restore()
 		drainPendingInput(stdin)
-	}
-
-	if ep.OnReady != nil {
-		ep.OnReady()
 	}
 
 	errCh := make(chan error, 2)
