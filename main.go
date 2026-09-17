@@ -437,9 +437,12 @@ func run(opts options) error {
 	case "status":
 		return runStatus(opts)
 	case "alias":
+		fmt.Fprintln(os.Stderr, "note: prefer 'tyd session alias'")
 		return runAlias(opts)
 	case "session":
 		return runSession(opts)
+	case "peer":
+		return runPeer(opts)
 	case "create", "list", "attach", "close":
 		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
 	default:
@@ -611,6 +614,10 @@ func runSession(opts options) error {
 		}
 		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
 		return client.Reject(local, key, sid)
+	case "alias":
+		aliasOpts := opts
+		aliasOpts.rest = args
+		return runAlias(aliasOpts)
 	case "help", "-h", "--help":
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
@@ -667,7 +674,7 @@ func runAlias(opts options) error {
 	switch sub {
 	case "rm", "remove", "unset":
 		if len(args) != 1 {
-			return fmt.Errorf("usage: tyd alias rm <name>")
+			return fmt.Errorf("usage: tyd session alias rm <name>")
 		}
 		if err := doc.Remove(args[0]); err != nil {
 			return err
@@ -675,7 +682,7 @@ func runAlias(opts options) error {
 		return alias.Save(opts.aliases, doc)
 	case "set":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: tyd alias set <session_id|alias> <name>")
+			return fmt.Errorf("usage: tyd session alias set <session_id|alias> <name>")
 		}
 		sid, err := resolveSessionRef(opts, args[0])
 		if err != nil {
@@ -703,7 +710,7 @@ func runAlias(opts options) error {
 			var err error
 			sid, err = resolveSessionRef(opts, "")
 			if err != nil {
-				return fmt.Errorf("usage: tyd alias <name> (needs a recent session), or tyd alias <session_id> <name>")
+				return fmt.Errorf("usage: tyd session alias <name> (needs a recent session), or tyd session alias <session_id> <name>")
 			}
 		case 2:
 			var err error
@@ -713,7 +720,7 @@ func runAlias(opts options) error {
 			}
 			name = opts.rest[1]
 		default:
-			return fmt.Errorf("usage: tyd alias [<session_id>] <name> | tyd alias list | tyd alias rm <name>")
+			return fmt.Errorf("usage: tyd session alias [<session_id>] <name> | tyd session alias list | tyd session alias rm <name>")
 		}
 		peerID := ""
 		if rec, _ := recent.Load(opts.recent); rec != nil {
@@ -1901,7 +1908,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session approve", "Approve a PENDING remote session (local unix)"},
 		{"session reject", "Reject a PENDING remote session (local unix)"},
 		{"session close", "Close a session (kept as history)"},
-		{"alias", "Name a session for later attach/watch/close"},
+		{"session alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Identity / pairing:")
@@ -1911,6 +1918,9 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--force", "register: replace existing registration (invalidates peers)"},
 		{"invite", "Mint invite; print tyd accept … and wait (10m TTL)"},
 		{"accept", "Accept a peer invite (token or pasted accept line)"},
+		{"peer list", "List paired peers"},
+		{"peer show", "Show peer detail, endpoint, and reachability"},
+		{"peer alias", "Set or clear a peer nickname"},
 		{"revoke", "Revoke a paired peer (either side)"},
 	}, color)
 	fmt.Fprintln(w)
@@ -1951,6 +1961,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  tyd revoke <peer> drops a pairing; tyd invite revoke <token> drops an unused invite.")
 	fmt.Fprintln(w, "  register/invite wait for accept by default; Ctrl-C revokes the invite; --no-wait skips wait.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (see tyd status / recent.json).")
+	fmt.Fprintln(w, "  Top-level tyd alias still works but is deprecated; prefer tyd session alias.")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
@@ -1974,6 +1985,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 		{"approve", "Approve PENDING session (local unix only)"},
 		{"reject", "Reject PENDING session (local unix only)"},
 		{"close", "Close a session (kept as history)"},
+		{"alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
@@ -1987,13 +1999,22 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  Omit the id to reuse the most recent session (recent.json).")
 	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer for dialing commands.")
 	fmt.Fprintln(w, "  session list              Local catalog only (no CP / daemon).")
-	fmt.Fprintln(w, "  tyd alias <name>          Name the recent session for later use.")
+	fmt.Fprintln(w, "  alias <name>              Name the recent session for later use.")
+	fmt.Fprintln(w, "  alias list | alias rm     List or remove session aliases.")
 }
 
 func sessionUsage() string {
 	var b strings.Builder
 	writeSessionHelp(&b, false)
 	return b.String()
+}
+
+func sessionCommands() []string {
+	return []string{"create", "list", "attach", "watch", "approve", "reject", "close", "alias", "help"}
+}
+
+func rootCommands() []string {
+	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "help"}
 }
 
 func usage() {
