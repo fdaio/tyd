@@ -27,13 +27,18 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
            │  Ed25519 challenge-response
            ▼
         ┌─────┐
-        │ tyd │  up
+        │ tyd │  up  (daemon)
         └──┬──┘
-           │
-     Session Manager
+           │  reconnects on restart
+           ▼
+     live-agent (per session, under ~/.tyd/live/<id>/)
            │
         PTY master → PTY slave → /bin/bash (or $SHELL)
 ```
+
+Graceful `tyd up` stop (SIGINT/SIGTERM) leaves live-agents running so the next
+`up` can restore the same shells and re-grant the creator’s session caps.
+Hard kill is best-effort: dead agents are dropped on restore.
 
 Control Panel pairing (ids + peer public keys only; no TTY) is documented in
 [requirements/control-plane-pairing.md](requirements/control-plane-pairing.md).

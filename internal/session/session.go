@@ -13,6 +13,7 @@ import (
 
 	"github.com/creack/pty"
 
+	"tyd/internal/live"
 	"tyd/internal/protocol"
 )
 
@@ -28,13 +29,14 @@ const (
 const ringMax = 64 << 10
 
 type CreateOpts struct {
-	Rows   uint16
-	Cols   uint16
-	Shell  string
-	Cwd    string
-	Env    []string
-	Owner  string
-	PeerID string // optional; recorded for post-approval audit
+	Rows     uint16
+	Cols     uint16
+	Shell    string
+	Cwd      string
+	Env      []string
+	Owner    string
+	OwnerPub string // base64 ed25519 public key; restored after daemon restart
+	PeerID   string // optional; recorded for post-approval audit
 }
 
 // ClosedInfo is emitted when a live session transitions to CLOSED (not pending reject).
@@ -50,6 +52,9 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	onClosed func(ClosedInfo)
+	liveRoot string
+	execPath string
+	starter  live.Starter
 }
 
 func NewManager() *Manager {
@@ -69,7 +74,15 @@ func (m *Manager) Create(opts CreateOpts) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := startSession(id, opts)
+	m.mu.Lock()
+	useLive := m.liveRoot != ""
+	m.mu.Unlock()
+	var s *Session
+	if useLive {
+		s, err = m.startLiveSession(id, opts)
+	} else {
+		s, err = startSession(id, opts)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +130,15 @@ func (m *Manager) Approve(id string) (*Session, error) {
 	s, err := m.Get(id)
 	if err != nil {
 		return nil, err
+	}
+	m.mu.Lock()
+	useLive := m.liveRoot != ""
+	m.mu.Unlock()
+	if useLive {
+		if err := s.approveLive(m); err != nil {
+			return nil, err
+		}
+		return s, nil
 	}
 	if err := s.approve(); err != nil {
 		return nil, err
@@ -234,6 +256,9 @@ type Session struct {
 	cmdDone    chan struct{}
 	pending    *CreateOpts
 	onClosed   func(ClosedInfo)
+	liveDir    string
+	agentCmd   *exec.Cmd
+	ownerPub   string
 }
 
 type Attachment struct {
@@ -241,6 +266,7 @@ type Attachment struct {
 	out       chan []byte
 	closed    chan struct{}
 	closeOnce sync.Once
+	live      *live.Conn
 }
 
 type Watcher struct {
@@ -248,6 +274,7 @@ type Watcher struct {
 	out       chan []byte
 	closed    chan struct{}
 	closeOnce sync.Once
+	live      *live.Conn
 }
 
 func normalizeCreateOpts(opts *CreateOpts) {
@@ -327,6 +354,9 @@ func (s *Session) approve() error {
 	opts := *s.pending
 	s.mu.Unlock()
 
+	// Live mode is decided by the manager at CreatePending time via opts;
+	// pending approve uses in-process PTY unless the session was marked live.
+	// Manager.Approve always goes through startPTY unless liveRoot was set on create.
 	cmd, ptmx, err := startPTY(opts)
 	if err != nil {
 		return err
@@ -367,7 +397,9 @@ func (s *Session) Info() protocol.SessionInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pid := 0
-	if s.cmd != nil && s.cmd.Process != nil {
+	if s.liveDir != "" {
+		pid = shellPIDFile(s.liveDir)
+	} else if s.cmd != nil && s.cmd.Process != nil {
 		pid = s.cmd.Process.Pid
 	}
 	return protocol.SessionInfo{
@@ -391,6 +423,9 @@ func (s *Session) State() State {
 func (s *Session) PID() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.liveDir != "" {
+		return shellPIDFile(s.liveDir)
+	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		return s.cmd.Process.Pid
 	}
@@ -409,6 +444,9 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 	if s.attach != nil {
 		return nil, nil, fmt.Errorf("session %s already attached", s.ID)
 	}
+	if s.liveDir != "" {
+		return s.attachLive()
+	}
 	a := &Attachment{
 		s:      s,
 		out:    make(chan []byte, 256),
@@ -426,6 +464,9 @@ func (s *Session) Watch() (*Watcher, []byte, error) {
 	if s.state == StatePending {
 		return nil, nil, fmt.Errorf("session pending approval")
 	}
+	if s.liveDir != "" {
+		return s.watchLive()
+	}
 	snap := append([]byte(nil), s.ring...)
 	w := &Watcher{
 		s:      s,
@@ -441,6 +482,9 @@ func (s *Session) Watch() (*Watcher, []byte, error) {
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {
+	if a.live != nil {
+		return a.live.Write(p)
+	}
 	if a.s.pty == nil {
 		return 0, io.ErrClosedPipe
 	}
@@ -451,6 +495,13 @@ func (a *Attachment) Resize(rows, cols uint16) error {
 	if rows == 0 || cols == 0 {
 		return fmt.Errorf("invalid size %dx%d", cols, rows)
 	}
+	if a.live != nil {
+		a.s.mu.Lock()
+		a.s.rows = rows
+		a.s.cols = cols
+		a.s.mu.Unlock()
+		return a.live.Resize(rows, cols)
+	}
 	a.s.mu.Lock()
 	a.s.rows = rows
 	a.s.cols = cols
@@ -460,10 +511,16 @@ func (a *Attachment) Resize(rows, cols uint16) error {
 }
 
 func (a *Attachment) Signal(name string) error {
+	if a.live != nil {
+		return a.live.Signal(name)
+	}
 	return a.s.Signal(name)
 }
 
 func (a *Attachment) Recv() ([]byte, error) {
+	if a.live != nil {
+		return a.live.Recv()
+	}
 	select {
 	case b := <-a.out:
 		return b, nil
@@ -478,6 +535,9 @@ func (a *Attachment) Recv() ([]byte, error) {
 }
 
 func (a *Attachment) RecvTimeout(d time.Duration) ([]byte, error) {
+	if a.live != nil {
+		return a.live.RecvTimeout(d)
+	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -496,12 +556,18 @@ func (a *Attachment) RecvTimeout(d time.Duration) ([]byte, error) {
 }
 
 func (a *Attachment) SessionClosed() bool {
+	if a.live != nil {
+		return a.live.SessionClosed()
+	}
 	a.s.mu.Lock()
 	defer a.s.mu.Unlock()
 	return a.s.closed || a.s.state == StateClosed
 }
 
 func (a *Attachment) ExitCode() int {
+	if a.live != nil {
+		return a.live.ExitCode()
+	}
 	a.s.mu.Lock()
 	defer a.s.mu.Unlock()
 	return a.s.exitCode
@@ -510,6 +576,9 @@ func (a *Attachment) ExitCode() int {
 func (a *Attachment) Detach() {
 	a.s.mu.Lock()
 	if a.s.attach == a {
+		if a.live != nil {
+			a.live.Detach()
+		}
 		a.closeOut()
 		a.s.attach = nil
 		if a.s.state == StateAttached {
@@ -558,12 +627,18 @@ func (w *Watcher) RecvTimeout(d time.Duration) ([]byte, error) {
 }
 
 func (w *Watcher) SessionClosed() bool {
+	if w.live != nil {
+		return w.live.SessionClosed()
+	}
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	return w.s.closed || w.s.state == StateClosed
 }
 
 func (w *Watcher) ExitCode() int {
+	if w.live != nil {
+		return w.live.ExitCode()
+	}
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	return w.s.exitCode
@@ -576,6 +651,9 @@ func (w *Watcher) Close() {
 			w.s.watchers = append(w.s.watchers[:i], w.s.watchers[i+1:]...)
 			break
 		}
+	}
+	if w.live != nil {
+		w.live.Close()
 	}
 	w.closeOut()
 	w.s.mu.Unlock()
@@ -599,6 +677,15 @@ func (s *Session) Signal(name string) error {
 	if s.state == StatePending {
 		s.mu.Unlock()
 		return fmt.Errorf("session pending approval")
+	}
+	if s.liveDir != "" {
+		if s.attach != nil && s.attach.live != nil {
+			lc := s.attach.live
+			s.mu.Unlock()
+			return lc.Signal(name)
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("session not attached")
 	}
 	ptmx := s.pty
 	var proc *os.Process
@@ -664,7 +751,12 @@ func (s *Session) Close() error {
 		s.mu.Unlock()
 		return fmt.Errorf("already closed")
 	}
+	liveDir := s.liveDir
 	s.mu.Unlock()
+
+	if liveDir != "" {
+		return s.closeLive()
+	}
 
 	ran := false
 	s.closeOnce.Do(func() {
