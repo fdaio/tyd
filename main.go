@@ -21,6 +21,7 @@ import (
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
+	"tyd/internal/live"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/recent"
@@ -64,6 +65,8 @@ type options struct {
 	force      bool
 	cmd        string
 	rest       []string
+	live       string
+	dir        string
 }
 
 func main() {
@@ -379,6 +382,8 @@ func resolveSessionRef(opts options, ref string) (string, error) {
 
 func run(opts options) error {
 	switch opts.cmd {
+	case "__live-agent":
+		return runLiveAgent(opts)
 	case "keygen":
 		return runKeygen(opts)
 	case "up":
@@ -405,6 +410,13 @@ func run(opts options) error {
 	default:
 		return fmt.Errorf("unknown command %q", opts.cmd)
 	}
+}
+
+func runLiveAgent(opts options) error {
+	if opts.dir == "" {
+		return fmt.Errorf("__live-agent requires --dir")
+	}
+	return live.Run(opts.dir)
 }
 
 func runSession(opts options) error {
@@ -848,6 +860,35 @@ func runUp(opts options) error {
 		}
 	}
 	mgr := session.NewManager()
+	liveRoot := opts.live
+	if liveRoot == "" {
+		liveRoot = paths.DefaultLive()
+	}
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("executable path: %w", err)
+	}
+	mgr.ConfigureLive(liveRoot, execPath)
+	restored, err := mgr.RestoreLive()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tyd live restore: %v\n", err)
+	}
+	for _, r := range restored {
+		if r.OwnerPub == "" {
+			continue
+		}
+		pub, err := auth.DecodePublic(r.OwnerPub)
+		if err != nil {
+			continue
+		}
+		_ = trust.EnsurePeer(r.Session.Owner, pub, nil)
+		if err := trust.Grant(pub, r.Session.ID, auth.OwnerCaps...); err != nil {
+			fmt.Fprintf(os.Stderr, "tyd restore caps %s: %v\n", r.Session.ID, err)
+		}
+	}
+	if n := len(restored); n > 0 {
+		fmt.Fprintf(os.Stderr, "tyd restored %d live session(s)\n", n)
+	}
 	srv := server.NewWithConfig(server.Config{
 		Socket:       opts.socket,
 		Listen:       opts.listen,
@@ -1483,6 +1524,7 @@ func parseArgs(args []string) (options, error) {
 		recent:     paths.DefaultRecent(),
 		aliases:    paths.DefaultAliases(),
 		sessions:   paths.DefaultSessions(),
+		live:       paths.DefaultLive(),
 		platform:   paths.DefaultPlatform(),
 		approval:   controlpanel.DefaultApproval,
 		cert:       paths.DefaultServerCert(),
@@ -1631,6 +1673,22 @@ func parseArgs(args []string) (options, error) {
 			opts.key = args[i]
 		case strings.HasPrefix(a, "--tls-key="):
 			opts.key = strings.TrimPrefix(a, "--tls-key=")
+		case a == "--live":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.live = args[i]
+		case strings.HasPrefix(a, "--live="):
+			opts.live = strings.TrimPrefix(a, "--live=")
+		case a == "--dir":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.dir = args[i]
+		case strings.HasPrefix(a, "--dir="):
+			opts.dir = strings.TrimPrefix(a, "--dir=")
 		case strings.HasPrefix(a, "-"):
 			return options{}, fmt.Errorf("unknown flag %s", a)
 		default:

@@ -24,7 +24,7 @@ type Config struct {
 	KeyPath      string
 	Mgr          *session.Manager
 	Trust        *auth.Store
-	ApprovalMode string          // full|pre|post; default full
+	ApprovalMode string            // full|pre|post; default full
 	AuditLog     func(line string) // post-mode audit sink; default stderr
 }
 
@@ -174,7 +174,7 @@ func (s *Server) Close() error {
 	for _, ln := range lns {
 		_ = ln.Close()
 	}
-	s.cfg.Mgr.CloseAll()
+	s.cfg.Mgr.Shutdown()
 	return nil
 }
 
@@ -316,12 +316,13 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			return err
 		}
 		opts := session.CreateOpts{
-			Rows:   f.Rows,
-			Cols:   f.Cols,
-			Shell:  f.Shell,
-			Cwd:    f.Cwd,
-			Owner:  st.principal.Name,
-			PeerID: st.principal.Name,
+			Rows:     f.Rows,
+			Cols:     f.Cols,
+			Shell:    f.Shell,
+			Cwd:      f.Cwd,
+			Owner:    st.principal.Name,
+			OwnerPub: auth.EncodePublic(st.principal.Pub),
+			PeerID:   st.principal.Name,
 		}
 		var (
 			sess *session.Session

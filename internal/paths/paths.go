@@ -41,6 +41,11 @@ func DefaultSessions() string {
 	return filepath.Join(DefaultDir(), "sessions.json")
 }
 
+// DefaultLive is where live-agent session sidecars are stored.
+func DefaultLive() string {
+	return filepath.Join(DefaultDir(), "live")
+}
+
 // DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
 	return "off"
