@@ -483,6 +483,44 @@ func TestDrainPendingInput(t *testing.T) {
 	}
 }
 
+func TestDrainNonblockEmptyDoesNotHang(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	done := make(chan struct{})
+	go func() {
+		drainNonblock(int(r.Fd()))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("drainNonblock hung on empty pipe")
+	}
+}
+
+func TestDrainNonblockDiscardsBuffered(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := w.Write([]byte("abc\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	drainNonblock(int(r.Fd()))
+	buf := make([]byte, 8)
+	_ = syscall.SetNonblock(int(r.Fd()), true)
+	n, _ := syscall.Read(int(r.Fd()), buf)
+	if n > 0 {
+		t.Fatalf("expected empty after drain, got %q", buf[:n])
+	}
+}
+
 func TestDrainSignals(t *testing.T) {
 	ch := make(chan os.Signal, 4)
 	ch <- os.Interrupt
