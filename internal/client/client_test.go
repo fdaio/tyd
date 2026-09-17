@@ -621,3 +621,25 @@ func TestCopyOutputStopsOnDetach(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 }
+
+func TestDialUnixMissingSocketHint(t *testing.T) {
+	_, key, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "missing.sock")
+	_, err = Dial(Endpoint{Kind: transport.KindUnix, Address: path}, key)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "on the peer") {
+		t.Fatalf("unix dial must not say peer: %q", msg)
+	}
+	if strings.Count(strings.ToLower(msg), "dial unix") > 1 {
+		t.Fatalf("repeated dial unix wrap: %q", msg)
+	}
+	if !strings.Contains(msg, "tyd up") {
+		t.Fatalf("missing tyd up hint: %q", msg)
+	}
+}

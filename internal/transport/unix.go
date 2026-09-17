@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -55,7 +54,7 @@ func DialUnixContext(ctx context.Context, path string) (Conn, error) {
 	d := &net.Dialer{Timeout: 3 * time.Second}
 	c, err := d.DialContext(ctx, "unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("dial unix %s: %w", path, err)
+		return nil, err
 	}
 	return Wrap(c, Info{
 		Transport: KindUnix,

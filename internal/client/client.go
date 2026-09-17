@@ -101,7 +101,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
 			return nil, errInterrupted
 		}
-		errs = append(errs, fmt.Sprintf("%s: %v", addr, err))
+		errs = append(errs, err.Error())
 	}
 	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
 }
@@ -135,7 +135,11 @@ func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, 
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("dial %s: %w (is 'tyd up' running on the peer?)", ep, err)
+		hint := "is 'tyd up' running?"
+		if ep.Kind == transport.KindTLS || ep.Kind == transport.KindQUIC {
+			hint = "is 'tyd up' running on the peer?"
+		}
+		return nil, fmt.Errorf("%w (%s)", err, hint)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
 	if dl, ok := attemptCtx.Deadline(); ok {
