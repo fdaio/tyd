@@ -253,12 +253,15 @@ func TestRootHelpPlain(t *testing.T) {
 		"session approve",
 		"session reject",
 		"session close",
-		"alias",
+		"session alias",
 		"Identity / pairing:",
 		"keygen",
 		"register",
 		"invite",
 		"accept",
+		"peer list",
+		"peer show",
+		"peer alias",
 		"revoke",
 		"Daemon:",
 		"up",
@@ -274,6 +277,7 @@ func TestRootHelpPlain(t *testing.T) {
 		"Ctrl-\\",
 		"--peer",
 		"recent",
+		"tyd session alias",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -310,6 +314,7 @@ func TestSessionHelpPlain(t *testing.T) {
 		"approve",
 		"reject",
 		"close",
+		"alias",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -317,7 +322,57 @@ func TestSessionHelpPlain(t *testing.T) {
 	}
 }
 
+func TestRootAndSessionCommandsIncludePeerAlias(t *testing.T) {
+	root := rootCommands()
+	foundPeer := false
+	for _, c := range root {
+		if c == "peer" {
+			foundPeer = true
+		}
+	}
+	if !foundPeer {
+		t.Fatalf("rootCommands missing peer: %v", root)
+	}
+	sess := sessionCommands()
+	foundAlias := false
+	for _, c := range sess {
+		if c == "alias" {
+			foundAlias = true
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("sessionCommands missing alias: %v", sess)
+	}
+}
+
+func TestTopLevelAliasDeprecationNote(t *testing.T) {
+	dir := t.TempDir()
+	opts := options{
+		cmd: "alias", rest: []string{"list"},
+		aliases: filepath.Join(dir, "aliases.json"),
+		recent:  filepath.Join(dir, "recent.json"),
+	}
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	errRun := run(opts)
+	_ = w.Close()
+	os.Stderr = old
+	if errRun != nil {
+		t.Fatal(errRun)
+	}
+	b, _ := io.ReadAll(r)
+	note := string(b)
+	if !strings.Contains(note, "prefer 'tyd session alias'") {
+		t.Fatalf("missing deprecation note: %q", note)
+	}
+}
+
 func TestSessionHelpColor(t *testing.T) {
+
 	var buf bytes.Buffer
 	writeSessionHelp(&buf, true)
 	out := buf.String()
