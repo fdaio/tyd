@@ -8,7 +8,7 @@ Release binary (linux / darwin / freebsd):
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
-Pairing and session steps for humans and automation: [connect.md](connect.md).
+Installs for the current user (`~/.local/bin`, no sudo). Pairing and session steps for humans and automation: [connect.md](connect.md).
 
 ## Build from source
 
