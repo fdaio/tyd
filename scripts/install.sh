@@ -2,6 +2,9 @@
 # tyd one-click install: GitHub release binary + pairing bootstrap.
 # Human (TTY): choose server or client; server can mint a copy-paste client command.
 # Agent / non-TTY: --agent (default server) or --client --accept TOKEN.
+#
+# Everything installs for the invoking user: no sudo, no system-wide service.
+# tyd holds that user's shells, so it never needs more privilege than the user has.
 set -eu
 
 REPO="${TYD_REPO:-fdaio/tyd}"
@@ -31,6 +34,9 @@ Options:
   -h, --help          Show this help
 
 Env: TYD_REPO, TYD_INSTALL_URL, TYD_PLATFORM, TYD_BINDIR
+
+Installs for the current user only (~/.local/bin, systemd --user or launchd).
+Do not run this with sudo.
 EOF
 }
 
@@ -144,17 +150,24 @@ detect_arch() {
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 
+HOME_DIR="${HOME:-/tmp}"
 if [ -n "${TYD_BINDIR:-}" ]; then
 	BINDIR="$TYD_BINDIR"
-elif [ "$(id -u)" -eq 0 ]; then
-	BINDIR="/usr/local/bin"
 else
-	BINDIR="${HOME}/.local/bin"
+	BINDIR="${HOME_DIR}/.local/bin"
 fi
 
-HOME_DIR="${HOME:-/tmp}"
 TYD_DIR="${HOME_DIR}/.tyd"
 mkdir -p "$BINDIR" "$TYD_DIR"
+
+is_root() {
+	[ "$(id -u)" -eq 0 ]
+}
+
+if is_root; then
+	log "note: running as root. tyd installs per-user and needs no sudo;"
+	log "      this puts tyd and its sessions under $(id -un) ($HOME_DIR)."
+fi
 
 log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
 
@@ -209,12 +222,6 @@ has_systemd_user() {
 	systemctl --user show-environment >/dev/null 2>&1
 }
 
-has_systemd_system() {
-	[ "$(id -u)" -eq 0 ] || return 1
-	command -v systemctl >/dev/null 2>&1 || return 1
-	systemctl show-environment >/dev/null 2>&1
-}
-
 start_daemon_systemd_user() {
 	unit_dir="${HOME_DIR}/.config/systemd/user"
 	mkdir -p "$unit_dir"
@@ -235,26 +242,6 @@ UNIT
 	systemctl --user enable --now tyd.service
 	loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
 	log "Started tyd via systemd --user (tyd.service)"
-}
-
-start_daemon_systemd_system() {
-	cat >/etc/systemd/system/tyd.service <<UNIT
-[Unit]
-Description=tyd session daemon
-After=network-online.target
-
-[Service]
-ExecStart=${TYD} up
-Restart=on-failure
-RestartSec=2
-User=root
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-	systemctl daemon-reload
-	systemctl enable --now tyd.service
-	log "Started tyd via systemd (tyd.service)"
 }
 
 start_daemon_launchd() {
@@ -301,16 +288,21 @@ start_daemon_nohup() {
 start_daemon() {
 	case "$OS" in
 	linux)
-		if has_systemd_system; then
-			start_daemon_systemd_system
-		elif has_systemd_user; then
+		if has_systemd_user; then
 			start_daemon_systemd_user
 		else
 			start_daemon_nohup
 		fi
 		;;
 	darwin)
-		start_daemon_launchd
+		# A LaunchAgent under /var/root is never loaded, so root gets nohup.
+		if is_root; then
+			log "root on macOS has no login session for launchd; using nohup"
+			log "install as your own user to get a LaunchAgent that survives logout"
+			start_daemon_nohup
+		else
+			start_daemon_launchd
+		fi
 		;;
 	*)
 		start_daemon_nohup
@@ -395,13 +387,9 @@ install_server() {
 	log "Handbook: https://github.com/${REPO}/blob/main/docs/connect.md"
 }
 
-case "$BINDIR" in
-"${HOME}/.local/bin")
-	case ":$PATH:" in
-	*":$BINDIR:"*) ;;
-	*) log "Add ${BINDIR} to PATH (e.g. export PATH=\"${BINDIR}:\$PATH\")" ;;
-	esac
-	;;
+case ":$PATH:" in
+*":$BINDIR:"*) ;;
+*) log "Add ${BINDIR} to PATH (e.g. export PATH=\"${BINDIR}:\$PATH\")" ;;
 esac
 
 if [ "$ROLE" = client ]; then

@@ -23,6 +23,8 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
+No sudo: the binary lands in `~/.local/bin` and the daemon runs as the invoking user (systemd `--user`, a macOS LaunchAgent, or `nohup`).
+
 TTY: choose **server** or **client**. After a server install you can invite a client and copy one command. Non-interactive / `--agent` installs a server and prints the client bootstrap on stdout. Details: [docs/connect.md](docs/connect.md).
 
 ```bash
