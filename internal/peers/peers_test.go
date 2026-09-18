@@ -1,6 +1,7 @@
 package peers
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -115,5 +116,39 @@ func TestSetAndClearNickname(t *testing.T) {
 	p, err := f.Find("desk")
 	if err != nil || p.ID != "bbb" {
 		t.Fatalf("%+v %v", p, err)
+	}
+}
+
+// A save that cannot complete must leave the previous peers.json readable:
+// this is what turned a full disk into a daemon that could not talk to the CP.
+func TestSaveFailureKeepsPreviousFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers.json")
+	if err := Save(path, &File{
+		Registration: &Registration{ID: "d1", PublicKey: "pk", ApprovalMode: "pre"},
+		Peers:        []Peer{{ID: "p1", PublicKey: "pk1"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := Save(path, &File{Registration: &Registration{ID: "d2"}}); err == nil {
+		t.Fatal("save into a read-only directory should fail")
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("previous file no longer loads: %v", err)
+	}
+	if got.Registration == nil || got.Registration.ID != "d1" {
+		t.Fatalf("registration = %+v", got.Registration)
+	}
+	if len(got.Peers) != 1 {
+		t.Fatalf("peers = %+v", got.Peers)
 	}
 }

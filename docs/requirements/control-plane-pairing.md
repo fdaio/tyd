@@ -71,6 +71,21 @@ holds standing access.
 - Audit stays local: nothing is sent to the CP
 - Without the flag, **post** writes the same records to stderr and other modes write nothing
 
+### Local state durability
+
+- All state files (`peers.json`, `trusted.json`, `aliases.json`, `sessions.json`,
+  `recent.json`, identity, live `meta.json`) are written temp-file-then-rename;
+  a failed write must leave the previous file intact
+- The daemon holds registration and peers **in memory**; `peers.json` is a cache
+  - Maintenance loop never reads the file to do its work; it reloads only when the file still parses and memory has nothing unsaved
+  - Write failures warn once, are retried each tick, and never disable CP sync, endpoint publishing, or peer trust
+- Startup with an unparsable `peers.json`: rename to `peers.json.corrupt.<ts>`,
+  then recover registration + peers from the CP by public key
+  - Recovery states **no** approval mode; the CP keeps the recorded one (`POST /v1/register` with an empty `approval_mode` on a known key preserves it)
+  - CP unreachable ⇒ run local-only and point the operator at `tyd doctor --fix`
+- Audit write failure: warn once, keep serving
+- `tyd doctor` checks state files, free space, and writability; `--fix` rebuilds `peers.json`
+
 ### Session idle timeout
 
 - `tyd up --session-idle-timeout D` closes sessions unattended for longer than `D`

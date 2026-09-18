@@ -5,7 +5,6 @@ package catalog
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"tyd/internal/alias"
 	"tyd/internal/protocol"
 	"tyd/internal/recent"
+	"tyd/internal/safefile"
 )
 
 type Record struct {
@@ -63,10 +63,7 @@ func Save(path string, f *File) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	return safefile.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 func (f *File) Get(id string) (Record, bool) {

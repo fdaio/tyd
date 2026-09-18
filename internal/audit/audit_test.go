@@ -87,3 +87,28 @@ func TestEventCarriesNoTerminalContent(t *testing.T) {
 		}
 	}
 }
+
+// A failing audit write must warn once and let the daemon carry on.
+func TestLogWarnsOnceWhenWritesFail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	a, err := OpenFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warn strings.Builder
+	a.SetWarnWriter(&warn)
+	if err := a.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	a.Log(Event{Kind: KindCreate, SessionID: "s1"})
+	a.Log(Event{Kind: KindClose, SessionID: "s1"})
+
+	out := warn.String()
+	if !strings.Contains(out, "audit log write failed") {
+		t.Fatalf("no warning: %q", out)
+	}
+	if got := strings.Count(out, "audit log write failed"); got != 1 {
+		t.Fatalf("warned %d times, should warn once: %q", got, out)
+	}
+}

@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"tyd/internal/safefile"
 )
 
 // File maps alias name -> session id (and optional peer for display).
@@ -51,10 +52,7 @@ func Save(path string, f *File) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	return safefile.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 func ValidateName(name string) error {

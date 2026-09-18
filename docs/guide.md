@@ -247,6 +247,45 @@ Detach / watch-exit keys:
 | Client crash / socket drop | Same: session stays |
 | `tyd session close <id>` | Kill shell; mark `CLOSED` in the local catalog |
 
+## When the disk fills up
+
+State files under `~/.tyd` are a cache of what the daemon already holds in
+memory and what the Control Panel already knows. A failing disk degrades tyd;
+it does not stop it.
+
+- **Writes never destroy the previous file.** Every state file is written to a
+  temporary file and renamed into place, so a write that fails on a full disk
+  leaves the last good version intact.
+- **Memory is authoritative.** The daemon reads `peers.json` once at startup.
+  The maintenance loop works from memory, retries the write each tick, and says
+  so once when the file becomes writable again. Paired peers keep their access
+  while the disk is full.
+- **A damaged `peers.json` is set aside, not trusted.** On startup the file is
+  renamed to `peers.json.corrupt.<timestamp>` and the registration and peer list
+  are pulled back from the CP using this daemon's identity. The daemon id and
+  the pairings survive, and the approval mode is taken from the CP rather than
+  reset — recovery never relaxes a `pre` or `post` daemon to `full`.
+- **Audit write failures warn once** and sessions carry on.
+
+If the CP is also unreachable, the daemon keeps serving local sessions and
+tells you to run `tyd doctor --fix` once the disk is healthy.
+
+### `tyd doctor`
+
+```bash
+./tyd doctor         # check state files, free space, and writability
+./tyd doctor --fix   # set a damaged peers.json aside and rebuild it from the CP
+```
+
+`doctor` loads each file the way tyd does, so it reports the real failure
+rather than just "file exists". It exits non-zero when something is broken:
+
+```
+ok   disk             38.3 GiB free on /home/user/.tyd
+ok   writable         /home/user/.tyd
+fail peers            /home/user/.tyd/peers.json: empty (truncated by a failed write?)
+```
+
 ## Status
 
 ```bash
@@ -327,6 +366,7 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 | `register` | Register with CP, print `tyd accept …`, wait for peer (or `--no-wait`) |
 | `invite` | Mint invite, print accept line, wait for peer (10m TTL; or `--no-wait`) |
 | `approval` | Show or set approval mode without re-registering |
+| `doctor` | Check state files and disk; `--fix` rebuilds `peers.json` from the CP |
 | `invite revoke` | Invalidate an unused invite |
 | `accept` | Accept an invite; store peer public key |
 | `revoke` | Revoke a paired peer |
