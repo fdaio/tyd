@@ -795,3 +795,118 @@ func TestFormatStatusConnErr(t *testing.T) {
 		t.Fatalf("tls: %q", got)
 	}
 }
+
+func TestParseIdleTimeout(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want time.Duration
+	}{
+		{"off", 0},
+		{"none", 0},
+		{"0", 0},
+		{"", 0},
+		{"8h", 8 * time.Hour},
+		{"30m", 30 * time.Minute},
+	} {
+		got, err := parseIdleTimeout(tt.in)
+		if err != nil {
+			t.Fatalf("%q: %v", tt.in, err)
+		}
+		if got != tt.want {
+			t.Fatalf("%q = %s want %s", tt.in, got, tt.want)
+		}
+	}
+	for _, bad := range []string{"soon", "-1h", "8"} {
+		if _, err := parseIdleTimeout(bad); err == nil {
+			t.Fatalf("%q should fail", bad)
+		}
+	}
+}
+
+func TestParseAuditAndIdleFlags(t *testing.T) {
+	opts, err := parseArgs([]string{"--audit-log", "/tmp/a.log", "--session-idle-timeout=8h", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.cmd != "up" {
+		t.Fatalf("cmd=%s", opts.cmd)
+	}
+	if opts.auditLog != "/tmp/a.log" {
+		t.Fatalf("auditLog=%q", opts.auditLog)
+	}
+	if opts.sessionIdle != 8*time.Hour {
+		t.Fatalf("sessionIdle=%s", opts.sessionIdle)
+	}
+	if def, err := parseArgs([]string{"up"}); err != nil {
+		t.Fatal(err)
+	} else if def.sessionIdle != 0 || def.auditLog != "" {
+		t.Fatalf("idle timeout and audit log must default off: %+v", def)
+	}
+}
+
+// Changing the approval mode must keep the daemon id and the peer list.
+func TestRunApprovalUpdatesModeWithoutReregister(t *testing.T) {
+	dir := t.TempDir()
+	peersPath := filepath.Join(dir, "peers.json")
+	doc := &peers.File{
+		Platform: "http://127.0.0.1:1",
+		Registration: &peers.Registration{
+			ID:           "daemon1",
+			PublicKey:    "pk",
+			ApprovalMode: "full",
+		},
+		Peers: []peers.Peer{{ID: "peer1", PublicKey: "pk2", Nickname: "laptop"}},
+	}
+	if err := peers.Save(peersPath, doc); err != nil {
+		t.Fatal(err)
+	}
+	opts := options{cmd: "approval", rest: []string{"pre"}, peers: peersPath, platform: "http://127.0.0.1:1"}
+	out := captureStdout(t, func() {
+		if err := runApproval(opts); err != nil {
+			t.Fatalf("runApproval: %v", err)
+		}
+	})
+	if strings.TrimSpace(out) != "pre" {
+		t.Fatalf("stdout %q", out)
+	}
+	got, err := peers.Load(peersPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Registration.ApprovalMode != "pre" {
+		t.Fatalf("mode=%s", got.Registration.ApprovalMode)
+	}
+	if got.Registration.ID != "daemon1" {
+		t.Fatalf("id changed to %s", got.Registration.ID)
+	}
+	if len(got.Peers) != 1 || got.Peers[0].Nickname != "laptop" {
+		t.Fatalf("peers lost: %+v", got.Peers)
+	}
+
+	show := captureStdout(t, func() {
+		if err := runApproval(options{cmd: "approval", peers: peersPath}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.TrimSpace(show) != "pre" {
+		t.Fatalf("show stdout %q", show)
+	}
+}
+
+func TestRunApprovalRejectsBadMode(t *testing.T) {
+	dir := t.TempDir()
+	peersPath := filepath.Join(dir, "peers.json")
+	if err := peers.Save(peersPath, &peers.File{
+		Registration: &peers.Registration{ID: "d", PublicKey: "pk", ApprovalMode: "full"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := runApproval(options{cmd: "approval", rest: []string{"sometimes"}, peers: peersPath})
+	if err == nil || !strings.Contains(err.Error(), "full, pre, or post") {
+		t.Fatalf("got %v", err)
+	}
+	if err := runApproval(options{cmd: "approval", rest: []string{"pre"}, peers: filepath.Join(dir, "missing.json")}); err == nil ||
+		!strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("unregistered: %v", err)
+	}
+}

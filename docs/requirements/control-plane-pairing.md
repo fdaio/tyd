@@ -50,11 +50,32 @@ Self-hosted CP is supported via `--platform`. A registered daemon is addressed a
 
 | Mode | Behavior |
 |------|----------|
-| **pre** (pre-approval) | TLS (data-plane) creates enter `PENDING` until local operator `approve`; unix creates bypass |
-| **post** (post-approval) | Auto-approve like full; on session close emit local audit log (no TTY content) |
+| **pre** (pre-approval) | Every remote (non-unix: TLS or QUIC) create, attach, and watch waits for a local `approve`; unix bypasses |
+| **post** (post-approval) | Auto-approve like full; control events are audited (no TTY content) |
 | **full** (full approval) | **Default.** Session records only; no per-session review |
 
-Enforcement is Step 3 (declared at register; applied by the daemon from `peers.json`).
+Applied by the daemon from `peers.json`. `tyd approval <mode>` changes it in
+place (CP + local file) and keeps the daemon id and pairings; re-registering is
+not required and `--force` remains the only path that drops peers.
+
+Approvals under **pre** are **one-shot**: approving a create also covers the
+attach that immediately follows, and every later reattach is reviewed again.
+Pending requests and unused approvals expire after 10 minutes, so a peer never
+holds standing access.
+
+### Audit log (independent of approval mode)
+
+- `tyd up --audit-log PATH` appends JSON Lines (`0600`), suggested `~/.tyd/audit.log`
+- Events: create, create_pending, approve, reject, attach, attach_pending, detach, close, idle_close, denied
+- Records are metadata only (session id, principal, peer id, transport, remote addr, capability, timestamps); never TTY content
+- Audit stays local: nothing is sent to the CP
+- Without the flag, **post** writes the same records to stderr and other modes write nothing
+
+### Session idle timeout
+
+- `tyd up --session-idle-timeout D` closes sessions unattended for longer than `D`
+- **Default off**; idle starts at the last detach and resets on attach
+- `PENDING` sessions are never reaped
 
 ## Identity / daemon
 

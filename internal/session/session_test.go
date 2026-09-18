@@ -463,3 +463,77 @@ func TestOnClosedCallback(t *testing.T) {
 		t.Fatal("timeout waiting for onClosed")
 	}
 }
+
+func TestReapIdleClosesUnattended(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	idle, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := busy.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att.Detach()
+
+	if got := m.ReapIdle(0, time.Now()); got != nil {
+		t.Fatalf("zero timeout must not reap: %v", got)
+	}
+	if got := m.ReapIdle(time.Hour, time.Now()); got != nil {
+		t.Fatalf("fresh sessions must not reap: %v", got)
+	}
+
+	closed := m.ReapIdle(time.Nanosecond, time.Now().Add(time.Minute))
+	if len(closed) != 1 || closed[0] != idle.ID {
+		t.Fatalf("closed=%v want [%s]", closed, idle.ID)
+	}
+	if st := idle.State(); st != StateClosed {
+		t.Fatalf("idle state=%s", st)
+	}
+	if st := busy.State(); st != StateAttached {
+		t.Fatalf("attached session must survive, state=%s", st)
+	}
+}
+
+func TestIdleSinceClearedWhileAttached(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.IdleSince().IsZero() {
+		t.Fatal("new detached session should be idle")
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.IdleSince().IsZero() {
+		t.Fatal("attached session must not be idle")
+	}
+	att.Detach()
+	if s.IdleSince().IsZero() {
+		t.Fatal("detached session should be idle again")
+	}
+}
+
+func TestReapIdleLeavesPending(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.CreatePending(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.ReapIdle(time.Nanosecond, time.Now().Add(time.Hour)); got != nil {
+		t.Fatalf("pending must not be reaped: %v", got)
+	}
+	if st := s.State(); st != StatePending {
+		t.Fatalf("state=%s", st)
+	}
+}

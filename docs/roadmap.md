@@ -52,8 +52,10 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 ### Step 3 — Approval modes (done)
 
 - Enforce pre / post / full from `peers.json` `Registration.ApprovalMode` on `tyd up`
-- **pre**: TLS creates stay `PENDING` until local `tyd session approve`; unix creates bypass
-- **post**: auto-create; audit line on close (stderr / `AuditLog`)
+- **pre**: every remote (TLS or QUIC) create, attach, and watch waits for a local `tyd session approve`; unix bypasses; approvals are one-shot with a 10m TTL
+- **post**: auto-create; control events audited
+- `tyd approval <full|pre|post>` switches mode in place (keeps daemon id and peers)
+- `tyd up --audit-log PATH` writes JSON Lines in any mode; `--session-idle-timeout D` reaps unattended sessions (default off)
 - **full** (default): unchanged create; no per-session review
 - `approve` / `reject` protocol + CLI (unix transport only)
 
