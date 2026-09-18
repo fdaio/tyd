@@ -202,6 +202,9 @@ func (s *Service) Register(req RegisterRequest) (*RegisterResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An empty mode means "whatever is already on record". Recovering a lost
+	// peers.json must not silently relax a pre/post daemon to full.
+	stated := strings.TrimSpace(req.ApprovalMode) != ""
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -209,7 +212,9 @@ func (s *Service) Register(req RegisterRequest) (*RegisterResponse, error) {
 	if id, ok := s.byPub[pub]; ok {
 		if !req.Force {
 			d := s.daemons[id]
-			d.ApprovalMode = mode
+			if stated {
+				d.ApprovalMode = mode
+			}
 			return s.registerRespLocked(d), nil
 		}
 		s.deleteDaemonLocked(id)

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"tyd/internal/safefile"
 )
 
 const (
@@ -48,7 +50,7 @@ func SaveMeta(dir string, m Meta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(MetaPath(dir), append(b, '\n'), 0o600)
+	return safefile.WriteFile(MetaPath(dir), append(b, '\n'), 0o600)
 }
 
 func LoadMeta(dir string) (Meta, error) {
@@ -67,7 +69,7 @@ func LoadMeta(dir string) (Meta, error) {
 }
 
 func WritePID(path string, pid int) error {
-	return os.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o600)
+	return safefile.WriteFile(path, []byte(strconv.Itoa(pid)+"\n"), 0o600)
 }
 
 func ReadPID(path string) (int, error) {

@@ -19,6 +19,7 @@ import (
 	"tyd/internal/cpclient"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
+	"tyd/internal/peerstate"
 	"tyd/internal/server"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -590,7 +591,11 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 	}
 
 	// Sync server peers after accept (CP list → peers.json); do not re-register.
-	if err := syncPeersFromCP(sOpts); err != nil {
+	sState, err := peerstate.Load(sOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncPeersFromCP(sOpts, sState); err != nil {
 		t.Fatal(err)
 	}
 	sPeers, err := peers.Load(sOpts.peers)

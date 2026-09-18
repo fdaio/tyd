@@ -50,6 +50,13 @@ func (c *Client) RegisterOpts(publicKey, approvalMode string, force bool) (*cont
 	return &out, nil
 }
 
+// RecoverRegistration re-reads this daemon's registration from the CP by
+// public key, without stating an approval mode, so the recorded mode survives.
+// Used when the local peers.json is lost or unreadable.
+func (c *Client) RecoverRegistration(publicKey string) (*controlpanel.RegisterResponse, error) {
+	return c.RegisterOpts(publicKey, "", false)
+}
+
 func (c *Client) Restore(req controlpanel.RestoreRequest) (*controlpanel.RegisterResponse, error) {
 	var out controlpanel.RegisterResponse
 	if err := c.post("/v1/restore", req, &out); err != nil {

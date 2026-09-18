@@ -546,3 +546,38 @@ func TestInstallScriptHTTP(t *testing.T) {
 		t.Fatalf("POST status %d", post.StatusCode)
 	}
 }
+
+// Recovering a lost peers.json must not relax the approval mode.
+func TestRegisterWithoutModeKeepsExisting(t *testing.T) {
+	s := New()
+	first, err := s.Register(RegisterRequest{PublicKey: "pk-keep", ApprovalMode: ApprovalPre})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Register(RegisterRequest{PublicKey: "pk-keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("id changed %s -> %s", first.ID, again.ID)
+	}
+	if again.ApprovalMode != ApprovalPre {
+		t.Fatalf("approval=%s want pre", again.ApprovalMode)
+	}
+	// A stated mode still wins.
+	changed, err := s.Register(RegisterRequest{PublicKey: "pk-keep", ApprovalMode: ApprovalPost})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.ApprovalMode != ApprovalPost {
+		t.Fatalf("approval=%s want post", changed.ApprovalMode)
+	}
+	// A brand new daemon with no stated mode gets the default.
+	fresh, err := s.Register(RegisterRequest{PublicKey: "pk-fresh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ApprovalMode != DefaultApproval {
+		t.Fatalf("approval=%s want %s", fresh.ApprovalMode, DefaultApproval)
+	}
+}

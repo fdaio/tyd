@@ -56,6 +56,13 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - **post**: auto-create; control events audited
 - `tyd approval <full|pre|post>` switches mode in place (keeps daemon id and peers)
 - `tyd up --audit-log PATH` writes JSON Lines in any mode; `--session-idle-timeout D` reaps unattended sessions (default off)
+
+### Step 5 — Surviving a failing disk (done)
+
+- Atomic writes for every state file: a failed write keeps the previous version
+- Daemon keeps registration/peers in memory; `peers.json` is a cache, write failures are retried
+- Unparsable `peers.json` is quarantined and recovered from the CP without relaxing the approval mode
+- `tyd doctor [--fix]` for state/disk self-check and rebuild
 - **full** (default): unchanged create; no per-session review
 - `approve` / `reject` protocol + CLI (unix transport only)
 

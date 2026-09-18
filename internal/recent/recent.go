@@ -4,8 +4,9 @@ package recent
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"time"
+
+	"tyd/internal/safefile"
 )
 
 type File struct {
@@ -37,10 +38,7 @@ func Save(path string, f *File) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(path, append(b, '\n'), 0o600)
+	return safefile.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 func Remember(path, peerID, sessionID string) error {

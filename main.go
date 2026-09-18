@@ -25,6 +25,7 @@ import (
 	"tyd/internal/live"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
+	"tyd/internal/peerstate"
 	"tyd/internal/recent"
 	"tyd/internal/server"
 	"tyd/internal/session"
@@ -57,6 +58,7 @@ type options struct {
 	sessions    string
 	platform    string
 	approval    string
+	fix         bool
 	auditLog    string
 	sessionIdle time.Duration
 	as          string
@@ -448,6 +450,8 @@ func run(opts options) error {
 		return runPeer(opts)
 	case "approval":
 		return runApproval(opts)
+	case "doctor":
+		return runDoctor(opts)
 	case "create", "list", "attach", "close", "watch":
 		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
 	default:
@@ -916,11 +920,10 @@ func runUp(opts options) error {
 	if err != nil {
 		return err
 	}
+	state := loadPeerState(opts)
 	approvalMode := controlpanel.DefaultApproval
-	if doc, err := peers.Load(opts.peers); err == nil && doc.Registration != nil {
-		if mode, err := controlpanel.NormalizeApproval(doc.Registration.ApprovalMode); err == nil {
-			approvalMode = mode
-		}
+	if mode, err := controlpanel.NormalizeApproval(state.ApprovalMode("")); err == nil {
+		approvalMode = mode
 	}
 	mgr := session.NewManager()
 	liveRoot := opts.live
@@ -993,7 +996,7 @@ func runUp(opts options) error {
 	}
 
 	stop := make(chan struct{})
-	if err := ensureCPRegistration(opts); err != nil {
+	if err := ensureCPRegistration(opts, state); err != nil {
 		fmt.Fprintf(os.Stderr, "cp registration restore skipped: %v\n", err)
 	}
 	if srv.DataPlaneAddr() != "" {
@@ -1003,16 +1006,16 @@ func runUp(opts options) error {
 		} else {
 			pubAddr := cands[0]
 			fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (%d candidates published to CP)\n", pubAddr, len(cands))
-			if err := syncPeersAndTrust(opts, trust); err != nil {
+			if err := syncPeersAndTrust(opts, state, trust); err != nil {
 				fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 			}
-			if err := publishDataEndpoint(opts, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
+			if err := publishDataEndpoint(opts, state, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
 				fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
 			}
-			go dataPlaneMaintain(opts, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
+			go dataPlaneMaintain(opts, state, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
 		}
 	} else {
-		if err := syncPeersFromCP(opts); err != nil {
+		if err := syncPeersFromCP(opts, state); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 		}
 	}
@@ -1022,6 +1025,80 @@ func runUp(opts options) error {
 	<-ch
 	close(stop)
 	return srv.Close()
+}
+
+// loadPeerState reads peers.json once into memory. An unreadable file is set
+// aside and the registration is recovered from the CP, because the CP holds
+// the same pairing data and the local file is only a cache. The daemon keeps
+// running either way: local sessions never depended on this file.
+func loadPeerState(opts options) *peerstate.State {
+	state, err := peerstate.Load(opts.peers)
+	if err == nil {
+		return state
+	}
+	if os.IsNotExist(err) {
+		return peerstate.New(opts.peers, nil)
+	}
+	fmt.Fprintf(os.Stderr, "peers file unreadable (%v)\n", err)
+	quarantined, qerr := quarantineFile(opts.peers)
+	if qerr != nil {
+		fmt.Fprintf(os.Stderr, "could not set aside %s: %v\n", opts.peers, qerr)
+	} else {
+		fmt.Fprintf(os.Stderr, "moved damaged file to %s\n", quarantined)
+	}
+	state = peerstate.New(opts.peers, nil)
+	if err := recoverRegistration(opts, state); err != nil {
+		fmt.Fprintf(os.Stderr, "could not recover registration from CP: %v\n", err)
+		fmt.Fprintln(os.Stderr, "running local-only; fix the disk then run: tyd doctor --fix")
+		return state
+	}
+	return state
+}
+
+// quarantineFile renames path aside so evidence survives and the next write
+// starts clean. It returns the new name.
+func quarantineFile(path string) (string, error) {
+	target := path + ".corrupt." + time.Now().UTC().Format("20060102T150405Z")
+	if err := os.Rename(path, target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+// recoverRegistration rebuilds registration and peers from the CP using this
+// daemon's identity. It states no approval mode, so the CP keeps the recorded
+// one and a pre/post daemon cannot be silently relaxed to full.
+func recoverRegistration(opts options, state *peerstate.State) error {
+	key, err := auth.LoadIdentity(opts.identity)
+	if err != nil {
+		return fmt.Errorf("identity: %w", err)
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+	cli := cpclient.New(opts.platform)
+	reg, err := cli.RecoverRegistration(pub)
+	if err != nil {
+		return err
+	}
+	remote, listErr := cli.ListPeers(reg.ID, pub)
+	writeErr := state.Update(func(doc *peers.File) {
+		doc.Platform = cli.BaseURL
+		doc.Registration = &peers.Registration{
+			ID:           reg.ID,
+			PublicKey:    pub,
+			ApprovalMode: reg.ApprovalMode,
+			URL:          reg.URL,
+			RegisteredAt: time.Now().UTC(),
+		}
+		if listErr == nil {
+			doc.ReplaceFromRemote(cpPeersToLocal(remote))
+		}
+	})
+	fmt.Fprintf(os.Stderr, "recovered CP registration %s (approval %s, %d peers)\n",
+		reg.ID, reg.ApprovalMode, len(remote))
+	if writeErr != nil {
+		fmt.Fprintf(os.Stderr, "peers file still not writable (%v); running from memory\n", writeErr)
+	}
+	return nil
 }
 
 func resolveDataListen(opts options) (string, error) {
@@ -1058,18 +1135,12 @@ func advertisedAddr(host, listenAddr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func ensureCPRegistration(opts options) error {
-	doc, err := peers.Load(opts.peers)
-	if err != nil {
-		return err
-	}
+func ensureCPRegistration(opts options, state *peerstate.State) error {
+	doc := state.Snapshot()
 	if !doc.HasRegistration() {
 		return nil
 	}
-	platform := opts.platform
-	if doc.Platform != "" {
-		platform = doc.Platform
-	}
+	platform := state.Platform(opts.platform)
 	key, err := auth.LoadIdentity(opts.identity)
 	if err != nil {
 		return err
@@ -1115,18 +1186,12 @@ func cpNotFound(err error) bool {
 	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
 }
 
-func publishDataEndpoint(opts options, addr, certFP string, candidates []string) error {
-	doc, err := peers.Load(opts.peers)
-	if err != nil {
-		return err
-	}
-	if !doc.HasRegistration() {
+func publishDataEndpoint(opts options, state *peerstate.State, addr, certFP string, candidates []string) error {
+	reg, ok := state.Registration()
+	if !ok {
 		return nil
 	}
-	platform := opts.platform
-	if doc.Platform != "" {
-		platform = doc.Platform
-	}
+	platform := state.Platform(opts.platform)
 	key, err := auth.LoadIdentity(opts.identity)
 	if err != nil {
 		return err
@@ -1134,7 +1199,7 @@ func publishDataEndpoint(opts options, addr, certFP string, candidates []string)
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(platform)
 	ttlSec := int(controlpanel.DefaultEndpointTTL / time.Second)
-	return cli.PublishEndpointFull(doc.Registration.ID, controlpanel.PublishEndpointRequest{
+	return cli.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
 		PublicKey:  pub,
 		Addr:       addr,
 		CertFP:     certFP,
@@ -1144,19 +1209,32 @@ func publishDataEndpoint(opts options, addr, certFP string, candidates []string)
 	})
 }
 
-func dataPlaneMaintain(opts options, trust *auth.Store, addr, certFP string, candidates []string, stop <-chan struct{}) {
+func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, addr, certFP string, candidates []string, stop <-chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	warned := false
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
-			if err := syncPeersAndTrust(opts, trust); err != nil {
+			// Pick up edits made by CLI commands, but only from a file that
+			// still parses; otherwise memory stays authoritative.
+			state.ReloadIfSane()
+			if err := syncPeersAndTrust(opts, state, trust); err != nil {
 				fmt.Fprintf(os.Stderr, "cp peer sync: %v\n", err)
 			}
-			if err := publishDataEndpoint(opts, addr, certFP, candidates); err != nil {
+			if err := publishDataEndpoint(opts, state, addr, certFP, candidates); err != nil {
 				fmt.Fprintf(os.Stderr, "cp endpoint publish: %v\n", err)
+			}
+			if err := state.Flush(); err != nil {
+				if !warned {
+					fmt.Fprintf(os.Stderr, "peers file not writable (%v); running from memory and retrying\n", err)
+					warned = true
+				}
+			} else if warned {
+				fmt.Fprintln(os.Stderr, "peers file writable again")
+				warned = false
 			}
 		}
 	}
@@ -1185,16 +1263,12 @@ func injectPeerTrust(trust *auth.Store, doc *peers.File) {
 	trust.DropUnlistedPeers(keep)
 }
 
-func syncPeersAndTrust(opts options, trust *auth.Store) error {
-	if err := syncPeersFromCP(opts); err != nil {
-		return err
-	}
-	doc, err := peers.Load(opts.peers)
-	if err != nil {
-		return err
-	}
-	injectPeerTrust(trust, doc)
-	return nil
+func syncPeersAndTrust(opts options, state *peerstate.State, trust *auth.Store) error {
+	err := syncPeersFromCP(opts, state)
+	// Trust follows memory even when the write failed, so a full disk cannot
+	// quietly strip a paired peer of access.
+	injectPeerTrust(trust, state.Snapshot())
+	return err
 }
 
 func runRegister(opts options) error {
@@ -1609,30 +1683,25 @@ func runAccept(opts options) error {
 	return nil
 }
 
-func syncPeersFromCP(opts options) error {
-	doc, err := peers.Load(opts.peers)
-	if err != nil {
-		return err
-	}
-	if doc.Registration == nil || doc.Registration.ID == "" {
+func syncPeersFromCP(opts options, state *peerstate.State) error {
+	reg, ok := state.Registration()
+	if !ok {
 		return nil
 	}
-	platform := opts.platform
-	if doc.Platform != "" {
-		platform = doc.Platform
-	}
+	platform := state.Platform(opts.platform)
 	key, err := auth.LoadIdentity(opts.identity)
 	if err != nil {
 		return err
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(platform)
-	remote, err := cli.ListPeers(doc.Registration.ID, pub)
+	remote, err := cli.ListPeers(reg.ID, pub)
 	if err != nil {
 		return err
 	}
-	doc.ReplaceFromRemote(cpPeersToLocal(remote))
-	return peers.Save(opts.peers, doc)
+	return state.Update(func(doc *peers.File) {
+		doc.ReplaceFromRemote(cpPeersToLocal(remote))
+	})
 }
 
 func cpPeersToLocal(list []controlpanel.Peer) []peers.Peer {
@@ -1818,6 +1887,8 @@ func parseArgs(args []string) (options, error) {
 			opts.verbose = true
 		case a == "--force":
 			opts.force = true
+		case a == "--fix":
+			opts.fix = true
 		case a == "--tls-cert":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -2050,6 +2121,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
 		{"status", "Show CP registration, peers, and connections"},
 		{"approval", "Show or set approval mode (full|pre|post)"},
+		{"doctor", "Check state files and disk; --fix rebuilds peers.json"},
 		{"serve", "Deprecated alias for up"},
 	}, color)
 	fmt.Fprintln(w)
@@ -2079,12 +2151,13 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--audit-log PATH", fmt.Sprintf("up: record control events as JSON lines (e.g. %s)", paths.DefaultAudit())},
-		{"--session-idle-timeout D", "up: close sessions unattended for D (default off)"},
+		{"--session-idle-timeout", "up: close sessions idle this long, e.g. 8h (default off)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--force", "register: replace existing registration (invalidates peers)"},
+		{"--fix", "doctor: rebuild a damaged peers.json from the Control Panel"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
@@ -2145,7 +2218,7 @@ func sessionCommands() []string {
 }
 
 func rootCommands() []string {
-	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "help"}
+	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "help"}
 }
 
 func peerCommands() []string {

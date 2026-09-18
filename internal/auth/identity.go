@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"tyd/internal/safefile"
 )
 
 func Generate() (ed25519.PublicKey, ed25519.PrivateKey, error) {
@@ -17,11 +19,11 @@ func WriteIdentity(path string, priv ed25519.PrivateKey) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
+	if err := safefile.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
 		return err
 	}
 	pub := priv.Public().(ed25519.PublicKey)
-	return os.WriteFile(path+".pub", []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644)
+	return safefile.WriteFile(path+".pub", []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0o644)
 }
 
 func LoadIdentity(path string) (ed25519.PrivateKey, error) {

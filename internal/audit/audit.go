@@ -6,6 +6,8 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,10 +61,15 @@ func (discard) Log(Event) {}
 func Discard() Sink { return discard{} }
 
 // File appends JSON Lines to a file created 0600.
+//
+// A write that fails (a full disk, most likely) is reported once and then
+// ignored: losing an audit record must not take the sessions down with it.
 type File struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
+	mu     sync.Mutex
+	f      *os.File
+	path   string
+	warn   io.Writer
+	broken bool
 }
 
 func OpenFile(path string) (*File, error) {
@@ -73,7 +80,14 @@ func OpenFile(path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &File{f: f, path: path}, nil
+	return &File{f: f, path: path, warn: os.Stderr}, nil
+}
+
+// SetWarnWriter redirects the "audit log write failed" notices (tests).
+func (a *File) SetWarnWriter(w io.Writer) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.warn = w
 }
 
 func (a *File) Path() string { return a.path }
@@ -89,7 +103,24 @@ func (a *File) Log(e Event) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	_, _ = a.f.Write(append(b, '\n'))
+	if _, err := a.f.Write(append(b, '\n')); err != nil {
+		if !a.broken {
+			a.broken = true
+			a.warnf("tyd audit log write failed (%v); sessions continue unaudited\n", err)
+		}
+		return
+	}
+	if a.broken {
+		a.broken = false
+		a.warnf("tyd audit log writable again\n")
+	}
+}
+
+func (a *File) warnf(format string, args ...any) {
+	if a.warn == nil {
+		return
+	}
+	fmt.Fprintf(a.warn, format, args...)
 }
 
 func (a *File) Close() error {
