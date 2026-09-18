@@ -194,6 +194,44 @@ func (m *Manager) List() []protocol.SessionInfo {
 	return out
 }
 
+// IdleSince reports when the session became unattended. Zero means attached,
+// pending, or closed.
+func (s *Session) IdleSince() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != StateDetached {
+		return time.Time{}
+	}
+	return s.idleSince
+}
+
+// ReapIdle closes DETACHED sessions unattended for longer than idle and
+// returns their ids. PENDING sessions are left for the operator to decide.
+func (m *Manager) ReapIdle(idle time.Duration, now time.Time) []string {
+	if idle <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	candidates := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		candidates = append(candidates, s)
+	}
+	m.mu.Unlock()
+
+	var closed []string
+	for _, s := range candidates {
+		since := s.IdleSince()
+		if since.IsZero() || now.Sub(since) < idle {
+			continue
+		}
+		if err := m.Close(s.ID); err == nil {
+			closed = append(closed, s.ID)
+		}
+	}
+	sort.Strings(closed)
+	return closed
+}
+
 func (m *Manager) Close(id string) error {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
@@ -255,6 +293,7 @@ type Session struct {
 	closedOnce sync.Once
 	cmdDone    chan struct{}
 	pending    *CreateOpts
+	idleSince  time.Time // when the session became unattended; zero while attached
 	onClosed   func(ClosedInfo)
 	liveDir    string
 	agentCmd   *exec.Cmd
@@ -303,13 +342,15 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 		}
 	}
 
+	created := time.Now().UTC()
 	s := &Session{
 		ID:        id,
 		Owner:     owner,
 		User:      owner,
 		PeerID:    opts.PeerID,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: created,
 		state:     StateDetached,
+		idleSince: created,
 		rows:      opts.Rows,
 		cols:      opts.Cols,
 		cmd:       cmd,
@@ -375,6 +416,7 @@ func (s *Session) approve() error {
 	s.cmd = cmd
 	s.pty = ptmx
 	s.state = StateDetached
+	s.idleSince = time.Now().UTC()
 	s.cmdDone = make(chan struct{})
 	go s.waitLoop()
 	go s.readLoop()
@@ -454,6 +496,7 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 	}
 	s.attach = a
 	s.state = StateAttached
+	s.idleSince = time.Time{}
 	snap := append([]byte(nil), s.ring...)
 	return a, snap, nil
 }
@@ -583,6 +626,7 @@ func (a *Attachment) Detach() {
 		a.s.attach = nil
 		if a.s.state == StateAttached {
 			a.s.state = StateDetached
+			a.s.idleSince = time.Now().UTC()
 		}
 	}
 	a.s.mu.Unlock()

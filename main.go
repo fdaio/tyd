@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 
 	"tyd/internal/alias"
+	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/catalog"
 	"tyd/internal/client"
@@ -42,31 +43,33 @@ type helpRow struct {
 }
 
 type options struct {
-	socket     string
-	listen     string
-	dataListen string
-	advertise  string
-	addr       string
-	peer       string
-	identity   string
-	trust      string
-	peers      string
-	recent     string
-	aliases    string
-	sessions   string
-	platform   string
-	approval   string
-	as         string
-	cert       string
-	key        string
-	noWait     bool
-	detach     bool
-	verbose    bool
-	force      bool
-	cmd        string
-	rest       []string
-	live       string
-	dir        string
+	socket      string
+	listen      string
+	dataListen  string
+	advertise   string
+	addr        string
+	peer        string
+	identity    string
+	trust       string
+	peers       string
+	recent      string
+	aliases     string
+	sessions    string
+	platform    string
+	approval    string
+	auditLog    string
+	sessionIdle time.Duration
+	as          string
+	cert        string
+	key         string
+	noWait      bool
+	detach      bool
+	verbose     bool
+	force       bool
+	cmd         string
+	rest        []string
+	live        string
+	dir         string
 }
 
 func main() {
@@ -443,6 +446,8 @@ func run(opts options) error {
 		return runSession(opts)
 	case "peer":
 		return runPeer(opts)
+	case "approval":
+		return runApproval(opts)
 	case "create", "list", "attach", "close", "watch":
 		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
 	default:
@@ -947,15 +952,26 @@ func runUp(opts options) error {
 	if n := len(restored); n > 0 {
 		fmt.Fprintf(os.Stderr, "tyd restored %d live session(s)\n", n)
 	}
+	var auditSink audit.Sink
+	if opts.auditLog != "" {
+		af, err := audit.OpenFile(opts.auditLog)
+		if err != nil {
+			return fmt.Errorf("audit log %s: %w", opts.auditLog, err)
+		}
+		defer af.Close()
+		auditSink = af
+	}
 	srv := server.NewWithConfig(server.Config{
-		Socket:       opts.socket,
-		Listen:       opts.listen,
-		DataListen:   dataListen,
-		CertPath:     opts.cert,
-		KeyPath:      opts.key,
-		Mgr:          mgr,
-		Trust:        trust,
-		ApprovalMode: approvalMode,
+		Socket:             opts.socket,
+		Listen:             opts.listen,
+		DataListen:         dataListen,
+		CertPath:           opts.cert,
+		KeyPath:            opts.key,
+		Mgr:                mgr,
+		Trust:              trust,
+		ApprovalMode:       approvalMode,
+		Audit:              auditSink,
+		SessionIdleTimeout: opts.sessionIdle,
 	})
 	if err := srv.Start(); err != nil {
 		return err
@@ -963,6 +979,12 @@ func runUp(opts options) error {
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
 	if approvalMode != controlpanel.ApprovalFull {
 		fmt.Fprintf(os.Stderr, "tyd approval mode %s\n", approvalMode)
+	}
+	if opts.auditLog != "" {
+		fmt.Fprintf(os.Stderr, "tyd audit log %s\n", opts.auditLog)
+	}
+	if opts.sessionIdle > 0 {
+		fmt.Fprintf(os.Stderr, "tyd session idle timeout %s\n", opts.sessionIdle)
 	}
 	if opts.listen != "" && opts.listen != "off" {
 		fmt.Fprintf(os.Stderr, "tyd listening tls  %s (cert fp %s)\n", srv.ListenAddr(), srv.TLSFingerprint())
@@ -1237,6 +1259,63 @@ func runRegister(opts options) error {
 		ExpiresAt: inv.ExpiresAt,
 	})
 	return waitForInviteAccept(opts, cli, reg.ID, pub, inv.Token, inv.ExpiresAt, baseline)
+}
+
+// parseIdleTimeout accepts a Go duration, or off/0/none for no reaping.
+func parseIdleTimeout(v string) (time.Duration, error) {
+	v = strings.TrimSpace(v)
+	switch strings.ToLower(v) {
+	case "", "off", "none", "0":
+		return 0, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("--session-idle-timeout %q: use a duration like 8h, or off", v)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("--session-idle-timeout must not be negative")
+	}
+	return d, nil
+}
+
+// runApproval shows or changes the approval mode without re-registering, so
+// the daemon id and existing pairings survive.
+func runApproval(opts options) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	if !doc.HasRegistration() {
+		return fmt.Errorf("not registered; run tyd register first")
+	}
+	if len(opts.rest) == 0 {
+		fmt.Println(doc.Registration.ApprovalMode)
+		return nil
+	}
+	if len(opts.rest) > 1 {
+		return fmt.Errorf("usage: tyd approval [full|pre|post]")
+	}
+	mode, err := controlpanel.NormalizeApproval(opts.rest[0])
+	if err != nil {
+		return fmt.Errorf("%w (use full, pre, or post)", err)
+	}
+	platform := opts.platform
+	if doc.Platform != "" {
+		platform = doc.Platform
+	}
+	cli := cpclient.New(platform)
+	if reg, err := cli.Register(doc.Registration.PublicKey, mode); err != nil {
+		fmt.Fprintf(os.Stderr, "control panel not updated (%v); saving locally\n", err)
+	} else if reg.ID != doc.Registration.ID {
+		return fmt.Errorf("control panel returned id %s, expected %s; not saving", reg.ID, doc.Registration.ID)
+	}
+	doc.Registration.ApprovalMode = mode
+	if err := peers.Save(opts.peers, doc); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "approval mode %s; restart tyd up to apply\n", mode)
+	fmt.Println(mode)
+	return nil
 }
 
 func confirmReregister(force bool) error {
@@ -1699,6 +1778,30 @@ func parseArgs(args []string) (options, error) {
 			opts.approval = args[i]
 		case strings.HasPrefix(a, "--approval="):
 			opts.approval = strings.TrimPrefix(a, "--approval=")
+		case a == "--audit-log":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.auditLog = args[i]
+		case strings.HasPrefix(a, "--audit-log="):
+			opts.auditLog = strings.TrimPrefix(a, "--audit-log=")
+		case a == "--session-idle-timeout":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a duration (e.g. 8h) or 'off'", a)
+			}
+			i++
+			d, err := parseIdleTimeout(args[i])
+			if err != nil {
+				return options{}, err
+			}
+			opts.sessionIdle = d
+		case strings.HasPrefix(a, "--session-idle-timeout="):
+			d, err := parseIdleTimeout(strings.TrimPrefix(a, "--session-idle-timeout="))
+			if err != nil {
+				return options{}, err
+			}
+			opts.sessionIdle = d
 		case a == "--as":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a nickname", a)
@@ -1946,6 +2049,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
 		{"status", "Show CP registration, peers, and connections"},
+		{"approval", "Show or set approval mode (full|pre|post)"},
 		{"serve", "Deprecated alias for up"},
 	}, color)
 	fmt.Fprintln(w)
@@ -1974,6 +2078,8 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  Behavior:")
 	writeHelpRows(w, []helpRow{
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
+		{"--audit-log PATH", fmt.Sprintf("up: record control events as JSON lines (e.g. %s)", paths.DefaultAudit())},
+		{"--session-idle-timeout D", "up: close sessions unattended for D (default off)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
@@ -2039,7 +2145,7 @@ func sessionCommands() []string {
 }
 
 func rootCommands() []string {
-	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "help"}
+	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "help"}
 }
 
 func peerCommands() []string {

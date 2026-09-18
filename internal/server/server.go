@@ -3,18 +3,26 @@ package server
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
+
+// DefaultApprovalTTL bounds how long a pending attach request, and an
+// operator approval for it, stay valid.
+const DefaultApprovalTTL = 10 * time.Minute
 
 type Config struct {
 	Socket       string
@@ -24,8 +32,26 @@ type Config struct {
 	KeyPath      string
 	Mgr          *session.Manager
 	Trust        *auth.Store
-	ApprovalMode string            // full|pre|post; default full
-	AuditLog     func(line string) // post-mode audit sink; default stderr
+	ApprovalMode string // full|pre|post; default full
+
+	// Audit receives control events in every approval mode. Nil means stderr
+	// under post and no auditing otherwise.
+	Audit audit.Sink
+	// SessionIdleTimeout closes DETACHED sessions left unattended for this
+	// long. Zero (default) never reaps.
+	SessionIdleTimeout time.Duration
+	// ApprovalTTL bounds pending attach requests and approvals.
+	// Zero uses DefaultApprovalTTL.
+	ApprovalTTL time.Duration
+}
+
+// PendingApproval is a remote attach waiting for a local decision.
+type PendingApproval struct {
+	SessionID  string
+	Principal  string
+	Transport  string
+	RemoteAddr string
+	Requested  time.Time
 }
 
 type Server struct {
@@ -34,9 +60,22 @@ type Server struct {
 	mu            sync.Mutex
 	listeners     []net.Listener
 	conns         map[string]*connState
-	tlsCertFP     string // full hex fingerprint (shared cert)
-	tlsListenAddr string // manual --listen actual addr
-	dataPlaneAddr string // data-plane actual listen addr
+	tlsCertFP     string                    // full hex fingerprint (shared cert)
+	tlsListenAddr string                    // manual --listen actual addr
+	dataPlaneAddr string                    // data-plane actual listen addr
+	pending       map[string]*pendingAttach // gate key -> waiting request
+	approved      map[string]time.Time      // gate key -> one-shot approval expiry
+	createdBy     map[string]string         // gated session id -> requester public key
+	stopReaper    chan struct{}
+	reaperOnce    sync.Once
+}
+
+type pendingAttach struct {
+	sessionID  string
+	principal  string
+	transport  string
+	remoteAddr string
+	at         time.Time
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
@@ -46,33 +85,204 @@ func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
 func NewWithConfig(cfg Config) *Server {
 	mode, _ := controlpanel.NormalizeApproval(cfg.ApprovalMode)
 	cfg.ApprovalMode = mode
-	if cfg.AuditLog == nil {
-		cfg.AuditLog = func(line string) { fmt.Fprintln(os.Stderr, line) }
+	if cfg.Audit == nil {
+		if mode == controlpanel.ApprovalPost {
+			cfg.Audit = StderrAudit()
+		} else {
+			cfg.Audit = audit.Discard()
+		}
+	}
+	if cfg.ApprovalTTL <= 0 {
+		cfg.ApprovalTTL = DefaultApprovalTTL
 	}
 	s := &Server{
-		cfg:   cfg,
-		conns: make(map[string]*connState),
+		cfg:        cfg,
+		conns:      make(map[string]*connState),
+		pending:    make(map[string]*pendingAttach),
+		approved:   make(map[string]time.Time),
+		createdBy:  make(map[string]string),
+		stopReaper: make(chan struct{}),
 	}
-	if cfg.Mgr != nil && mode == controlpanel.ApprovalPost {
+	if cfg.Mgr != nil {
 		cfg.Mgr.SetOnClosed(func(info session.ClosedInfo) {
-			s.emitPostAudit(info)
+			s.audit(audit.Event{
+				Kind:      audit.KindClose,
+				SessionID: info.SessionID,
+				Principal: info.Principal,
+				PeerID:    info.PeerID,
+				CreatedAt: info.CreatedAt.UTC().Format(time.RFC3339),
+				Time:      info.ClosedAt,
+			})
 		})
 	}
 	return s
 }
 
-func (s *Server) emitPostAudit(info session.ClosedInfo) {
-	peer := info.PeerID
-	line := fmt.Sprintf("audit: session_id=%s principal=%s created_at=%s closed_at=%s",
-		info.SessionID, info.Principal,
-		info.CreatedAt.UTC().Format(time.RFC3339),
-		info.ClosedAt.UTC().Format(time.RFC3339))
-	if peer != "" {
-		line += " peer_id=" + peer
+// StderrAudit writes JSON Lines to stderr, for daemons without an audit file.
+func StderrAudit() audit.Sink {
+	return audit.FuncSink(func(e audit.Event) {
+		if e.Time.IsZero() {
+			e.Time = time.Now()
+		}
+		e.Time = e.Time.UTC()
+		b, err := json.Marshal(e)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "audit %s\n", b)
+	})
+}
+
+func (s *Server) audit(e audit.Event) {
+	if s.cfg.Audit == nil {
+		return
 	}
-	if s.cfg.AuditLog != nil {
-		s.cfg.AuditLog(line)
+	if e.Approval == "" {
+		e.Approval = s.approvalMode()
 	}
+	s.cfg.Audit.Log(e)
+}
+
+func (s *Server) connEvent(st *connState, kind audit.Kind) audit.Event {
+	name := ""
+	if st.principal != nil {
+		name = st.principal.Name
+	}
+	return audit.Event{
+		Kind:       kind,
+		Principal:  name,
+		Transport:  string(st.info.Transport),
+		RemoteAddr: st.info.RemoteAddr,
+	}
+}
+
+// gated reports whether this connection must get local approval before it may
+// create a session or look at one. Unix means the local operator.
+func (s *Server) gated(st *connState) bool {
+	return s.approvalMode() == controlpanel.ApprovalPre && st.info.Transport != transport.KindUnix
+}
+
+func gateKey(sessionID string, p *auth.Principal) string {
+	if p == nil {
+		return sessionID + "|"
+	}
+	return sessionID + "|" + auth.EncodePublic(p.Pub)
+}
+
+// consumeApproval spends a one-shot approval for this session and principal.
+func (s *Server) consumeApproval(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	exp, ok := s.approved[key]
+	if !ok {
+		return false
+	}
+	delete(s.approved, key)
+	return time.Now().Before(exp)
+}
+
+// requestApproval records a waiting attach so the operator can approve it.
+func (s *Server) requestApproval(st *connState, sessionID string) {
+	req := &pendingAttach{
+		sessionID:  sessionID,
+		transport:  string(st.info.Transport),
+		remoteAddr: st.info.RemoteAddr,
+		at:         time.Now().UTC(),
+	}
+	if st.principal != nil {
+		req.principal = st.principal.Name
+	}
+	s.mu.Lock()
+	s.pending[gateKey(sessionID, st.principal)] = req
+	s.mu.Unlock()
+
+	e := s.connEvent(st, audit.KindAttachPending)
+	e.SessionID = sessionID
+	s.audit(e)
+	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants session %s (tyd session approve %s)\n",
+		req.principal, sessionID, sessionID)
+}
+
+// PendingApprovals lists attach requests still waiting for a decision.
+func (s *Server) PendingApprovals() []PendingApproval {
+	now := time.Now()
+	s.mu.Lock()
+	out := make([]PendingApproval, 0, len(s.pending))
+	for key, req := range s.pending {
+		if now.Sub(req.at) > s.cfg.ApprovalTTL {
+			delete(s.pending, key)
+			continue
+		}
+		out = append(out, PendingApproval{
+			SessionID:  req.sessionID,
+			Principal:  req.principal,
+			Transport:  req.transport,
+			RemoteAddr: req.remoteAddr,
+			Requested:  req.at,
+		})
+	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SessionID != out[j].SessionID {
+			return out[i].SessionID < out[j].SessionID
+		}
+		return out[i].Principal < out[j].Principal
+	})
+	return out
+}
+
+// grantRequesterAttach lets whoever asked for a gated session attach once, so
+// approving a create does not immediately ask again for the attach that
+// follows it. Later reattaches are reviewed again.
+func (s *Server) grantRequesterAttach(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, ok := s.createdBy[sessionID]
+	if !ok {
+		return
+	}
+	delete(s.createdBy, sessionID)
+	s.approved[sessionID+"|"+pub] = time.Now().Add(s.cfg.ApprovalTTL)
+}
+
+// forgetSession drops gate bookkeeping for a session that is gone.
+func (s *Server) forgetSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.createdBy, sessionID)
+	for key, req := range s.pending {
+		if req.sessionID == sessionID {
+			delete(s.pending, key)
+		}
+	}
+	for key := range s.approved {
+		if strings.HasPrefix(key, sessionID+"|") {
+			delete(s.approved, key)
+		}
+	}
+}
+
+// decidePending approves or drops every waiting request for a session and
+// reports how many were decided.
+func (s *Server) decidePending(sessionID string, approve bool) int {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for key, req := range s.pending {
+		if req.sessionID != sessionID {
+			continue
+		}
+		delete(s.pending, key)
+		if now.Sub(req.at) > s.cfg.ApprovalTTL {
+			continue
+		}
+		if approve {
+			s.approved[key] = now.Add(s.cfg.ApprovalTTL)
+		}
+		n++
+	}
+	return n
 }
 
 func (s *Server) approvalMode() string {
@@ -128,7 +338,41 @@ func (s *Server) Start() error {
 	if n == 0 {
 		return fmt.Errorf("no listeners configured")
 	}
+	if s.cfg.SessionIdleTimeout > 0 && s.cfg.Mgr != nil {
+		go s.reapIdleLoop(s.cfg.SessionIdleTimeout)
+	}
 	return nil
+}
+
+func reapInterval(idle time.Duration) time.Duration {
+	step := idle / 4
+	if step > 30*time.Second {
+		step = 30 * time.Second
+	}
+	if step < 100*time.Millisecond {
+		step = 100 * time.Millisecond
+	}
+	return step
+}
+
+func (s *Server) reapIdleLoop(idle time.Duration) {
+	tick := time.NewTicker(reapInterval(idle))
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.stopReaper:
+			return
+		case now := <-tick.C:
+			for _, id := range s.cfg.Mgr.ReapIdle(idle, now) {
+				s.audit(audit.Event{
+					Kind:      audit.KindIdleClose,
+					SessionID: id,
+					Reason:    fmt.Sprintf("idle for %s", idle),
+				})
+				fmt.Fprintf(os.Stderr, "tyd closed idle session %s (idle %s)\n", id, idle)
+			}
+		}
+	}
 }
 
 func (s *Server) TLSFingerprint() string {
@@ -167,6 +411,7 @@ func (s *Server) accept(ln net.Listener) {
 }
 
 func (s *Server) Close() error {
+	s.reaperOnce.Do(func() { close(s.stopReaper) })
 	s.mu.Lock()
 	lns := s.listeners
 	s.listeners = nil
@@ -279,9 +524,27 @@ func (s *Server) handshake(st *connState) error {
 
 func (s *Server) require(st *connState, cap auth.Cap, sessionID string) error {
 	if !s.cfg.Trust.Allow(st.principal, cap, sessionID) {
+		e := s.connEvent(st, audit.KindDenied)
+		e.SessionID = sessionID
+		e.Capability = string(cap)
+		s.audit(e)
 		return auth.Denied(cap)
 	}
 	return nil
+}
+
+// gateAttach enforces pre-approval for a remote attach or watch. The first
+// request is recorded for the operator; the approval it grants is one-shot, so
+// every later remote look at the session is reviewed again.
+func (s *Server) gateAttach(st *connState, sessionID string) error {
+	if !s.gated(st) {
+		return nil
+	}
+	if s.consumeApproval(gateKey(sessionID, st.principal)) {
+		return nil
+	}
+	s.requestApproval(st, sessionID)
+	return fmt.Errorf("attach pending approval; ask the operator to run: tyd session approve %s", sessionID)
 }
 
 func (s *Server) Connections() []protocol.ConnInfo {
@@ -328,8 +591,8 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			sess *session.Session
 			err  error
 		)
-		preTLS := s.approvalMode() == controlpanel.ApprovalPre && st.info.Transport == transport.KindTLS
-		if preTLS {
+		gated := s.gated(st)
+		if gated {
 			sess, err = s.cfg.Mgr.CreatePending(opts)
 		} else {
 			sess, err = s.cfg.Mgr.Create(opts)
@@ -341,6 +604,16 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			_ = s.cfg.Mgr.Close(sess.ID)
 			return err
 		}
+		kind := audit.KindCreate
+		if gated {
+			kind = audit.KindCreatePending
+			s.mu.Lock()
+			s.createdBy[sess.ID] = auth.EncodePublic(st.principal.Pub)
+			s.mu.Unlock()
+		}
+		e := s.connEvent(st, kind)
+		e.SessionID = sess.ID
+		s.audit(e)
 		info := sess.Info()
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
 
@@ -354,10 +627,30 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
 			return err
 		}
-		sess, err := s.cfg.Mgr.Approve(f.SessionID)
+		sess, err := s.cfg.Mgr.Get(f.SessionID)
 		if err != nil {
 			return err
 		}
+		if sess.State() != session.StatePending {
+			if n := s.decidePending(f.SessionID, true); n == 0 {
+				return fmt.Errorf("session %s has nothing waiting for approval", f.SessionID)
+			}
+			e := s.connEvent(st, audit.KindApprove)
+			e.SessionID = f.SessionID
+			e.Reason = "attach"
+			s.audit(e)
+			info := sess.Info()
+			return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
+		}
+		sess, err = s.cfg.Mgr.Approve(f.SessionID)
+		if err != nil {
+			return err
+		}
+		s.grantRequesterAttach(f.SessionID)
+		e := s.connEvent(st, audit.KindApprove)
+		e.SessionID = f.SessionID
+		e.Reason = "create"
+		s.audit(e)
 		info := sess.Info()
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
 
@@ -371,9 +664,21 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
 			return err
 		}
+		if n := s.decidePending(f.SessionID, false); n > 0 {
+			e := s.connEvent(st, audit.KindReject)
+			e.SessionID = f.SessionID
+			e.Reason = "attach"
+			s.audit(e)
+			return st.send(protocol.Frame{Type: protocol.TypeOK})
+		}
 		if err := s.cfg.Mgr.Reject(f.SessionID); err != nil {
 			return err
 		}
+		s.forgetSession(f.SessionID)
+		e := s.connEvent(st, audit.KindReject)
+		e.SessionID = f.SessionID
+		e.Reason = "create"
+		s.audit(e)
 		return st.send(protocol.Frame{Type: protocol.TypeOK})
 
 	case protocol.TypeList:
@@ -398,6 +703,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.cfg.Mgr.Close(f.SessionID); err != nil {
 			return err
 		}
+		s.forgetSession(f.SessionID)
 		return st.send(protocol.Frame{Type: protocol.TypeClosed})
 
 	case protocol.TypeAttach:
@@ -414,6 +720,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
+		if err := s.gateAttach(st, f.SessionID); err != nil {
+			return err
+		}
 		att, snap, err := sess.Attach()
 		if err != nil {
 			return err
@@ -424,6 +733,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		st.att = att
 		st.sid = f.SessionID
 		st.state = "attached"
+		e := s.connEvent(st, audit.KindAttach)
+		e.SessionID = f.SessionID
+		s.audit(e)
 		info := sess.Info()
 		if err := st.send(protocol.Frame{Type: protocol.TypeAttached, Session: &info}); err != nil {
 			att.Detach()
@@ -458,6 +770,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
+		if err := s.gateAttach(st, f.SessionID); err != nil {
+			return err
+		}
 		w, snap, err := sess.Watch()
 		if err != nil {
 			return err
@@ -481,6 +796,10 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		st.watcher = w
 		st.sid = f.SessionID
 		st.state = "watching"
+		e2 := s.connEvent(st, audit.KindAttach)
+		e2.SessionID = f.SessionID
+		e2.Reason = "watch"
+		s.audit(e2)
 		go s.pumpWatchOutput(st, w)
 		return nil
 
@@ -516,6 +835,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if st.att != nil {
 			st.att.Detach()
 			st.att = nil
+			e := s.connEvent(st, audit.KindDetach)
+			e.SessionID = st.sid
+			s.audit(e)
 			st.sid = ""
 			st.state = "authenticated"
 			return st.send(protocol.Frame{Type: protocol.TypeDetached})
@@ -523,6 +845,10 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if st.watcher != nil {
 			st.watcher.Close()
 			st.watcher = nil
+			e := s.connEvent(st, audit.KindDetach)
+			e.SessionID = st.sid
+			e.Reason = "watch"
+			s.audit(e)
 			st.sid = ""
 			st.state = "authenticated"
 			return st.send(protocol.Frame{Type: protocol.TypeDetached})

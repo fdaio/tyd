@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/client"
 	"tyd/internal/protocol"
@@ -613,7 +614,7 @@ func TestCloseAlreadyClosedErrors(t *testing.T) {
 	}
 }
 
-func startApprovalServer(t *testing.T, mode string) (unixEP, tlsEP client.Endpoint, admin ed25519.PrivateKey, getAudits func() []string) {
+func startApprovalServer(t *testing.T, mode string) (unixEP, tlsEP client.Endpoint, admin ed25519.PrivateKey, getAudits func() []audit.Event) {
 	t.Helper()
 	key, trust, err := auth.NewAdminStore()
 	if err != nil {
@@ -630,17 +631,17 @@ func startApprovalServer(t *testing.T, mode string) (unixEP, tlsEP client.Endpoi
 	_ = tmp.Close()
 	sock := fmt.Sprintf("/tmp/tyd-appr-%d.sock", time.Now().UnixNano()%1_000_000)
 	var (
-		mu    sync.Mutex
-		lines []string
+		mu     sync.Mutex
+		events []audit.Event
 	)
 	srv := NewWithConfig(Config{
 		Socket: sock, Listen: addr, CertPath: cert, KeyPath: keyPath,
 		Mgr: session.NewManager(), Trust: trust, ApprovalMode: mode,
-		AuditLog: func(line string) {
+		Audit: audit.FuncSink(func(e audit.Event) {
 			mu.Lock()
-			lines = append(lines, line)
+			events = append(events, e)
 			mu.Unlock()
-		},
+		}),
 	})
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
@@ -654,11 +655,20 @@ func startApprovalServer(t *testing.T, mode string) (unixEP, tlsEP client.Endpoi
 	if err := client.WaitReady(tlsEP, 2*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	return unixEP, tlsEP, key, func() []string {
+	return unixEP, tlsEP, key, func() []audit.Event {
 		mu.Lock()
 		defer mu.Unlock()
-		return append([]string(nil), lines...)
+		return append([]audit.Event(nil), events...)
 	}
+}
+
+func hasAudit(events []audit.Event, kind audit.Kind, sessionID string) bool {
+	for _, e := range events {
+		if e.Kind == kind && e.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPreTLSCreatePendingThenUnixApprove(t *testing.T) {
@@ -754,14 +764,131 @@ func TestPostCreateCloseEmitsAudit(t *testing.T) {
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		for _, line := range getAudits() {
-			if strings.Contains(line, info.ID) && strings.Contains(line, "audit:") {
-				return
-			}
+		events := getAudits()
+		if hasAudit(events, audit.KindCreate, info.ID) && hasAudit(events, audit.KindClose, info.ID) {
+			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("audit missing for %s: %+v", info.ID, getAudits())
+}
+
+// full is the default mode and must still audit when a sink is configured.
+func TestFullModeStillAudits(t *testing.T) {
+	unixEP, tlsEP, key, getAudits := startApprovalServer(t, "full")
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAudit(getAudits(), audit.KindCreate, info.ID) {
+		t.Fatalf("no create event: %+v", getAudits())
+	}
+	_ = client.CloseSession(unixEP, key, info.ID)
+}
+
+// Under pre, a second remote attach needs a fresh decision: the approval that
+// came with the create is spent by the first attach.
+func TestPreReattachNeedsNewApproval(t *testing.T) {
+	unixEP, tlsEP, key, getAudits := startApprovalServer(t, "pre")
+	info, err := client.Create(tlsEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Approve(unixEP, key, info.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := first.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeAttached {
+		t.Fatalf("first attach: %+v", f)
+	}
+	if err := first.Send(protocol.Frame{Type: protocol.TypeDetach}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		f, err = first.Recv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Type == protocol.TypeDetached {
+			break
+		}
+	}
+	_ = first.Close()
+
+	second, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = second.Recv()
+	_ = second.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeError || !strings.Contains(f.Error, "pending approval") {
+		t.Fatalf("reattach want approval gate, got %+v", f)
+	}
+	if !hasAudit(getAudits(), audit.KindAttachPending, info.ID) {
+		t.Fatalf("no attach_pending event: %+v", getAudits())
+	}
+
+	if _, err := client.Approve(unixEP, key, info.ID); err != nil {
+		t.Fatalf("approve waiting attach: %v", err)
+	}
+	third, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.Close()
+	if err := third.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err = third.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeAttached {
+		t.Fatalf("attach after second approval: %+v", f)
+	}
+	_ = client.CloseSession(unixEP, key, info.ID)
+}
+
+// Watch shows terminal output, so pre gates it like attach.
+func TestPreGatesWatch(t *testing.T) {
+	unixEP, tlsEP, key, _ := startApprovalServer(t, "pre")
+	info, err := client.Create(unixEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.Dial(tlsEP, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Send(protocol.Frame{Type: protocol.TypeWatch, SessionID: info.ID}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := c.Recv()
+	_ = c.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Type != protocol.TypeError || !strings.Contains(f.Error, "pending approval") {
+		t.Fatalf("watch want approval gate, got %+v", f)
+	}
+	_ = client.CloseSession(unixEP, key, info.ID)
 }
 
 func TestApproveRejectedOverTLS(t *testing.T) {
@@ -775,5 +902,82 @@ func TestApproveRejectedOverTLS(t *testing.T) {
 	}
 	if err := client.Reject(unixEP, key, info.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPendingApprovalsExpire(t *testing.T) {
+	key, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithConfig(Config{
+		Mgr: session.NewManager(), Trust: trust,
+		ApprovalMode: "pre", ApprovalTTL: 20 * time.Millisecond,
+	})
+	st := &connState{
+		info:      transport.Info{Transport: transport.KindTLS, RemoteAddr: "10.0.0.2:4242"},
+		principal: trust.Add("laptop", key.Public().(ed25519.PublicKey), nil),
+	}
+	if err := srv.gateAttach(st, "sess1"); err == nil || !strings.Contains(err.Error(), "pending approval") {
+		t.Fatalf("first attach: %v", err)
+	}
+	waiting := srv.PendingApprovals()
+	if len(waiting) != 1 || waiting[0].SessionID != "sess1" || waiting[0].Principal != "laptop" {
+		t.Fatalf("pending=%+v", waiting)
+	}
+	if waiting[0].Transport != string(transport.KindTLS) || waiting[0].RemoteAddr != "10.0.0.2:4242" {
+		t.Fatalf("pending lost connection detail: %+v", waiting[0])
+	}
+
+	time.Sleep(40 * time.Millisecond)
+	if got := srv.PendingApprovals(); len(got) != 0 {
+		t.Fatalf("stale request survived TTL: %+v", got)
+	}
+	if n := srv.decidePending("sess1", true); n != 0 {
+		t.Fatalf("expired request approved: n=%d", n)
+	}
+	if err := srv.gateAttach(st, "sess1"); err == nil {
+		t.Fatal("expired approval must not let an attach through")
+	}
+}
+
+// A unix (local) connection is the operator and is never gated.
+func TestGateSkipsUnix(t *testing.T) {
+	_, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithConfig(Config{Mgr: session.NewManager(), Trust: trust, ApprovalMode: "pre"})
+	st := &connState{info: transport.Info{Transport: transport.KindUnix}}
+	if err := srv.gateAttach(st, "sess1"); err != nil {
+		t.Fatalf("unix attach gated: %v", err)
+	}
+	if got := srv.PendingApprovals(); len(got) != 0 {
+		t.Fatalf("unix attach recorded: %+v", got)
+	}
+}
+
+// QUIC is the preferred data-plane transport, so it must be gated like TLS.
+func TestGateCoversQUIC(t *testing.T) {
+	key, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithConfig(Config{Mgr: session.NewManager(), Trust: trust, ApprovalMode: "pre"})
+	st := &connState{
+		info:      transport.Info{Transport: transport.KindQUIC},
+		principal: trust.Add("peer", key.Public().(ed25519.PublicKey), nil),
+	}
+	if err := srv.gateAttach(st, "sess1"); err == nil {
+		t.Fatal("quic attach must be gated under pre")
+	}
+	if n := srv.decidePending("sess1", true); n != 1 {
+		t.Fatalf("approved n=%d", n)
+	}
+	if err := srv.gateAttach(st, "sess1"); err != nil {
+		t.Fatalf("approved quic attach: %v", err)
+	}
+	if err := srv.gateAttach(st, "sess1"); err == nil {
+		t.Fatal("approval must be one-shot")
 	}
 }

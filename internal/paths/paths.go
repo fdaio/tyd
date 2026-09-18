@@ -41,6 +41,11 @@ func DefaultSessions() string {
 	return filepath.Join(DefaultDir(), "sessions.json")
 }
 
+// DefaultAudit is the suggested audit log path for --audit-log.
+func DefaultAudit() string {
+	return filepath.Join(DefaultDir(), "audit.log")
+}
+
 // DefaultLive is where live-agent session sidecars are stored.
 func DefaultLive() string {
 	return filepath.Join(DefaultDir(), "live")

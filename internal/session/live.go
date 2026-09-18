@@ -56,6 +56,7 @@ func (m *Manager) startLiveSession(id string, opts CreateOpts) (*Session, error)
 		PeerID:    opts.PeerID,
 		CreatedAt: created,
 		state:     StateDetached,
+		idleSince: created,
 		rows:      opts.Rows,
 		cols:      opts.Cols,
 		cmdDone:   make(chan struct{}),
@@ -143,6 +144,7 @@ func (s *Session) approveLive(m *Manager) error {
 	s.rows = opts.Rows
 	s.cols = opts.Cols
 	s.state = StateDetached
+	s.idleSince = time.Now().UTC()
 	s.cmdDone = make(chan struct{})
 	go s.liveWaitLoop()
 	return nil
@@ -184,6 +186,7 @@ func (m *Manager) RestoreLive() ([]RestoredLive, error) {
 			PeerID:    meta.PeerID,
 			CreatedAt: created,
 			state:     StateDetached,
+			idleSince: time.Now().UTC(),
 			rows:      meta.Rows,
 			cols:      meta.Cols,
 			cmdDone:   make(chan struct{}),
@@ -255,6 +258,7 @@ func (s *Session) release() {
 		s.attach = nil
 		if s.state == StateAttached {
 			s.state = StateDetached
+			s.idleSince = time.Now().UTC()
 		}
 	}
 	s.closeWatchersLocked()
@@ -360,6 +364,7 @@ func (s *Session) attachLive() (*Attachment, []byte, error) {
 	}
 	s.attach = a
 	s.state = StateAttached
+	s.idleSince = time.Time{}
 	return a, snap, nil
 }
 

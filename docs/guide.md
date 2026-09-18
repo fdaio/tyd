@@ -170,14 +170,27 @@ Stored in `~/.tyd/aliases.json`.
 
 ### Approval modes
 
-Declared at `tyd register --approval full|pre|post` and stored in `peers.json`.
-`tyd up` enforces the mode:
+Stored in `peers.json` and enforced by `tyd up`. Set at register time with
+`tyd register --approval full|pre|post`, or change it later without
+re-registering:
+
+```bash
+./tyd approval          # print the current mode
+./tyd approval pre      # switch; keeps the daemon id and all pairings
+```
+
+`tyd approval` updates the Control Panel and `peers.json`; restart `tyd up` to
+apply. If the CP is unreachable the mode is still saved locally, because the
+daemon is what enforces it.
 
 | Mode | Behavior |
 |------|----------|
-| `full` (default) | Remote create starts a shell immediately (same as before) |
-| `post` | Same create as full; when a session closes, daemon logs an audit line to stderr (id, principal, timestamps; no TTY) |
-| `pre` | TLS/data-plane creates return `PENDING` without a shell; local operator must approve |
+| `full` (default) | Remote create starts a shell immediately |
+| `post` | Same create as full; control events are audited (see below) |
+| `pre` | Every remote create, attach, and watch waits for a local decision |
+
+Under `pre`, "remote" means any non-unix transport — TLS and QUIC alike. Local
+unix-socket work bypasses the gate, because that is the operator.
 
 ```bash
 # On the machine running the daemon (unix socket):
@@ -186,8 +199,44 @@ Declared at `tyd register --approval full|pre|post` and stored in `peers.json`.
 ./tyd session reject "$id"           # removes pending session
 ```
 
-`approve` / `reject` are accepted only over the local unix socket (not over TLS).
-Unix-socket creates always bypass the pre gate (local admin is trusted).
+A remote attach or watch under `pre` is refused with `attach pending approval`
+and recorded as a waiting request; the same `tyd session approve <id>` releases
+it. **Approvals are one-shot**: approving a create also covers the attach that
+follows it, but every later reattach is reviewed again, so access never becomes
+permanent. Requests and approvals expire after 10 minutes.
+
+Approve / reject are accepted only over the local unix socket, never over TLS.
+
+### Audit log
+
+Auditing is independent of the approval mode — any mode can write it:
+
+```bash
+./tyd up --audit-log ~/.tyd/audit.log
+```
+
+One JSON object per line, file created `0600`, appended across restarts:
+
+```json
+{"time":"2026-09-18T03:11:52Z","event":"attach_pending","session_id":"a1b2","principal":"laptop","transport":"quic","approval_mode":"pre"}
+```
+
+Events: `create`, `create_pending`, `approve`, `reject`, `attach`,
+`attach_pending`, `detach`, `close`, `idle_close`, `denied`. Records carry
+metadata only — terminal input and output never enter the log. Without
+`--audit-log`, `post` mode still writes the same records to stderr, and `full` /
+`pre` write nothing.
+
+### Idle sessions
+
+Sessions live until closed. To expire unattended ones:
+
+```bash
+./tyd up --session-idle-timeout 8h   # default: off
+```
+
+A session counts as idle from the moment the last client detaches; attaching
+resets the clock. `PENDING` sessions are never reaped — they wait for you.
 
 Detach / watch-exit keys:
 
@@ -277,6 +326,7 @@ tyd [--socket PATH] [--listen ADDR|off] [--addr HOST:PORT]
 | `status` | CP registration, peers, aliases, connections |
 | `register` | Register with CP, print `tyd accept …`, wait for peer (or `--no-wait`) |
 | `invite` | Mint invite, print accept line, wait for peer (10m TTL; or `--no-wait`) |
+| `approval` | Show or set approval mode without re-registering |
 | `invite revoke` | Invalidate an unused invite |
 | `accept` | Accept an invite; store peer public key |
 | `revoke` | Revoke a paired peer |
