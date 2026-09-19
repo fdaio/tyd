@@ -66,7 +66,9 @@ QUIC direct is the current data-plane after pairing; WireGuard and relay are not
 
 - One binary: `tyd`
 - `tyd up` holds sessions in memory on the **target** (daemon) host
-- Other subcommands are clients; a client host need not run a daemon to `session list`
+- Other subcommands are clients; a client host need not run a resident daemon to
+  `session list` or to dial a peer. Local `session create` / `attach` / `watch` /
+  `close` start `tyd up` on demand when the unix socket is down.
 - Client disconnect or `Ctrl-\` detach does **not** kill the shell
 - Daemon restart **does** drop in-memory sessions on that host (client catalog may still list them)
 
