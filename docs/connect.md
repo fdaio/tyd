@@ -21,7 +21,7 @@ curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
-**Do not use sudo.** tyd holds your own shells, so everything installs for the invoking user: the binary goes to `~/.local/bin` (override with `TYD_BINDIR`) and the daemon runs under **systemd --user** (Linux), a **LaunchAgent** (macOS), or **nohup** if neither is available. There is no system-wide service. Clients do not run `tyd up`.
+**Do not use sudo.** tyd holds your own shells, so everything installs for the invoking user: the binary goes to `~/.local/bin` (override with `TYD_BINDIR`) and the daemon runs under **systemd --user** (Linux), a **LaunchAgent** (macOS), or **nohup** if neither is available. There is no system-wide service. Clients do not run a resident `tyd up`; local session commands start the daemon on demand when needed.
 
 Custom Control Panel: `--platform URL` or `TYD_PLATFORM`.
 

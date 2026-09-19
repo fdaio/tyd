@@ -36,9 +36,7 @@ curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 
 ```bash
 make build
-./tyd up                             # unix socket; TLS listen off by default
-
-id=$(./tyd session create --detach)   # scripts: print id only
+id=$(./tyd session create --detach)   # starts local daemon on demand; scripts: print id only
 # interactive (default): ./tyd session create  → create then attach
 ./tyd alias work                     # name the recent session
 ./tyd session list                   # local catalog (~/.tyd/sessions.json); no CP/daemon
@@ -48,9 +46,11 @@ id=$(./tyd session create --detach)   # scripts: print id only
 ./tyd session close work             # marks CLOSED in the local catalog
 ```
 
-Identity is created automatically on first `up` / `register` / `accept` (optional `tyd keygen`).
+Identity is created automatically on first `up` / `register` / `accept` / on-demand local session (optional `tyd keygen`).
 
-A **client** machine does not need `tyd up` to list sessions. The peer (or local) daemon is required for `create` / `attach` / `watch` / `close`.
+A **client** machine does not need `tyd up` to list sessions or to talk to a peer.
+Local `session create` / `attach` / `watch` / `close` start the daemon on demand if
+the unix socket is down — you do not have to keep a resident `tyd up` by hand.
 
 TLS (opt-in):
 

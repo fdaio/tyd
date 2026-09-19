@@ -139,7 +139,7 @@ else zero outbound → local unix socket; many outbound → error asking for `--
 Session operations live under the `session` subcommand (`tyd session help` lists them):
 
 ```bash
-id=$(./tyd session create --detach)
+id=$(./tyd session create --detach)  # starts local daemon on demand if unix socket is down
 ./tyd session list                   # local catalog; alive first, newest first; no PID/SIZE
 ./tyd alias jammy                    # name the recent session (or: tyd alias "$id" jammy)
 ./tyd session attach jammy           # silent by default; Ctrl-\ detaches
@@ -151,6 +151,7 @@ id=$(./tyd session create --detach)
 ```
 
 Default `session create` **attaches** after create (use `--detach` to print the id only).
+Local unix targets auto-start `tyd up` when the socket is not listening; peer/`--addr` targets never start a local daemon.
 Connect progress is off by default. With `--verbose`, create/attach/watch print SSH-style `debug1:` lines on stderr (resolve → dial → attach).
 Each dial candidate is capped (~12s for connect + TLS + auth); Ctrl-C cancels create/attach/watch before the session is live.
 If attach uses a cached `sessions.json` address that fails, tyd refreshes the peer endpoint from CP and retries once.
