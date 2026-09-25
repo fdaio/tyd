@@ -78,8 +78,7 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 Control Panel only (no TLS in the container — put Cloudflare or another edge in front):
 
 ```bash
-# public origin embedded in register URLs (clients still default to this host)
-export TYD_CP_BASE_URL=https://app.getfda.dev
+cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz   # ok
 curl -fsSL http://127.0.0.1:8080/install.sh | head -1
@@ -88,7 +87,9 @@ curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
-Files: `Dockerfile.controlpanel`, `docker-compose.yml`.  
+Files: `Dockerfile.controlpanel`, `docker-compose.yml`, `.env.example`.  
+Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded
+`go build` to lower peak RAM. On 1C/1G, add ~1G swap if the first build is OOM-killed.  
 **In-memory only** — restarting the container drops registrations, invites, and peer pairs.
 
 CP stores pairing metadata (ids + public keys) only — never session/TTY data.

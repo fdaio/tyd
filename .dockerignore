@@ -4,9 +4,12 @@
 .github/
 dist/
 tyd
+controlpanel
 **/*_test.go
 docs/
 *.md
+.env
+.env.local
 .dockerignore
 Dockerfile*
 docker-compose*.yml
