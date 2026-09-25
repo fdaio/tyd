@@ -159,11 +159,11 @@ These guide Step 2+; not implemented in Step 1.
 
 - Ephemeral CP endpoint signaling (`PUT`/`GET /v1/daemons/{id}/endpoint`); default TTL ~90s; overwrite; expired ⇒ 404
 - `cpclient.PublishEndpoint` / `GetEndpoint`
-- Data-plane TLS on `tyd up` via `--data-listen auto|off|HOST:PORT` and `--advertise HOST`
+- Data-plane QUIC on `tyd up` via `--data-listen auto|off|HOST:PORT` and `--advertise HOST`
 - Peer pubs from CP sync → in-memory trust (`EnsurePeer` with `list`+`create`); dynamic Add is enough for Step 2
-- Client dials peer by cert fingerprint (`DialTLSFingerprint`); session I/O never through CP
+- Client dials peer by cert fingerprint (`DialQUICFingerprint`); session I/O never through CP
 - `--peer <id|nickname>`; recent peer file `~/.tyd/recent.json`; single-outbound default; zero outbound → local unix
-- Integration test: CP + pair + publish + remote session **create** over TLS (list is client-local)
+- Integration test: CP + pair + publish + remote session **create** over QUIC (list is client-local)
 
 ## Explicitly out of Step 1–5
 

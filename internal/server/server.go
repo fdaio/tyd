@@ -27,7 +27,7 @@ const DefaultApprovalTTL = 10 * time.Minute
 type Config struct {
 	Socket       string
 	Listen       string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
-	DataListen   string // empty/off = no data-plane TLS; e.g. 127.0.0.1:0
+	DataListen   string // empty/off = no data-plane QUIC; e.g. 127.0.0.1:0
 	CertPath     string
 	KeyPath      string
 	Mgr          *session.Manager
@@ -320,7 +320,7 @@ func (s *Server) Start() error {
 		go s.accept(ln)
 	}
 	if s.cfg.DataListen != "" && s.cfg.DataListen != "off" {
-		ln, fp, err := transport.ListenTLS(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
+		ln, fp, err := transport.ListenQUIC(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
 		if err != nil {
 			_ = s.Close()
 			return err
