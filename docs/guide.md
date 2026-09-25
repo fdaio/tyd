@@ -105,11 +105,10 @@ CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon 
 
 ### Data plane (Step 2 / Phase 1 direct candidates)
 
-After register, `tyd up --data-listen auto` (default) starts a **TLS** data-plane listener
+After register, `tyd up --data-listen auto` (default) starts a **QUIC** data-plane listener
 on all interfaces (`0.0.0.0:0`), publishes `addr` + `candidates` + cert fingerprint to CP
-(ephemeral signaling only). Refresh every ~30s. Client dials try candidates in order;
-if all fail, the error lists each attempt (no relay fallback yet). QUIC transport helpers
-are in-tree for the next flip to default-QUIC.
+with `transport=quic` (ephemeral signaling only). Refresh every ~30s. Client dials try
+candidates in order; if all fail, the error lists each attempt (no relay fallback yet).
 
 ```bash
 ./tyd up --platform http://127.0.0.1:8080   # auto data-plane when registered
@@ -119,7 +118,7 @@ are in-tree for the next flip to default-QUIC.
 
 See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay (Phase 3).
 
-Peer **create / attach / watch / close** (direct TLS/QUIC; data plane not through CP):
+Peer **create / attach / watch / close** (direct QUIC; data plane not through CP):
 
 ```bash
 ./tyd --peer laptop session create   # CP GetEndpoint (or catalog addr later) + direct dial; attaches by default

@@ -39,13 +39,13 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - `tyd register` / `tyd accept` with `--platform` (default `https://app.getfda.dev`)
 - Persist paired peer keys locally (`peers.json`)
 
-### Step 2 — Data-plane self-network after pairing (done; Phase 1 QUIC in progress)
+### Step 2 — Data-plane self-network after pairing (done)
 
 - Peer AuthN with exchanged keys (inbound peers injected into server trust on sync)
 - Ephemeral CP signaling: `PUT/GET /v1/daemons/{id}/endpoint` (addr + cert fingerprint + transport + candidates; TTL ~90s; no TTY)
 - Data frames never through CP — client dials peer directly
 - `tyd up --data-listen auto` starts data-plane when registered; publishes/refreshes endpoint
-- **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md))
+- **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md)); default data-plane is QUIC (`transport=quic`)
 - Session targeting: `--peer <id|nickname>` for dialing commands; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 - Client catalog `~/.tyd/sessions.json`: `session list` is local-only; create stores dial addr for later attach
 

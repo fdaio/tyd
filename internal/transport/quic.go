@@ -14,7 +14,8 @@ import (
 
 const tydQUICALPN = "tyd"
 
-// ListenQUIC listens for QUIC. Accept blocks until a client opens a stream.
+// ListenQUIC listens for QUIC. Accept returns a server-opened bidirectional
+// stream so the peer can speak first (challenge/auth) without a client write.
 func ListenQUIC(addr, certPath, keyPath string) (net.Listener, string, error) {
 	cert, err := EnsureServerCert(certPath, keyPath)
 	if err != nil {
@@ -50,9 +51,12 @@ func (l *quicListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	stream, err := sess.AcceptStream(ctx)
+	// Server opens the stream so tyd can send the auth challenge first.
+	// (Client-opened streams stay invisible to AcceptStream until the client
+	// writes, which deadlocks a server-speaks-first protocol.)
+	stream, err := sess.OpenStreamSync(ctx)
 	if err != nil {
-		_ = sess.CloseWithError(0, "stream accept failed")
+		_ = sess.CloseWithError(0, "open stream failed")
 		return nil, err
 	}
 	return Wrap(&quicStreamConn{stream: stream, sess: sess}, Info{
@@ -107,10 +111,10 @@ func DialQUICFingerprintContext(ctx context.Context, addr, certFP string) (Conn,
 	if err != nil {
 		return nil, fmt.Errorf("dial quic %s: %w", addr, err)
 	}
-	stream, err := sess.OpenStreamSync(dctx)
+	stream, err := sess.AcceptStream(dctx)
 	if err != nil {
-		_ = sess.CloseWithError(0, "open stream failed")
-		return nil, fmt.Errorf("quic open stream %s: %w", addr, err)
+		_ = sess.CloseWithError(0, "stream accept failed")
+		return nil, fmt.Errorf("quic accept stream %s: %w", addr, err)
 	}
 	return Wrap(&quicStreamConn{stream: stream, sess: sess}, Info{
 		Transport: KindQUIC,

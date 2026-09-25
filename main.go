@@ -1137,7 +1137,7 @@ func runUp(opts options) error {
 			fmt.Fprintln(os.Stderr, "tyd data-plane: no dial candidates")
 		} else {
 			pubAddr := cands[0]
-			fmt.Fprintf(os.Stderr, "tyd data-plane tls %s (%d candidates published to CP)\n", pubAddr, len(cands))
+			fmt.Fprintf(os.Stderr, "tyd data-plane quic %s (%d candidates published to CP)\n", pubAddr, len(cands))
 			if err := syncPeersAndTrust(opts, state, trust); err != nil {
 				fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 			}
@@ -1335,7 +1335,7 @@ func publishDataEndpoint(opts options, state *peerstate.State, addr, certFP stri
 		PublicKey:  pub,
 		Addr:       addr,
 		CertFP:     certFP,
-		Transport:  "tls",
+		Transport:  "quic",
 		Candidates: candidates,
 		TTLSeconds: ttlSec,
 	})
@@ -2262,7 +2262,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"--socket PATH", fmt.Sprintf("Unix socket (default %s)", paths.DefaultSocket())},
 		{"--listen ADDR|off", fmt.Sprintf("Manual TLS listen for up (default %s)", paths.DefaultListen())},
-		{"--data-listen MODE", "Data-plane TLS: auto|off|HOST:PORT (default auto)"},
+		{"--data-listen MODE", "Data-plane QUIC: auto|off|HOST:PORT (default auto)"},
 		{"--advertise HOST", "Host to prefer in CP candidates (default: auto interface IPs)"},
 		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
 		{"--peer ID|NICK", "Target paired peer for session commands"},

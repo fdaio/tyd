@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"path/filepath"
 	"testing"
@@ -29,24 +30,26 @@ func TestQUICRoundTripPin(t *testing.T) {
 			return
 		}
 		defer c.Close()
+		// Server must write to advertise the stream (see ListenQUIC comment).
+		if _, err := c.Write([]byte("pong")); err != nil {
+			errCh <- err
+			return
+		}
 		buf := make([]byte, 4)
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
 		if _, err := io.ReadFull(c, buf); err != nil {
 			errCh <- err
 			return
 		}
 		if string(buf) != "ping" {
-			errCh <- io.ErrUnexpectedEOF
+			errCh <- fmt.Errorf("got %q", buf)
 			return
 		}
-		_, err = c.Write([]byte("pong"))
-		errCh <- err
+		errCh <- nil
 	}()
 
 	c, err := DialQUICFingerprint(ln.Addr().String(), fp)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 4)
@@ -57,7 +60,66 @@ func TestQUICRoundTripPin(t *testing.T) {
 	if string(buf) != "pong" {
 		t.Fatalf("got %q", buf)
 	}
+	if _, err := c.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
 	_ = c.Close()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestQUICServerSpeaksFirst locks the stream-open direction: tyd auth has the
+// server write the challenge before the client sends anything.
+func TestQUICServerSpeaksFirst(t *testing.T) {
+	dir := t.TempDir()
+	ln, fp, err := ListenQUIC("127.0.0.1:0", filepath.Join(dir, "c.crt"), filepath.Join(dir, "c.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer c.Close()
+		if _, err := c.Write([]byte("chal")); err != nil {
+			errCh <- err
+			return
+		}
+		buf := make([]byte, 4)
+		_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, err := io.ReadFull(c, buf); err != nil {
+			errCh <- err
+			return
+		}
+		if string(buf) != "auth" {
+			errCh <- fmt.Errorf("got %q", buf)
+			return
+		}
+		errCh <- nil
+	}()
+
+	c, err := DialQUICFingerprint(ln.Addr().String(), fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(c, buf); err != nil {
+		t.Fatalf("read challenge: %v", err)
+	}
+	if string(buf) != "chal" {
+		t.Fatalf("got %q", buf)
+	}
+	if _, err := c.Write([]byte("auth")); err != nil {
+		t.Fatal(err)
+	}
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}

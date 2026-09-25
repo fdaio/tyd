@@ -17,7 +17,7 @@ import (
 	"tyd/internal/transport"
 )
 
-// TestDataPlanePeerSession: CP signaling + peer AuthN + direct TLS session create
+// TestDataPlanePeerSession: CP signaling + peer AuthN + direct QUIC session create
 // (client list is local-catalog and is not exercised here).
 func TestDataPlanePeerSession(t *testing.T) {
 	svc := controlpanel.New()
@@ -142,7 +142,7 @@ func TestDataPlanePeerSession(t *testing.T) {
 		PublicKey:  sPub,
 		Addr:       dp,
 		CertFP:     fp,
-		Transport:  "tls",
+		Transport:  "quic",
 		Candidates: cands,
 		TTLSeconds: int(controlpanel.DefaultEndpointTTL / time.Second),
 	}); err != nil {
@@ -153,15 +153,15 @@ func TestDataPlanePeerSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Addr != dp || got.CertFP != fp || got.Transport != "tls" {
-		t.Fatalf("endpoint %+v want addr=%s fp=%s tls", got, dp, fp)
+	if got.Addr != dp || got.CertFP != fp || got.Transport != "quic" {
+		t.Fatalf("endpoint %+v want addr=%s fp=%s quic", got, dp, fp)
 	}
 	if len(got.Candidates) == 0 {
 		t.Fatal("expected candidates")
 	}
 
 	ep := client.Endpoint{
-		Kind:       transport.KindTLS,
+		Kind:       transport.KindQUIC,
 		Address:    got.Addr,
 		CertFP:     got.CertFP,
 		Candidates: got.Candidates,

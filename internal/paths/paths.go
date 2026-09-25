@@ -56,7 +56,7 @@ func DefaultListen() string {
 	return "off"
 }
 
-// DefaultDataListen is auto: enable loopback data-plane when registered with CP.
+// DefaultDataListen is auto: enable QUIC data-plane when registered with CP.
 func DefaultDataListen() string {
 	return "auto"
 }
