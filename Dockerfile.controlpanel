@@ -1,24 +1,23 @@
-# syntax=docker/dockerfile:1
 # Control Panel only — pairing metadata HTTP API (no TTY / session data).
 # Restart drops in-memory registration, invites, and peer pairs.
 #
 # Tuned for small VPS (1C/1G): Alpine build + single-threaded compile to cut
 # peak RAM. Runtime stays distroless/static. Prefer 1G swap if `docker build`
 # is OOM-killed on first compile.
+#
+# No BuildKit-only features (RUN --mount) so plain `docker compose build` works
+# on older Docker daemons without DOCKER_BUILDKIT=1.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-	go mod download
+RUN go mod download
 COPY . .
 # One compile job + one Go thread: slower, much less peak memory on 1C/1G.
 ENV GOMAXPROCS=1
-RUN --mount=type=cache,target=/go/pkg/mod \
-	--mount=type=cache,target=/root/.cache/go-build \
-	CGO_ENABLED=0 GOOS=linux go build -p 1 -trimpath -ldflags "-s -w" \
-		-o /out/controlpanel ./cmd/controlpanel
+RUN CGO_ENABLED=0 GOOS=linux go build -p 1 -trimpath -ldflags "-s -w" \
+	-o /out/controlpanel ./cmd/controlpanel
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/controlpanel /controlpanel
