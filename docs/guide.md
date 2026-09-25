@@ -88,7 +88,7 @@ mint a new registration.
 ### Docker Compose
 
 ```bash
-export TYD_CP_BASE_URL=https://app.getfda.dev   # public origin behind Cloudflare
+cp .env.example .env   # optional; default base URL is https://app.getfda.dev
 docker compose up -d --build
 curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
 ./tyd register                                  # platform defaults to https://app.getfda.dev
@@ -97,6 +97,8 @@ curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
 `--platform` is only needed for a custom / local Control Panel (e.g. `--platform http://127.0.0.1:8080`).
 
 Container listens on `0.0.0.0:8080` (no TLS inside — terminate at Cloudflare).  
+Compose caps the running CP at about half a CPU and 128MB; the image build uses Alpine
+and a single-threaded compile so a 1C/1G host can build on-box (add ~1G swap if OOM).  
 Default in-repo CP state is **in-memory**; restart loses pairing metadata until daemons `up` and
 restore from local `peers.json`. See `Dockerfile.controlpanel` and `docker-compose.yml`.
 

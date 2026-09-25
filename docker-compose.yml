@@ -1,14 +1,20 @@
 # tyd Control Panel (pairing only). TLS is expected at the edge (e.g. Cloudflare).
 #
-# Local smoke (override client platform):
+# Config (optional .env next to this file — Compose loads it automatically):
+#   TYD_CP_BASE_URL=https://app.getfda.dev
+#   TYD_CP_PORT=8080
+#
+# Local smoke:
 #   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
 #   curl -fsSL http://127.0.0.1:8080/install.sh | sh -s -- --agent --platform http://127.0.0.1:8080
 #   tyd --platform http://127.0.0.1:8080 register
 #
-# Production: set TYD_CP_BASE_URL to the public HTTPS origin (e.g. https://app.getfda.dev).
+# Production: set TYD_CP_BASE_URL to the public HTTPS origin (default below).
 # Clients default to that same host — use: tyd register
-# (only pass --platform when pointing at a custom Control Panel).
+#
+# 1C/1G: runtime caps below keep the process small. First `docker compose build`
+# still needs headroom (or ~1G swap) because the Go toolchain is heavy.
 #
 # WARNING: pairing state is in-memory — container restart loses registrations,
 # invites, and peer pairs.
@@ -22,6 +28,10 @@ services:
     ports:
       - "${TYD_CP_PORT:-8080}:8080"
     environment:
-      # Public origin for register URLs (Cloudflare / reverse proxy front door).
       TYD_CP_BASE_URL: ${TYD_CP_BASE_URL:-https://app.getfda.dev}
+      GOMAXPROCS: "1"
+    # Soft caps for a 1C/1G box (Compose / non-Swarm).
+    cpus: 0.50
+    mem_limit: 128m
+    memswap_limit: 128m
     restart: unless-stopped

@@ -3,3 +3,5 @@
 /dist
 .wf/
 .DS_Store
+.env
+.env.local
