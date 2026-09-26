@@ -1649,8 +1649,19 @@ func runInvite(opts options) error {
 		platform = doc.Platform
 	}
 	cli := cpclient.New(platform)
+	// Control Panel state is in-memory; after a CP restart the local
+	// peers.json registration is still "registered" but the daemon is gone.
+	// Restore (same as tyd up) before minting an invite.
+	if state, err := peerstate.Load(opts.peers); err == nil {
+		if err := ensureCPRegistration(opts, state); err != nil {
+			return fmt.Errorf("invite: restore CP registration: %w (or: tyd register --force)", err)
+		}
+	}
 	inv, err := cli.CreateInvite(doc.Registration.ID, pub)
 	if err != nil {
+		if cpNotFound(err) {
+			return fmt.Errorf("invite: daemon not on Control Panel (%w); try: tyd register --force", err)
+		}
 		return err
 	}
 	url := ""
