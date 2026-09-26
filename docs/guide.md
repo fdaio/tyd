@@ -116,7 +116,7 @@ After register, `tyd up --data-listen auto` (default) starts a **QUIC** data-pla
 on all interfaces (`0.0.0.0:0`), publishes `addr` + `candidates` + cert fingerprint to CP
 with `transport=quic` (ephemeral signaling only). Refresh every ~30s. Client dials try
 candidates in order; if all fail, tyd falls back to `--relay` (default
-`https://relay.getfda.dev`) like Tailcat — direct first, relay last.
+`https://app.getfda.dev/relay`) like Tailcat — direct first, relay last.
 
 ```bash
 ./tyd up --platform http://127.0.0.1:8080   # auto data-plane when registered
@@ -130,7 +130,8 @@ Relay deploy (separate from CP; TLS at the edge):
 
 ```bash
 docker compose up -d relay
-# public: relay.getfda.dev → container :9090
+# production default: https://app.getfda.dev/relay (CP WebSocket)
+# optional dedicated: relay.getfda.dev → container :9090
 ```
 
 See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay details.

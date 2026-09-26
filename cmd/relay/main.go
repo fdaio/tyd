@@ -21,9 +21,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "tyd relay listening on %s\n", lnAddr.String())
+	fmt.Fprintf(os.Stderr, "tyd relay listening on http://%s (WebSocket)\n", lnAddr.String())
 	fmt.Fprintln(os.Stderr, "blind splice only; put TLS at the edge (e.g. Cloudflare) for production")
-	fmt.Fprintln(os.Stderr, "servers: tyd up --relay https://relay.getfda.dev")
+	fmt.Fprintln(os.Stderr, "default production path: https://app.getfda.dev/relay")
+	fmt.Fprintln(os.Stderr, "or standalone: https://relay.getfda.dev → this service :9090")
+	fmt.Fprintln(os.Stderr, "servers: tyd up  (offers on --relay)")
 	fmt.Fprintln(os.Stderr, "clients fall back to the same --relay after direct dial fails")
 
 	ch := make(chan os.Signal, 1)

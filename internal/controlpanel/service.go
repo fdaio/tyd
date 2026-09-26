@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tyd/internal/relay"
 	"tyd/scripts"
 )
 
@@ -52,6 +53,7 @@ type Service struct {
 	now        func() time.Time
 	baseURL    string // optional; used when building public URLs
 	releaseDir string // optional; directory served at /releases/ (install binaries)
+	relayHub   *relay.Hub
 }
 
 // Endpoint is ephemeral dial signaling for the data plane.
@@ -166,6 +168,7 @@ func New() *Service {
 		invites:   make(map[string]*Invite),
 		endpoints: make(map[string]*Endpoint),
 		now:       time.Now,
+		relayHub:  relay.NewHub(),
 	}
 }
 
@@ -715,8 +718,12 @@ func (s *Service) Handler() http.Handler {
 	relDir := s.releaseDir
 	s.mu.Unlock()
 	if relDir != "" {
-		mux.Handle("/releases/", http.StripPrefix("/releases/", http.FileServer(http.Dir(relDir))))
+		mux.Handle("/releases/", noCacheFileServer(http.Dir(relDir)))
 	}
+	// Dual-NAT rendezvous (WebSocket). Same process as pairing, but TTY bytes
+	// never touch the pairing API — blind splice only.
+	mux.Handle("/relay", s.relayHub.Handler())
+	mux.Handle("/relay/", http.StripPrefix("/relay", s.relayHub.Handler()))
 	mux.HandleFunc("/v1/register", s.handleRegister)
 	mux.HandleFunc("/v1/restore", s.handleRestore)
 	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)
@@ -959,4 +966,13 @@ func ListenAndServe(addr string, s *Service) (net.Addr, *http.Server, error) {
 	srv := &http.Server{Handler: s.Handler()}
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr(), srv, nil
+}
+
+// noCacheFileServer serves install archives without long-lived CDN caching.
+func noCacheFileServer(root http.FileSystem) http.Handler {
+	files := http.FileServer(root)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, max-age=0, must-revalidate")
+		http.StripPrefix("/releases/", files).ServeHTTP(w, r)
+	})
 }

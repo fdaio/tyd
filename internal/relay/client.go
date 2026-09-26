@@ -2,33 +2,33 @@ package relay
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func dialRelay(ctx context.Context, relayURL string) (net.Conn, error) {
-	addr, useTLS, err := DialTarget(relayURL)
+	wsURL, err := WebSocketURL(relayURL)
 	if err != nil {
 		return nil, err
 	}
-	d := net.Dialer{Timeout: 15 * time.Second}
-	var conn net.Conn
-	if useTLS {
-		host, _, _ := net.SplitHostPort(addr)
-		tlsDialer := &tls.Dialer{
-			NetDialer: &d,
-			Config:    &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
-		}
-		conn, err = tlsDialer.DialContext(ctx, "tcp", addr)
-	} else {
-		conn, err = d.DialContext(ctx, "tcp", addr)
+	dialCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
 	}
+	ws, _, err := websocket.Dial(dialCtx, wsURL, &websocket.DialOptions{
+		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("relay dial %s: %w", addr, err)
+		return nil, fmt.Errorf("relay websocket %s: %w", wsURL, err)
 	}
-	return conn, nil
+	// NetConn must outlive the dial timeout context.
+	return websocket.NetConn(context.Background(), ws, websocket.MessageBinary), nil
 }
 
 // Offer keeps a control connection registered for daemonID and calls onTicket

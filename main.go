@@ -945,6 +945,7 @@ func runStatus(opts options) error {
 	platform, _ := platformFor(opts)
 	fmt.Println("Control Panel")
 	fmt.Printf("  platform:   %s\n", platform)
+	fmt.Printf("  relay:      %s\n", relayURL(opts))
 	if doc.HasRegistration() {
 		reg := doc.Registration
 		url := reg.URL
@@ -1537,6 +1538,7 @@ func runRegister(opts options) error {
 		URL:       reg.URL,
 		Approval:  reg.ApprovalMode,
 		Platform:  cli.BaseURL,
+		Relay:     relayURL(opts),
 		Token:     inv.Token,
 		TTL:       controlpanel.InviteTTL,
 		ExpiresAt: inv.ExpiresAt,
@@ -1669,6 +1671,7 @@ func runInvite(opts options) error {
 		URL:       url,
 		Approval:  doc.Registration.ApprovalMode,
 		Platform:  cli.BaseURL,
+		Relay:     relayURL(opts),
 		Token:     inv.Token,
 		TTL:       controlpanel.InviteTTL,
 		ExpiresAt: inv.ExpiresAt,
@@ -2210,6 +2213,7 @@ type inviteResult struct {
 	URL       string
 	Approval  string
 	Platform  string
+	Relay     string
 	Token     string
 	TTL       time.Duration
 	ExpiresAt time.Time
@@ -2261,7 +2265,7 @@ func printInviteResult(errW, outW io.Writer, r inviteResult) {
 	if !r.ExpiresAt.IsZero() {
 		ttl = formatRemaining(time.Until(r.ExpiresAt))
 	}
-	rows := make([]helpRow, 0, 3)
+	rows := make([]helpRow, 0, 4)
 	if r.URL != "" {
 		rows = append(rows, helpRow{"url", r.URL})
 	}
@@ -2269,6 +2273,11 @@ func printInviteResult(errW, outW io.Writer, r inviteResult) {
 		rows = append(rows, helpRow{"approval", r.Approval})
 	}
 	rows = append(rows, helpRow{"invite ttl", ttl})
+	if r.Relay != "" && r.Relay != "off" {
+		rows = append(rows, helpRow{"relay", r.Relay + " (offers on tyd up)"})
+	} else if r.Relay == "off" {
+		rows = append(rows, helpRow{"relay", "off"})
+	}
 	writeHelpRows(errW, rows, color)
 	fmt.Fprintln(errW)
 	fmt.Fprintln(errW, "Copy and run on the peer:")
