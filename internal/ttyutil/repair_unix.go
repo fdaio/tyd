@@ -1,6 +1,6 @@
 //go:build unix
 
-package main
+package ttyutil
 
 import (
 	"os"
@@ -9,9 +9,9 @@ import (
 	"golang.org/x/term"
 )
 
-// repairTTY fixes a tty left in raw mode (e.g. after kill during attach).
+// Repair fixes a tty left in raw mode (e.g. after kill during attach).
 // MakeRaw clears OPOST/ONLCR, so bare \n then staircases on session list etc.
-func repairTTY() {
+func Repair() {
 	seen := map[int]struct{}{}
 	for _, f := range []*os.File{os.Stdin, os.Stdout, os.Stderr} {
 		if f == nil {

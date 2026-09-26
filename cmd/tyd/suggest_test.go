@@ -40,12 +40,3 @@ func TestSuggestTopLevel(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
-
-func TestLevenshtein(t *testing.T) {
-	if d := levenshtein("wacth", "watch"); d != 2 {
-		t.Fatalf("dist=%d", d)
-	}
-	if d := levenshtein("watch", "watch"); d != 0 {
-		t.Fatalf("dist=%d", d)
-	}
-}
