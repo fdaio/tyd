@@ -1418,36 +1418,74 @@ func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, 
 	}
 }
 
-// maintainRelay registers this daemon on the rendezvous relay (outbound) so
-// dual-NAT clients can fall back after direct QUIC candidates fail.
+// maintainRelay keeps an outbound offer on the rendezvous relay keyed by the
+// current daemon id. Registration can appear or change after up starts
+// (tyd register / --force); we reload peers.json and re-offer so clients do
+// not see "peer offline" for a live daemon.
 func maintainRelay(opts options, state *peerstate.State, srv *server.Server, stop <-chan struct{}) {
 	url := relayURL(opts)
 	if url == "" || url == "off" {
 		return
 	}
-	reg, ok := state.Registration()
-	if !ok || strings.TrimSpace(reg.ID) == "" {
-		return
+
+	var (
+		offerCancel context.CancelFunc
+		offeringID  string
+	)
+	stopOffer := func() {
+		if offerCancel != nil {
+			offerCancel()
+			offerCancel = nil
+		}
+		offeringID = ""
 	}
-	fmt.Fprintf(os.Stderr, "tyd relay offering %s via %s\n", reg.ID, url)
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-stop
-		cancel()
-	}()
-	_ = relay.Offer(ctx, url, reg.ID, func(ticket string) {
-		go func(ticket string) {
-			c, err := relay.Accept(context.Background(), url, ticket)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "tyd relay accept: %v\n", err)
-				return
-			}
-			srv.ServeConn(transport.Wrap(c, transport.Info{
-				Transport:  transport.KindRelay,
-				RemoteAddr: "relay:" + ticket[:8],
-			}))
-		}(ticket)
-	})
+	defer stopOffer()
+
+	startOffer := func(id string) {
+		stopOffer()
+		offeringID = id
+		ctx, cancel := context.WithCancel(context.Background())
+		offerCancel = cancel
+		fmt.Fprintf(os.Stderr, "tyd relay offering %s via %s\n", id, url)
+		go func(daemonID string, ctx context.Context) {
+			_ = relay.Offer(ctx, url, daemonID, func(ticket string) {
+				go func(ticket string) {
+					c, err := relay.Accept(context.Background(), url, ticket)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "tyd relay accept: %v\n", err)
+						return
+					}
+					srv.ServeConn(transport.Wrap(c, transport.Info{
+						Transport:  transport.KindRelay,
+						RemoteAddr: "relay:" + ticket[:8],
+					}))
+				}(ticket)
+			})
+		}(id, ctx)
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		state.ReloadIfSane()
+		reg, ok := state.Registration()
+		id := ""
+		if ok {
+			id = strings.TrimSpace(reg.ID)
+		}
+		switch {
+		case id == "" && offeringID != "":
+			fmt.Fprintln(os.Stderr, "tyd relay offer stopped (no registration)")
+			stopOffer()
+		case id != "" && id != offeringID:
+			startOffer(id)
+		}
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func injectPeerTrust(trust *auth.Store, doc *peers.File) {
