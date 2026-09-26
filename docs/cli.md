@@ -1,0 +1,102 @@
+# CLI reference
+
+`tyd --help`, `tyd session help`, and `tyd peer help` are authoritative and track
+the binary. This page is the map plus the defaults.
+
+## Commands
+
+| Group | Command | Role |
+|-------|---------|------|
+| Sessions | `session create` | Create a session and attach (`--detach` prints the id only) |
+| | `session list` | List local sessions (alive first, newest first) |
+| | `session attach` | Attach interactively (exclusive); id, alias, or recent |
+| | `session watch` | Follow output read-only; id, alias, or recent |
+| | `session approve` | Approve a PENDING remote session (local unix only) |
+| | `session reject` | Reject a PENDING session (local unix only) |
+| | `session close` | Close a session (kept as history) |
+| | `session alias` | Name a session: `<name>`, `<session_id> <name>`, `set`, `list`, `rm` |
+| Peers | `peer list` | List paired peers (id, alias, direction) |
+| | `peer show <id\|alias>` | Show peer detail, endpoint, and reachability |
+| | `peer alias <id\|nick> <name>` | Set a peer nickname (`peer alias rm <id\|nick>` clears it) |
+| | `revoke` | Revoke a paired peer (either side) |
+| Pairing | `keygen` | Generate the Ed25519 identity (also created automatically) |
+| | `register` | Register with the Control Panel (`--force` replaces) |
+| | `invite` | Mint an invite, print the accept line, wait (10m TTL); `invite revoke <token>` |
+| | `accept` | Accept an invite (token or a pasted accept line), `--as <nickname>` |
+| Daemon | `up` | Start the daemon (unix socket; TLS off by default) |
+| | `status` | Show CP registration, peers, aliases, connections |
+| | `approval` | Show or set the approval mode: `full`, `pre`, `post` |
+| | `doctor` | Check state files and disk; `--fix` rebuilds `peers.json` |
+| | `serve` | Deprecated alias for `up` |
+
+Removed forms: `tyd create`, `tyd list`, and friends are rejected with a hint to
+use `tyd session …`. The top-level `tyd alias` still works but prints a
+deprecation note — prefer `tyd session alias`.
+
+## Flags
+
+Accepted as `--flag value` or `--flag=value`, before or after the command.
+
+### Connection
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `--socket PATH` | Unix socket (alias `-socket`) | `~/.tyd/tyd.sock` |
+| `--listen ADDR\|off` | Manual TLS listen for `up` | `off` |
+| `--data-listen MODE` | QUIC data plane: `auto`, `off`, `HOST:PORT` (`auto` = all interfaces when registered, off otherwise) | `auto` |
+| `--advertise HOST` | Host to prefer in published candidates | interface IPs |
+| `--addr HOST:PORT` | TLS client endpoint (overrides `--socket` for that command) | — |
+| `--peer ID\|NICK` | Target a paired peer for session dial commands | recent, else single outbound |
+| `--relay URL\|off` | Dual-NAT rendezvous | `https://app.getfda.dev/relay` |
+| `--tls-cert PATH` | Server certificate / client pin | `~/.tyd/server.crt` |
+| `--tls-key PATH` | Server key | `~/.tyd/server.key` |
+
+### Paths and identity
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `--identity PATH` | Client identity | `~/.tyd/id_ed25519` |
+| `--trust PATH` | Trust file | `~/.tyd/trusted.json` |
+| `--peers PATH` | Paired peers file | `~/.tyd/peers.json` |
+| `--aliases PATH` | Session aliases file | `~/.tyd/aliases.json` |
+| `--recent PATH` | Recent peer/session file | `~/.tyd/recent.json` |
+| `--platform URL` | Control Panel URL | `https://app.getfda.dev` |
+
+### Behavior
+
+| Flag | Meaning |
+|------|---------|
+| `--approval MODE` | Approval mode at register time: `full`, `pre`, `post` (default `full`) |
+| `--audit-log PATH` | `up`: record control events as JSON lines (e.g. `~/.tyd/audit.log`) |
+| `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
+| `--as NAME` | Peer nickname when accepting an invite |
+| `--no-wait` | `register` / `invite`: print the accept line and exit |
+| `--detach` | `session create`: print the id only |
+| `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr |
+| `--force` | `register`: replace an existing registration (invalidates peers) |
+| `--fix` | `doctor`: rebuild a damaged `peers.json` from the Control Panel |
+
+## State directory
+
+Everything lives under `~/.tyd`:
+
+| Path | Contents |
+|------|----------|
+| `tyd.sock` | Unix socket (CLI ↔ daemon) |
+| `id_ed25519`, `id_ed25519.pub` | Identity (private key mode `0600`) |
+| `trusted.json` | Bootstrap trust: public keys and capabilities |
+| `peers.json` | Paired peers; a cache of what the daemon already holds |
+| `aliases.json` | Client-local session names |
+| `recent.json` | Last peer / session used by this client |
+| `sessions.json` | Client-local session catalog read by `session list` |
+| `live/<id>/` | Per-session live-agent socket, metadata, and PID |
+| `audit.log` | Only when `--audit-log` points here |
+| `tyd.log`, `tyd.pid` | Written by the `nohup` install fallback |
+
+## Peer and session targeting
+
+`--peer` applies to the commands that dial a daemon: `session create`, `attach`,
+`watch`, and `close`. Without it, tyd uses `recent.json` when present, else the
+only outbound peer, else falls back to the local unix socket; with several
+outbound peers it errors and asks for `--peer`. `session list` ignores `--peer`
+and never dials.

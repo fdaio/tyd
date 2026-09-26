@@ -2,21 +2,9 @@
 
 **tyd maintains persistent, remotely attachable terminal sessions on a machine.**
 
-It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
-
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS + QUIC data-plane), Control Panel pairing, **dual-NAT `tyd-relay` fallback** (direct first, then rendezvous), approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and optional SSH-style `--verbose` connect debug.
-
-## Documentation
-
-| Doc | Contents |
-|-----|----------|
-| [docs/overview.md](docs/overview.md) | Positioning, architecture, boundaries |
-| [docs/connect.md](docs/connect.md) | Pair, connect, detach, close (human and automated) |
-| [docs/guide.md](docs/guide.md) | Install, up, session, TLS, relay, pairing pointers |
-| [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
-| [docs/roadmap.md](docs/roadmap.md) | Done + control-plane pairing steps |
-| [docs/requirements/control-plane-pairing.md](docs/requirements/control-plane-pairing.md) | CP pairing requirements (full) |
-| [docs/requirements/dataplane-networking.md](docs/requirements/dataplane-networking.md) | QUIC direct + relay data-plane |
+A daemon holds PTY/shell sessions on a target host. A client pairs with that host,
+then creates or attaches sessions; the shell keeps running when the client goes
+away. tyd is not an agent, not a VPN, and not a file-transfer tool.
 
 ## Install
 
@@ -24,120 +12,54 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
-No sudo: the binary lands in `~/.local/bin` and the daemon runs as the invoking user (systemd `--user`, a macOS LaunchAgent, or `nohup`).
+Per-user install, no sudo: the binary lands in `~/.local/bin` and the daemon runs
+under `systemd --user` (Linux), a LaunchAgent (macOS), or `nohup`.
 
-TTY: choose **server** or **client**. After a server install you can invite a client and copy one command. Non-interactive / `--agent` installs a server and prints the client bootstrap on stdout. Details: [docs/connect.md](docs/connect.md).
+Non-interactive installs:
 
 ```bash
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
-## Quick start (from source)
+## Use
+
+On the machine that holds the shells:
 
 ```bash
-make build
-id=$(./tyd session create --detach)   # starts local daemon on demand; scripts: print id only
-# interactive (default): ./tyd session create  → create then attach
-./tyd alias work                     # name the recent session
-./tyd session list                   # local catalog (~/.tyd/sessions.json); no CP/daemon
-./tyd status
-./tyd session attach work            # or omit id to reuse recent; Ctrl-\ detaches
-./tyd session watch                  # recent session; Ctrl-C / Ctrl-\ stops
-./tyd session close work             # marks CLOSED in the local catalog
+tyd up                                # daemon
+tyd invite --no-wait                  # mint a pairing token for a peer
 ```
 
-Identity is created automatically on first `up` / `register` / `accept` / on-demand local session (optional `tyd keygen`).
-
-A **client** machine does not need `tyd up` to list sessions or to talk to a peer.
-Local `session create` / `attach` / `watch` / `close` start the daemon on demand if
-the unix socket is down — you do not have to keep a resident `tyd up` by hand.
-
-TLS (opt-in):
+On the peer machine, after installing tyd:
 
 ```bash
-./tyd up --listen 127.0.0.1:61211
-./tyd --addr 127.0.0.1:61211 --tls-cert ~/.tyd/server.crt session create --detach
+tyd accept TOKEN --as laptop          # pair
+tyd --peer laptop session create      # create a shell and attach
+tyd session list                      # local session catalog
+tyd session watch laptop              # read-only follow
+tyd session close laptop              # kill the shell
 ```
 
-## Control Panel pairing
+`Ctrl-\` detaches and leaves the shell running; `session close` ends it. Pairing,
+dual-NAT, and network details: [docs/connect.md](docs/connect.md).
 
-Local CP for tests:
+## Documentation
+
+| Doc | Contents |
+|-----|----------|
+| [docs/overview.md](docs/overview.md) | What tyd is, architecture, non-goals |
+| [docs/connect.md](docs/connect.md) | Install, pair, connect, detach, close |
+| [docs/session.md](docs/session.md) | Session lifecycle, aliases, approval modes, audit log |
+| [docs/operations.md](docs/operations.md) | Running the daemon, data plane, relay, Docker, recovery |
+| [docs/cli.md](docs/cli.md) | Command and flag reference |
+| [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
+| [docs/roadmap.md](docs/roadmap.md) | What exists today, what is deliberately absent |
+| [docs/requirements/control-plane-pairing.md](docs/requirements/control-plane-pairing.md) · [dataplane-networking.md](docs/requirements/dataplane-networking.md) | Pairing and data-plane requirements |
+
+## Build from source
 
 ```bash
-go run ./cmd/controlpanel -listen 127.0.0.1:8080
-./tyd --platform http://127.0.0.1:8080 register   # prints accept line; waits until peer accepts (Ctrl-C revokes)
-./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
-# production: tyd register  →  peer pastes stdout; use --no-wait to print and exit
-./tyd --peer peer-nick session create   # CP signaling; direct dial, then relay if needed
-./tyd session list                      # still local — does not hit CP
-./tyd revoke peer-nick
+git clone git@github.com:fdaio/tyd.git && cd tyd
+make build && make test    # ./tyd
 ```
-
-Across two NATs with no public IP, keep the default `--relay https://app.getfda.dev/relay`
-(WebSocket on the Control Panel; or point both sides at your own `tyd-relay`).
-Clients try published QUIC candidates first, then fall back through the rendezvous.
-Details: [docs/guide.md](docs/guide.md),
-[dataplane-networking.md](docs/requirements/dataplane-networking.md).
-
-### Docker Compose (production-oriented)
-
-Control Panel + optional relay (no TLS in the containers — put Cloudflare or another edge in front):
-
-```bash
-cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
-make dist && cp dist/tyd-*.tar.gz releases/   # binaries for install.sh
-docker compose up -d --build                  # in-Docker compile (no host Go / buildx needed)
-curl -s http://127.0.0.1:8080/healthz   # ok
-curl -fsSL http://127.0.0.1:8080/install.sh | head -1
-./tyd register                          # --platform defaults to https://app.getfda.dev
-```
-
-Faster when the build host has Go (avoids re-running the toolchain inside Docker):
-
-```bash
-make docker            # docker-prep + scratch image --target runtime
-docker compose up -d   # uses the image tagged above
-```
-
-`install.sh` downloads `https://<CP>/releases/tyd-<os>.tar.gz` (not GitHub). Keep those
-archives in `./releases` (mounted read-only into the container).
-
-Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
-
-Default relay is WebSocket at `https://app.getfda.dev/relay` (served by the CP).
-Optional standalone `relay` service: `docker compose --profile standalone-relay up -d --build`.
-`--relay off` disables.
-
-Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
-Default `docker compose build` compiles **inside** the golang image (works without buildx).
-`make docker` is the optional fast path (host compile → `Dockerfile.*.prebuilt`). On 1C/1G, prefer
-`make docker` on a fat machine and copy the image/`bin/controlpanel`, or add swap for in-Docker compile.  
-**CP state is in-memory only** — restarting the controlpanel container drops registrations, invites, and peer pairs. The relay holds no durable session state.
-
-CP stores pairing metadata (ids + public keys) only — never session/TTY data.
-
-## CLI layout
-
-| Group | Commands |
-|-------|----------|
-| Root | `up`, `serve` (alias), `status`, `keygen`, `register`, `invite`, `accept`, `revoke`, `alias` |
-| `session` | `create`, `list`, `attach`, `watch`, `approve`, `reject`, `close` |
-
-## Defaults
-
-| Item | Path / value |
-|------|----------------|
-| Unix socket | `~/.tyd/tyd.sock` |
-| TLS listen | **off** (enable with `--listen 127.0.0.1:61211`) |
-| Identity | `~/.tyd/id_ed25519` |
-| Trust file | `~/.tyd/trusted.json` |
-| Peers file | `~/.tyd/peers.json` |
-| Recent | `~/.tyd/recent.json` |
-| Session aliases | `~/.tyd/aliases.json` |
-| Session catalog | `~/.tyd/sessions.json` (client-local; used by `session list`) |
-| Platform | `https://app.getfda.dev` |
-| Relay | `https://app.getfda.dev/relay` (`--relay off` to disable) |
-| Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
-
-`attach` ≠ `write`. A key granted only `attach` can watch output (via `attach` or `watch`) but cannot type. `watch` is read-only and does not take the exclusive attach lock.
