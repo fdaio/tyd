@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -523,6 +525,12 @@ func TestInstallScriptHTTP(t *testing.T) {
 	if !bytes.Contains(body, []byte("https://app.getfda.dev/install.sh")) {
 		t.Fatal("expected production install URL in script")
 	}
+	if !bytes.Contains(body, []byte("/releases/tyd-")) {
+		t.Fatal("expected Control Panel /releases/ download path in script")
+	}
+	if bytes.Contains(body, []byte("github.com/${REPO}/releases")) || bytes.Contains(body, []byte("github.com/fdaio/tyd/releases/latest")) {
+		t.Fatal("install script must not download binaries from GitHub Releases")
+	}
 
 	req, err := http.NewRequest(http.MethodHead, ts.URL+"/install.sh", nil)
 	if err != nil {
@@ -544,6 +552,56 @@ func TestInstallScriptHTTP(t *testing.T) {
 	post.Body.Close()
 	if post.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status %d", post.StatusCode)
+	}
+}
+
+func TestReleaseDirServesArchive(t *testing.T) {
+	dir := t.TempDir()
+	name := "tyd-linux.tar.gz"
+	payload := []byte("fake-tarball")
+	if err := os.WriteFile(filepath.Join(dir, name), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	s.SetReleaseDir(dir)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + "/releases/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body %q", body)
+	}
+
+	missing, err := http.Get(ts.URL + "/releases/nope.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing status %d", missing.StatusCode)
+	}
+
+	off := New()
+	tsOff := httptest.NewServer(off.Handler())
+	t.Cleanup(tsOff.Close)
+	resOff, err := http.Get(tsOff.URL + "/releases/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resOff.Body.Close()
+	if resOff.StatusCode != http.StatusNotFound {
+		t.Fatalf("disabled status %d", resOff.StatusCode)
 	}
 }
 

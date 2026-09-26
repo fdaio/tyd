@@ -4,6 +4,9 @@
 #   TYD_CP_BASE_URL=https://app.getfda.dev
 #   TYD_CP_PORT=8080
 #
+# Put release archives next to compose (see releases/):
+#   make dist && cp dist/tyd-*.tar.gz releases/
+#
 # Local smoke:
 #   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
@@ -29,7 +32,11 @@ services:
       - "${TYD_CP_PORT:-8080}:8080"
     environment:
       TYD_CP_BASE_URL: ${TYD_CP_BASE_URL:-https://app.getfda.dev}
+      TYD_CP_RELEASE_DIR: /releases
       GOMAXPROCS: "1"
+    volumes:
+      # Host dir with tyd-linux.tar.gz / tyd-darwin.tar.gz / tyd-freebsd.tar.gz
+      - ${TYD_CP_RELEASE_HOST_DIR:-./releases}:/releases:ro
     # Soft caps for a 1C/1G box (Compose / non-Swarm).
     cpus: 0.50
     mem_limit: 128m

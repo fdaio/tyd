@@ -89,10 +89,15 @@ mint a new registration.
 
 ```bash
 cp .env.example .env   # optional; default base URL is https://app.getfda.dev
+make dist && cp dist/tyd-*.tar.gz releases/
 docker compose up -d --build
 curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
+curl -fsSL http://127.0.0.1:${TYD_CP_PORT:-8080}/releases/tyd-linux.tar.gz -o /dev/null
 ./tyd register                                  # platform defaults to https://app.getfda.dev
 ```
+
+`curl …/install.sh | sh` downloads binaries from the same Control Panel origin
+(`…/releases/tyd-<os>.tar.gz`), so the GitHub repo may stay private.
 
 `--platform` is only needed for a custom / local Control Panel (e.g. `--platform http://127.0.0.1:8080`).
 

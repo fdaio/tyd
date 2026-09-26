@@ -59,18 +59,21 @@ jobs:
         run: make dist
 
       - name: Upload linux release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: tyd-linux
           path: dist/tyd-linux.tar.gz
 
       - name: Upload darwin release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: tyd-darwin
           path: dist/tyd-darwin.tar.gz
 
       - name: Upload freebsd release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: tyd-freebsd

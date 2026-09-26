@@ -10,6 +10,7 @@ docs/
 *.md
 .env
 .env.local
+releases/*.tar.gz
 .dockerignore
 Dockerfile*
 docker-compose*.yml

@@ -4,7 +4,7 @@ tyd holds a persistent shell on a **server**. A **client** pairs with that serve
 
 ## Install
 
-One-click (Control Panel at app.getfda.dev; binaries from GitHub Releases):
+One-click (Control Panel at app.getfda.dev; binaries from the same origin `/releases/`):
 
 ```bash
 curl -fsSL https://app.getfda.dev/install.sh | sh
