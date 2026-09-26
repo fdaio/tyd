@@ -71,6 +71,11 @@ func ValidateName(name string) error {
 
 // Set binds name to sessionID. Replaces any existing entry with the same name
 // or the same session id (one alias per session).
+//
+// name must not equal sessionID, and must not collide with any other entry's
+// session_id (that would make list/resolve treat the alias as a session id).
+// sessionID must not equal any other entry's name unless we are replacing that
+// alias (caller should pass a real session id, not an alias name as the id).
 func (f *File) Set(name, sessionID, peerID string) error {
 	if err := ValidateName(name); err != nil {
 		return err
@@ -80,6 +85,18 @@ func (f *File) Set(name, sessionID, peerID string) error {
 		return fmt.Errorf("empty session id")
 	}
 	name = strings.TrimSpace(name)
+	if name == sessionID {
+		return fmt.Errorf("alias %q must differ from the session id", name)
+	}
+	for _, e := range f.Aliases {
+		if e.SessionID == name {
+			return fmt.Errorf("alias %q conflicts with session id of existing alias %q", name, e.Name)
+		}
+		if e.Name == sessionID && e.SessionID != sessionID {
+			// sessionID looks like an alias name pointing elsewhere — refuse.
+			return fmt.Errorf("%q is an alias for %s; use the session id, not the alias name, as the target", sessionID, e.SessionID)
+		}
+	}
 	out := make([]Entry, 0, len(f.Aliases)+1)
 	for _, e := range f.Aliases {
 		if e.Name == name || e.SessionID == sessionID {
@@ -132,11 +149,43 @@ func (f *File) Resolve(ref string) string {
 	return ref
 }
 
+// DropCorrupt removes entries where session_id equals some alias name (or
+// equals its own name). Those poison session list via catalog merge.
+func (f *File) DropCorrupt() bool {
+	if f == nil || len(f.Aliases) == 0 {
+		return false
+	}
+	names := map[string]struct{}{}
+	for _, e := range f.Aliases {
+		if n := strings.TrimSpace(e.Name); n != "" {
+			names[n] = struct{}{}
+		}
+	}
+	out := f.Aliases[:0]
+	changed := false
+	for _, e := range f.Aliases {
+		id := strings.TrimSpace(e.SessionID)
+		name := strings.TrimSpace(e.Name)
+		if id == "" || name == "" || name == id {
+			changed = true
+			continue
+		}
+		if _, bad := names[id]; bad {
+			changed = true
+			continue
+		}
+		out = append(out, e)
+	}
+	f.Aliases = out
+	return changed
+}
+
 // NameFor returns the alias name for a session id, or empty.
 func (f *File) NameFor(sessionID string) string {
 	if f == nil {
 		return ""
 	}
+	sessionID = strings.TrimSpace(sessionID)
 	for _, e := range f.Aliases {
 		if e.SessionID == sessionID {
 			return e.Name

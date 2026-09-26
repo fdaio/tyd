@@ -134,8 +134,19 @@ func (f *File) MergeAliases(adoc *alias.File) {
 	if adoc == nil {
 		return
 	}
+	aliasNames := map[string]struct{}{}
+	for _, e := range adoc.Aliases {
+		if n := strings.TrimSpace(e.Name); n != "" {
+			aliasNames[n] = struct{}{}
+		}
+	}
 	for _, e := range adoc.Aliases {
 		if e.SessionID == "" {
+			continue
+		}
+		// Corrupt entries sometimes stored the alias name as session_id;
+		// never promote those into the session catalog as fake ids.
+		if _, bad := aliasNames[e.SessionID]; bad {
 			continue
 		}
 		if rec, ok := f.Get(e.SessionID); ok {
@@ -151,6 +162,32 @@ func (f *File) MergeAliases(adoc *alias.File) {
 			State:  "DETACHED",
 		})
 	}
+}
+
+// PruneAliasNamedIDs drops catalog rows whose id equals an alias name.
+// Those rows are leftovers from a bad alias write that used the alias as a
+// session id (real session ids are opaque tokens, not human nicknames).
+func (f *File) PruneAliasNamedIDs(adoc *alias.File) bool {
+	if f == nil || adoc == nil || len(adoc.Aliases) == 0 {
+		return false
+	}
+	names := map[string]struct{}{}
+	for _, e := range adoc.Aliases {
+		if n := strings.TrimSpace(e.Name); n != "" {
+			names[n] = struct{}{}
+		}
+	}
+	out := f.Sessions[:0]
+	changed := false
+	for _, r := range f.Sessions {
+		if _, isAliasName := names[r.ID]; isAliasName {
+			changed = true
+			continue
+		}
+		out = append(out, r)
+	}
+	f.Sessions = out
+	return changed
 }
 
 func (f *File) MergeRecent(r *recent.File) {
