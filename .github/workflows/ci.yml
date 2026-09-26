@@ -6,6 +6,7 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -15,8 +16,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+        include:
+          - name: linux
+            runs-on: [self-hosted, Linux, X64]
+          - name: macos
+            runs-on: macos-latest
+    runs-on: ${{ matrix.runs-on }}
+    name: test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
 
@@ -46,7 +52,7 @@ jobs:
 
   dist:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
@@ -82,7 +88,7 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: dist
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: write
     steps:
