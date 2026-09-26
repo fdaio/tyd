@@ -6,15 +6,16 @@
 #   TYD_CP_PORT=8080
 #   TYD_RELAY_PORT=9090
 #
-# Fast deploy (compile on a machine with Go, Docker only COPY — no golang image):
-#   make dist && cp dist/tyd-*.tar.gz releases/
-#   make docker-prep && docker compose up -d --build
+# Default (works on a VPS with only Docker; no buildx / no host Go required):
+#   make dist && cp dist/tyd-*.tar.gz releases/   # optional install archives
+#   docker compose up -d --build
 #
-# Slow path (compile inside Docker; needs RAM/swap on 1C/1G):
-#   make docker-source
+# Faster (host has Go — compile once, Docker only packs scratch):
+#   make docker          # docker-prep + Dockerfile.controlpanel.prebuilt
+#   docker compose up -d
 #
 # Standalone relay (usually unnecessary — CP already serves /relay):
-#   make docker-prep && docker compose --profile standalone-relay up -d --build
+#   docker compose --profile standalone-relay up -d --build
 #
 # Local smoke:
 #   curl -s http://127.0.0.1:8080/healthz
@@ -28,8 +29,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.controlpanel
-      # Default stage `runtime` expects bin/controlpanel from `make docker-prep`.
-      target: runtime
+      # In-Docker Go compile. Classic Compose without buildx is fine.
+      # Fast path: `make docker` (Dockerfile.controlpanel.prebuilt).
     image: tyd-controlpanel:local
     ports:
       - "${TYD_CP_PORT:-8080}:8080"
@@ -38,9 +39,7 @@ services:
       TYD_CP_RELEASE_DIR: /releases
       GOMAXPROCS: "1"
     volumes:
-      # Host dir with tyd-linux.tar.gz / tyd-darwin.tar.gz / tyd-freebsd.tar.gz
       - ${TYD_CP_RELEASE_HOST_DIR:-./releases}:/releases:ro
-    # Soft caps for a 1C/1G box (Compose / non-Swarm).
     cpus: 0.50
     mem_limit: 128m
     memswap_limit: 128m
@@ -52,7 +51,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.relay
-      target: runtime
     image: tyd-relay:local
     ports:
       - "${TYD_RELAY_PORT:-9090}:9090"

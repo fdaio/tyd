@@ -1,0 +1,9 @@
+# Pack a prebuilt Control Panel binary (no Go toolchain in Docker).
+#   make docker-prep && docker build -f Dockerfile.controlpanel.prebuilt -t tyd-controlpanel:local .
+
+FROM scratch
+COPY bin/controlpanel /controlpanel
+EXPOSE 8080
+USER 65532:65532
+ENTRYPOINT ["/controlpanel"]
+CMD ["-listen", "0.0.0.0:8080"]

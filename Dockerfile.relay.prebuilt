@@ -1,0 +1,9 @@
+# Pack a prebuilt relay binary (no Go toolchain in Docker).
+#   make docker-prep && docker build -f Dockerfile.relay.prebuilt -t tyd-relay:local .
+
+FROM scratch
+COPY bin/relay /relay
+EXPOSE 9090
+USER 65532:65532
+ENTRYPOINT ["/relay"]
+CMD ["-listen", "0.0.0.0:9090"]
