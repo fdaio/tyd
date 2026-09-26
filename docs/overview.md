@@ -26,8 +26,8 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
            │  Frame protocol (length-prefixed JSON)
            │  Ed25519 challenge-response
            ▼
-        ┌─────┐         optional rendezvous
-        │ tyd │  up  ───▶  tyd-relay (blind splice; not CP)
+        ┌─────┐         WebSocket rendezvous (default CP /relay;
+        │ tyd │  up  ───▶  optional standalone tyd-relay; blind splice)
         └──┬──┘
            │  reconnects on restart
            ▼
@@ -75,14 +75,14 @@ QUIC direct is preferred after pairing; if candidates fail, clients fall back to
 
 ## Security model (completed)
 
-1. **Transport confidentiality (TLS/QUIC path):** TLS 1.3 / QUIC; client pins server certificate fingerprint. Plain TCP is not a supported peer data-plane mode (relay path is a blind splice under edge TLS).
+1. **Transport confidentiality (TLS/QUIC path):** TLS 1.3 / QUIC; client pins server certificate fingerprint. Plain TCP is not a supported peer data-plane mode (relay is a blind WebSocket splice under edge TLS).
 2. **Identity:** Every connection must complete Ed25519 challenge-response against `trusted.json`.
 3. **Authorization:** Global caps (`list`, `create`) vs session-bound caps (`attach`, `write`, …). Creating a session grants the creator owner caps on that session **in memory** only.
 
 ## Explicit non-goals (so far)
 
 - SSH as a dependency or protocol
-- Embedding Tailcat / NetBird / STUN **inside** the tyd binary (relay is a **separate** `tyd-relay` deployable)
+- Embedding Tailcat / NetBird / STUN **inside** the tyd binary (relay is WebSocket rendezvous: default CP `/relay`, optional separate `tyd-relay`)
 - Unix user switching (UID/GID) for shells
 - Durable audit log of terminal contents
 - Session restore after daemon restart

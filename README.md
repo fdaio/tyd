@@ -99,8 +99,8 @@ archives in `./releases` (mounted read-only into the container).
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
 Default relay is WebSocket at `https://app.getfda.dev/relay` (served by the CP).
-Optional standalone `relay` service listens on `${TYD_RELAY_PORT:-9090}` (e.g.
-`relay.getfda.dev` with edge TLS). `--relay off` disables.
+Optional standalone `relay` service listens on `${TYD_RELAY_PORT:-9090}`; point
+`--relay` at it when not using CP `/relay`. `--relay off` disables.
 
 Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
 Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded

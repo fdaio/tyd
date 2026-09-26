@@ -103,25 +103,3 @@ func WebSocketURL(raw string) (string, error) {
 	}
 	return u.String(), nil
 }
-
-// DialTarget is kept for tests/diagnostics: host:port and whether TLS is used.
-func DialTarget(raw string) (addr string, useTLS bool, err error) {
-	wsURL, err := WebSocketURL(raw)
-	if err != nil {
-		return "", false, err
-	}
-	u, err := url.Parse(wsURL)
-	if err != nil {
-		return "", false, err
-	}
-	host := u.Host
-	useTLS = u.Scheme == "wss"
-	if !strings.Contains(host, ":") {
-		if useTLS {
-			host += ":443"
-		} else {
-			host += ":80"
-		}
-	}
-	return host, useTLS, nil
-}
