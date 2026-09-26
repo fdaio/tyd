@@ -51,6 +51,12 @@ func DefaultLive() string {
 	return filepath.Join(DefaultDir(), "live")
 }
 
+// DefaultRelay is the public rendezvous for dual-NAT fallback.
+// Override with --relay; use --relay off to disable.
+func DefaultRelay() string {
+	return "https://relay.getfda.dev"
+}
+
 // DefaultListen is off: TCP/TLS is opt-in via --listen.
 func DefaultListen() string {
 	return "off"

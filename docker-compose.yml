@@ -42,3 +42,20 @@ services:
     mem_limit: 128m
     memswap_limit: 128m
     restart: unless-stopped
+
+  # Blind dual-NAT rendezvous (TTY bytes are end-to-end encrypted by tyd).
+  # Put TLS at the edge; point clients/servers at https://relay.getfda.dev
+  # via --relay (default) or TYD_RELAY.
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile.relay
+    image: tyd-relay:local
+    ports:
+      - "${TYD_RELAY_PORT:-9090}:9090"
+    environment:
+      GOMAXPROCS: "1"
+    cpus: 0.50
+    mem_limit: 128m
+    memswap_limit: 128m
+    restart: unless-stopped

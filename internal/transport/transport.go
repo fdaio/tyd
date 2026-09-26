@@ -8,6 +8,7 @@ const (
 	KindUnix Kind = "unix"
 	KindTLS  Kind = "tls"
 	KindQUIC Kind = "quic"
+	KindRelay Kind = "relay"
 )
 
 // Endpoint identifies how to listen or dial.

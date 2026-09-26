@@ -410,6 +410,12 @@ func (s *Server) accept(ln net.Listener) {
 	}
 }
 
+// ServeConn runs the tyd session protocol on an already-accepted connection
+// (e.g. a relay splice). It blocks until the connection ends.
+func (s *Server) ServeConn(conn net.Conn) {
+	s.handle(conn)
+}
+
 func (s *Server) Close() error {
 	s.reaperOnce.Do(func() { close(s.stopReaper) })
 	s.mu.Lock()

@@ -60,7 +60,8 @@ Layers from bottom to top:
 
 Connectivity overlays (WireGuard Phase 2, QUIC Phase 1, separate relay Phase 3)
 are described in [docs/requirements/dataplane-networking.md](docs/requirements/dataplane-networking.md).
-QUIC direct is the current data-plane after pairing; WireGuard and relay are not done yet.
+QUIC direct is preferred after pairing; if candidates fail, clients fall back to
+`tyd-relay` (default `https://relay.getfda.dev`). WireGuard is not done yet.
 
 ## Process model
 
