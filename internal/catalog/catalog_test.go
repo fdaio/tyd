@@ -41,6 +41,40 @@ func TestMergeAliasesAndRecent(t *testing.T) {
 	}
 }
 
+func TestMergeAliasesSkipsCorruptAliasAsID(t *testing.T) {
+	f := &File{Sessions: []Record{{ID: "real-sess", State: "DETACHED"}}}
+	adoc := &alias.File{Aliases: []alias.Entry{
+		{Name: "tama", SessionID: "tama", PeerID: "p1"},
+		{Name: "ok", SessionID: "real-sess", PeerID: "p1"},
+	}}
+	f.MergeAliases(adoc)
+	if _, ok := f.Get("tama"); ok {
+		t.Fatal("corrupt alias name-as-id must not enter catalog")
+	}
+	if _, ok := f.Get("real-sess"); !ok {
+		t.Fatal("real session missing")
+	}
+}
+
+func TestPruneAliasNamedIDs(t *testing.T) {
+	f := &File{Sessions: []Record{
+		{ID: "tama", State: "DETACHED", PeerID: "p1"},
+		{ID: "31ee241ce1aae29b", State: "DETACHED", PeerID: "p1"},
+	}}
+	adoc := &alias.File{Aliases: []alias.Entry{
+		{Name: "tama", SessionID: "31ee241ce1aae29b", PeerID: "p1"},
+	}}
+	if !f.PruneAliasNamedIDs(adoc) {
+		t.Fatal("expected prune")
+	}
+	if len(f.Sessions) != 1 || f.Sessions[0].ID != "31ee241ce1aae29b" {
+		t.Fatalf("%+v", f.Sessions)
+	}
+	if f.PruneAliasNamedIDs(adoc) {
+		t.Fatal("second prune should be no-op")
+	}
+}
+
 func TestClosedSortsLast(t *testing.T) {
 	f := &File{Sessions: []Record{
 		{ID: "closed", State: "CLOSED", UpdatedAt: time.Now()},

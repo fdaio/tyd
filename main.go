@@ -424,13 +424,19 @@ func loadLocalCatalog(opts options) *catalog.File {
 	}
 	n := len(f.Sessions)
 	adoc, _ := alias.Load(opts.aliases)
+	// Prune catalog phantoms while alias names are still known, then drop
+	// corrupt alias rows (name==id / session_id is another alias name).
+	pruned := f.PruneAliasNamedIDs(adoc)
+	if adoc != nil && adoc.DropCorrupt() {
+		_ = alias.Save(opts.aliases, adoc)
+	}
 	f.MergeAliases(adoc)
 	rec, _ := recent.Load(opts.recent)
 	f.MergeRecent(rec)
 	if f.BackfillCreated() {
 		n = -1
 	}
-	if len(f.Sessions) > n {
+	if pruned || len(f.Sessions) != n {
 		_ = catalog.Save(path, f)
 	}
 	return f
@@ -573,6 +579,36 @@ func resolveSessionRef(opts options, ref string) (string, error) {
 		return "", err
 	}
 	return doc.Resolve(ref), nil
+}
+
+// resolveSessionIDForAlias resolves ref to a session id that must already exist
+// in the local catalog (or recent.json). Unlike resolveSessionRef, unknown
+// tokens are rejected so an alias name cannot be stored as a session id.
+func resolveSessionIDForAlias(opts options, ref string) (string, error) {
+	sid, err := resolveSessionRef(opts, ref)
+	if err != nil {
+		return "", err
+	}
+	cat := loadLocalCatalog(opts)
+	if _, ok := cat.Get(sid); ok {
+		return sid, nil
+	}
+	if rec, _ := recent.Load(opts.recent); rec != nil && rec.SessionID == sid {
+		return sid, nil
+	}
+	if ref == "" {
+		return "", fmt.Errorf("recent session %q is not in the local catalog; create/attach it first or pass an explicit session id", sid)
+	}
+	return "", fmt.Errorf("unknown session %q (not in local catalog)", ref)
+}
+
+func validateAliasNameAgainstCatalog(opts options, name string) error {
+	name = strings.TrimSpace(name)
+	cat := loadLocalCatalog(opts)
+	if _, ok := cat.Get(name); ok {
+		return fmt.Errorf("alias %q conflicts with an existing session id", name)
+	}
+	return nil
 }
 
 func run(opts options) error {
@@ -869,13 +905,21 @@ func runAlias(opts options) error {
 		if len(args) != 2 {
 			return fmt.Errorf("usage: tyd session alias set <session_id|alias> <name>")
 		}
-		sid, err := resolveSessionRef(opts, args[0])
+		sid, err := resolveSessionIDForAlias(opts, args[0])
 		if err != nil {
+			return err
+		}
+		if err := validateAliasNameAgainstCatalog(opts, args[1]); err != nil {
 			return err
 		}
 		peerID := ""
 		if rec, _ := recent.Load(opts.recent); rec != nil {
 			peerID = rec.PeerID
+		}
+		if cat, err := catalog.Load(sessionsPath(opts)); err == nil {
+			if r, ok := cat.Get(sid); ok && r.PeerID != "" {
+				peerID = r.PeerID
+			}
 		}
 		if err := doc.Set(args[1], sid, peerID); err != nil {
 			return err
@@ -893,13 +937,13 @@ func runAlias(opts options) error {
 		case 1:
 			name = opts.rest[0]
 			var err error
-			sid, err = resolveSessionRef(opts, "")
+			sid, err = resolveSessionIDForAlias(opts, "")
 			if err != nil {
-				return fmt.Errorf("usage: tyd session alias <name> (needs a recent session), or tyd session alias <session_id> <name>")
+				return fmt.Errorf("usage: tyd session alias <name> (needs a recent session), or tyd session alias <session_id> <name>: %w", err)
 			}
 		case 2:
 			var err error
-			sid, err = resolveSessionRef(opts, opts.rest[0])
+			sid, err = resolveSessionIDForAlias(opts, opts.rest[0])
 			if err != nil {
 				return err
 			}
@@ -907,9 +951,17 @@ func runAlias(opts options) error {
 		default:
 			return fmt.Errorf("usage: tyd session alias [<session_id>] <name> | tyd session alias list | tyd session alias rm <name>")
 		}
+		if err := validateAliasNameAgainstCatalog(opts, name); err != nil {
+			return err
+		}
 		peerID := ""
 		if rec, _ := recent.Load(opts.recent); rec != nil {
 			peerID = rec.PeerID
+		}
+		if cat, err := catalog.Load(sessionsPath(opts)); err == nil {
+			if r, ok := cat.Get(sid); ok && r.PeerID != "" {
+				peerID = r.PeerID
+			}
 		}
 		if err := doc.Set(name, sid, peerID); err != nil {
 			return err
