@@ -52,9 +52,10 @@ func DefaultLive() string {
 }
 
 // DefaultRelay is the public rendezvous for dual-NAT fallback.
+// Served as WebSocket on the Control Panel (/relay) so Cloudflare HTTPS works.
 // Override with --relay; use --relay off to disable.
 func DefaultRelay() string {
-	return "https://relay.getfda.dev"
+	return "https://app.getfda.dev/relay"
 }
 
 // DefaultListen is off: TCP/TLS is opt-in via --listen.

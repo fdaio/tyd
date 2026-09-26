@@ -55,6 +55,10 @@ func ReadMsg(r io.Reader) (Msg, error) {
 		return Msg{}, err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
+	// 0x48545450 == "HTTP" — edge returned an HTTP page instead of WebSocket.
+	if n == 0x48545450 {
+		return Msg{}, fmt.Errorf("relay: got HTTP response (need WebSocket; is the relay up behind TLS?)")
+	}
 	if n == 0 || n > MaxMsg {
 		return Msg{}, fmt.Errorf("relay message length %d", n)
 	}
@@ -69,36 +73,33 @@ func ReadMsg(r io.Reader) (Msg, error) {
 	return m, nil
 }
 
-// DialTarget turns a relay URL into a TCP dial address and whether to use TLS.
-// https://host → host:443 + TLS; http://host:port → plain TCP.
-func DialTarget(raw string) (addr string, useTLS bool, err error) {
+// WebSocketURL turns a relay URL into a ws/wss URL for dialing.
+// https://host[/path] → wss://host[/path]; http://host:port → ws://host:port/
+func WebSocketURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "off" {
-		return "", false, fmt.Errorf("relay disabled")
+		return "", fmt.Errorf("relay disabled")
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	host := u.Host
-	if host == "" {
-		return "", false, fmt.Errorf("relay URL missing host: %q", raw)
+	if u.Host == "" {
+		return "", fmt.Errorf("relay URL missing host: %q", raw)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https", "wss":
-		if !strings.Contains(host, ":") {
-			host += ":443"
-		}
-		return host, true, nil
-	case "http", "ws", "tcp":
-		if !strings.Contains(host, ":") {
-			host += ":80"
-		}
-		return host, false, nil
+		u.Scheme = "wss"
+	case "http", "ws":
+		u.Scheme = "ws"
 	default:
-		return "", false, fmt.Errorf("unsupported relay scheme %q", u.Scheme)
+		return "", fmt.Errorf("unsupported relay scheme %q", u.Scheme)
 	}
+	if u.Path == "" {
+		u.Path = "/"
+	}
+	return u.String(), nil
 }

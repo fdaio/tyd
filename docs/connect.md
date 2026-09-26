@@ -70,14 +70,15 @@ The **server** must stay up (`tyd status` should not say the local daemon is dow
 
 ### Dual NAT / no public IP
 
-Peer traffic never goes through the Control Panel. After pairing, the client tries the
-server’s published **QUIC** candidates first. If every direct dial fails (typical when
-both sides are behind NAT with no public address), tyd falls back to **`tyd-relay`**
-(default `https://relay.getfda.dev`) — same idea as Tailcat: direct first, rendezvous last.
+Pairing metadata stays on the Control Panel; TTY bytes are never stored there.
+After pairing, the client tries the server’s published **QUIC** candidates first. If every
+direct dial fails (typical when both sides are behind NAT with no public address), tyd
+falls back to a **blind WebSocket relay** (default `https://app.getfda.dev/relay` on the
+same CP origin) — Tailcat-style: direct first, rendezvous last.
 
-- Deploy relay separately (compose service `relay`, or `go run ./cmd/relay`); put TLS at the edge.
-- Server `tyd up` offers its daemon id on the relay automatically.
-- Client needs no extra flags if the default relay URL is reachable; use `--relay URL` or `--relay off`.
+- Production default needs no extra flag once CP serves `/relay`.
+- Optional dedicated relay: compose service `relay` / `go run ./cmd/relay`, then `--relay URL`.
+- Server `tyd up` offers its daemon id on the relay automatically; `--relay off` disables.
 
 Details: [guide.md](guide.md), [dataplane-networking.md](requirements/dataplane-networking.md).
 

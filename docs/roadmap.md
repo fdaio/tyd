@@ -46,7 +46,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - Data frames never through CP — client dials peer directly
 - `tyd up --data-listen auto` starts data-plane when registered; publishes/refreshes endpoint
 - **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md)); default data-plane is QUIC (`transport=quic`)
-- **Phase 3 MVP:** separate `tyd-relay` (compose `relay` / `cmd/relay`); `tyd up` offers on `--relay` (default `https://relay.getfda.dev`); client direct-first then relay fallback
+- **Phase 3 MVP:** WebSocket relay on CP `/relay` (default `https://app.getfda.dev/relay`) plus optional compose `relay`; client direct-first then relay fallback
 - Session targeting: `--peer <id|nickname>` for dialing commands; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 - Client catalog `~/.tyd/sessions.json`: `session list` is local-only; create stores dial addr for later attach
 
@@ -88,7 +88,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 |------|--------|
 | Tailcat / NetBird / STUN / custom relay | Superseded by [dataplane-networking.md](requirements/dataplane-networking.md): Phase1 QUIC direct, Phase2 WG, Phase3 separate relay |
 | WireGuard data plane | Phase 2 after QUIC direct |
-| Separate relay module | Phase 3 MVP — `cmd/relay` + compose; direct then relay fallback |
+| Separate relay module | Phase 3 MVP — CP `/relay` WebSocket + optional `cmd/relay`; direct then relay |
 | Bind TLS on `0.0.0.0` by default | Default stays loopback when TLS enabled |
 | SSH protocol or sshd dependency | Out of scope |
 | Switch shell to another Unix user (setuid) | Not implemented |

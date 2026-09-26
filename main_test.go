@@ -476,6 +476,7 @@ func TestPrintInviteResult(t *testing.T) {
 		URL:      "https://app.getfda.dev/abc",
 		Approval: "full",
 		Platform: paths.DefaultPlatform(),
+		Relay:    paths.DefaultRelay(),
 		Token:    "tok1",
 		TTL:      controlpanel.InviteTTL,
 	})
@@ -487,6 +488,8 @@ func TestPrintInviteResult(t *testing.T) {
 		"approval",
 		"full",
 		"invite ttl",
+		"relay",
+		paths.DefaultRelay(),
 		"Copy and run on the peer:",
 		"tyd accept tok1",
 	} {

@@ -9,7 +9,7 @@ inside tyd. Keys reuse the existing Ed25519 pair identity.
 |-------|-----------|--------|
 | **1** | **QUIC direct** | Done — prefer direct; fail with error if unreachable |
 | **2** | WireGuard | Planned |
-| **3** | Relay | MVP done — separate `tyd-relay` module; direct first, then relay fallback |
+| **3** | Relay | MVP done — WebSocket on CP `/relay` (+ optional `tyd-relay`); direct first, then relay |
 
 ## Hard rules
 
@@ -23,7 +23,7 @@ inside tyd. Keys reuse the existing Ed25519 pair identity.
 |---------|------|
 | `tyd up` | Daemon; keep CP registration/peers in sync; listen + publish data-plane candidates; offer on `--relay` |
 | `tyd register` / `tyd accept` | Establish pair; once both sides `up`, DP uses published candidates (no manual `--advertise` required for LAN/same-host) |
-| `tyd-relay` / compose `relay` | Blind TCP splice rendezvous (TLS at edge); default URL `https://relay.getfda.dev` |
+| `tyd-relay` / CP `/relay` | Blind WebSocket splice (TLS at edge); default URL `https://app.getfda.dev/relay` |
 
 ## Phase 1 behavior
 
@@ -38,10 +38,10 @@ inside tyd. Keys reuse the existing Ed25519 pair identity.
 
 Tailcat-like behavior without DERP/WireGuard:
 
-1. Deploy `tyd-relay` (see `Dockerfile.relay`, compose service `relay`) behind TLS at e.g. `relay.getfda.dev`.
+1. Prefer CP `/relay` (WebSocket) at the Control Panel origin; optional dedicated `tyd-relay` (compose `relay`) behind TLS.
 2. Server: `tyd up` keeps an outbound **offer** on the relay keyed by daemon id.
-3. Client: after direct QUIC candidates fail (or CP has no endpoint), dials the relay with the peer id; relay notifies the server, splices the two TCP streams.
-4. Existing Ed25519 AuthN + session frames run end-to-end over the splice (relay is blind).
+3. Client: after direct QUIC candidates fail (or CP has no endpoint), dials the relay with the peer id over **WebSocket**; relay notifies the server, splices the two streams.
+4. Existing Ed25519 AuthN + session frames run end-to-end over the splice (relay is blind to TTY).
 5. `--relay URL` overrides the default; `--relay off` disables fallback and offering.
 
 ## Out of Phase 1 / this MVP

@@ -13,11 +13,12 @@
 #   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
 #   curl -fsSL http://127.0.0.1:8080/install.sh | sh -s -- --agent --platform http://127.0.0.1:8080
-#   tyd --platform http://127.0.0.1:8080 --relay http://127.0.0.1:9090 register
-#   # production clients default to --relay https://relay.getfda.dev
+#   tyd --platform http://127.0.0.1:8080 --relay http://127.0.0.1:8080/relay register
+#   # production clients default to --relay https://app.getfda.dev/relay
 #
 # Production: set TYD_CP_BASE_URL to the public HTTPS origin (default below).
-# Point edge TLS for relay.getfda.dev at the relay service (:9090).
+# Default relay is WebSocket on the CP at /relay; optional dedicated relay
+# service can still be published separately (:9090).
 # Clients default to that same CP host — use: tyd register
 #
 # 1C/1G: runtime caps below keep the process small. First `docker compose build`
@@ -48,8 +49,8 @@ services:
     restart: unless-stopped
 
   # Blind dual-NAT rendezvous (TTY bytes are end-to-end encrypted by tyd).
-  # Put TLS at the edge; point clients/servers at https://relay.getfda.dev
-  # via --relay (default) or TYD_RELAY.
+  # Optional dedicated relay (WebSocket). Default clients use CP /relay instead.
+  # via --relay or TYD_RELAY.
   relay:
     build:
       context: .

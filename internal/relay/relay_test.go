@@ -16,14 +16,28 @@ import (
 	"tyd/internal/transport"
 )
 
-func TestDialTarget(t *testing.T) {
-	addr, useTLS, err := relay.DialTarget("https://relay.getfda.dev")
-	if err != nil || !useTLS || addr != "relay.getfda.dev:443" {
-		t.Fatalf("https: %q %v %v", addr, useTLS, err)
+func TestWebSocketURL(t *testing.T) {
+	ws, err := relay.WebSocketURL("https://app.getfda.dev/relay")
+	if err != nil || ws != "wss://app.getfda.dev/relay" {
+		t.Fatalf("path: %q %v", ws, err)
 	}
-	addr, useTLS, err = relay.DialTarget("http://127.0.0.1:9090")
-	if err != nil || useTLS || addr != "127.0.0.1:9090" {
-		t.Fatalf("http: %q %v %v", addr, useTLS, err)
+	ws, err = relay.WebSocketURL("http://127.0.0.1:9090")
+	if err != nil || ws != "ws://127.0.0.1:9090/" {
+		t.Fatalf("http: %q %v", ws, err)
+	}
+	ws, err = relay.WebSocketURL("https://relay.example")
+	if err != nil || ws != "wss://relay.example/" {
+		t.Fatalf("bare https: %q %v", ws, err)
+	}
+	if _, err := relay.WebSocketURL("off"); err == nil {
+		t.Fatal("expected error for off")
+	}
+}
+
+func TestReadMsgRejectsHTTP(t *testing.T) {
+	_, err := relay.ReadMsg(strings.NewReader("HTTP/1.1 502 Bad Gateway\r\n"))
+	if err == nil || !strings.Contains(err.Error(), "HTTP response") {
+		t.Fatalf("got %v", err)
 	}
 }
 

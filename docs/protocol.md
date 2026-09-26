@@ -103,7 +103,7 @@ This is the daemon’s view of **control connections**, not a mesh/network path 
 | `unix` | `--socket` (default `~/.tyd/tyd.sock`) | always (unless misconfigured) |
 | `tls` | `--addr host:port` + `--tls-cert` pin | `--listen` (default off) |
 | `quic` | peer endpoint from CP (`transport=quic` + cert fingerprint) | `--data-listen auto` on registered `tyd up` |
-| `relay` | `--relay URL` after direct candidates fail | server offers on the same `--relay` during `tyd up` |
+| `relay` | `--relay URL` (WebSocket; default CP `/relay`) after direct fails | server offers on the same `--relay` during `tyd up` |
 
 TLS details:
 
@@ -112,4 +112,5 @@ TLS details:
 - Client verifies by **certificate fingerprint pin**, not the system CA pool
 
 QUIC data-plane and relay fallback: [dataplane-networking.md](requirements/dataplane-networking.md).
-The relay is a blind TCP splice; AuthN and session frames remain end-to-end.
+The relay is a **blind WebSocket splice** (default `https://app.getfda.dev/relay` on the CP);
+AuthN and session frames remain end-to-end — the hub does not interpret TTY bytes.

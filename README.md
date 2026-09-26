@@ -74,9 +74,10 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd revoke peer-nick
 ```
 
-Across two NATs with no public IP, keep the default `--relay https://relay.getfda.dev`
-(or point both sides at your own relay). Clients try published QUIC candidates first,
-then fall back through the rendezvous. Details: [docs/guide.md](docs/guide.md),
+Across two NATs with no public IP, keep the default `--relay https://app.getfda.dev/relay`
+(WebSocket on the Control Panel; or point both sides at your own `tyd-relay`).
+Clients try published QUIC candidates first, then fall back through the rendezvous.
+Details: [docs/guide.md](docs/guide.md),
 [dataplane-networking.md](docs/requirements/dataplane-networking.md).
 
 ### Docker Compose (production-oriented)
@@ -97,9 +98,9 @@ archives in `./releases` (mounted read-only into the container).
 
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
-Relay listens on `${TYD_RELAY_PORT:-9090}`; production hostname is typically
-`relay.getfda.dev` with edge TLS. Clients and servers default to
-`--relay https://relay.getfda.dev` (`--relay off` disables).
+Default relay is WebSocket at `https://app.getfda.dev/relay` (served by the CP).
+Optional standalone `relay` service listens on `${TYD_RELAY_PORT:-9090}`; point
+`--relay` at it when not using CP `/relay`. `--relay off` disables.
 
 Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
 Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded
@@ -128,7 +129,7 @@ CP stores pairing metadata (ids + public keys) only — never session/TTY data.
 | Session aliases | `~/.tyd/aliases.json` |
 | Session catalog | `~/.tyd/sessions.json` (client-local; used by `session list`) |
 | Platform | `https://app.getfda.dev` |
-| Relay | `https://relay.getfda.dev` (`--relay off` to disable) |
+| Relay | `https://app.getfda.dev/relay` (`--relay off` to disable) |
 | Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
 
 `attach` ≠ `write`. A key granted only `attach` can watch output (via `attach` or `watch`) but cannot type. `watch` is read-only and does not take the exclusive attach lock.
