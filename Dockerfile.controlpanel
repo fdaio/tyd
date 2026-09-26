@@ -1,14 +1,15 @@
 # Control Panel — pairing HTTP API + WebSocket /relay (no TTY storage).
 #
-# Default (last) stage COPIES a prebuilt linux binary — no Go toolchain in Docker.
-#   make docker-prep && docker compose build
-# On a 1C/1G VPS: copy bin/controlpanel from CI, then compose build (seconds).
+# Default image: compile inside Docker. Works with classic Compose (no buildx)
+# and without a host Go toolchain:
+#   docker compose up -d --build
 #
-# Compile inside Docker only when needed (slow / high RAM):
-#   docker build --target runtime-from-source -f Dockerfile.controlpanel .
+# Fast path (separate file — classic builders evaluate every stage, so a
+# COPY bin/ stage cannot live in this Dockerfile unless bin/ always exists):
+#   make docker
 #
-# Runtime base is scratch (static Go binary) — avoids pulling distroless/golang
-# on the common path.
+# 1C/1G: in-Docker compile needs RAM/swap; or run `make docker` on a fat host
+# and copy the tagged image / bin/controlpanel to the VPS.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
@@ -20,16 +21,8 @@ ENV GOMAXPROCS=$GOMAXPROCS
 RUN CGO_ENABLED=0 GOOS=linux go build -p "$GOMAXPROCS" -trimpath -ldflags "-s -w" \
 	-o /out/controlpanel ./cmd/controlpanel
 
-FROM scratch AS runtime-from-source
+FROM scratch
 COPY --from=build /out/controlpanel /controlpanel
-EXPOSE 8080
-USER 65532:65532
-ENTRYPOINT ["/controlpanel"]
-CMD ["-listen", "0.0.0.0:8080"]
-
-# Default target: prebuilt binary from make docker-prep (must be last stage).
-FROM scratch AS runtime
-COPY bin/controlpanel /controlpanel
 EXPOSE 8080
 USER 65532:65532
 ENTRYPOINT ["/controlpanel"]

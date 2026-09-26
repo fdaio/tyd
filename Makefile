@@ -21,7 +21,7 @@ DOCKER_GOARCH ?= $(shell go env GOARCH)
 # Parallelism for in-Docker source builds (1 keeps peak RAM low on 1C/1G).
 GOMAXPROCS ?= 1
 
-# Cross-compile linux binaries for distroless COPY (no Go toolchain in Docker).
+# Cross-compile linux binaries for --target runtime (optional fast path).
 docker-prep:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(DOCKER_GOARCH) go build -trimpath -ldflags "-s -w" \
@@ -30,13 +30,15 @@ docker-prep:
 		-o bin/relay ./cmd/relay & \
 	wait
 
-# Fast image build: compile on host (uses Go cache), Docker only packs the binary.
+# Fast image: host Go compile + scratch COPY (separate Dockerfile — classic
+# builders run every stage, so prebuilt COPY cannot share the from-source file).
 docker: docker-prep
-	docker compose build
+	docker build -f Dockerfile.controlpanel.prebuilt -t tyd-controlpanel:local .
+	@echo "built tyd-controlpanel:local (prebuilt). Run: docker compose up -d"
 
-# Slow path: compile inside the golang image (use on hosts without local Go).
+# Explicit in-Docker compile (same as default compose Dockerfile).
 docker-source:
-	docker build --target runtime-from-source -f Dockerfile.controlpanel \
+	docker build -f Dockerfile.controlpanel \
 		--build-arg GOMAXPROCS=$(GOMAXPROCS) -t tyd-controlpanel:local .
 
 # Six cross-compiled tyd binaries, then one tarball per OS.

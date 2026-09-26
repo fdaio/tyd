@@ -87,10 +87,17 @@ Control Panel + optional relay (no TLS in the containers — put Cloudflare or a
 ```bash
 cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
 make dist && cp dist/tyd-*.tar.gz releases/   # binaries for install.sh
-make docker-prep && docker compose up -d --build   # host Go compile + COPY-only image
+docker compose up -d --build                  # in-Docker compile (no host Go / buildx needed)
 curl -s http://127.0.0.1:8080/healthz   # ok
 curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 ./tyd register                          # --platform defaults to https://app.getfda.dev
+```
+
+Faster when the build host has Go (avoids re-running the toolchain inside Docker):
+
+```bash
+make docker            # docker-prep + scratch image --target runtime
+docker compose up -d   # uses the image tagged above
 ```
 
 `install.sh` downloads `https://<CP>/releases/tyd-<os>.tar.gz` (not GitHub). Keep those
@@ -99,13 +106,13 @@ archives in `./releases` (mounted read-only into the container).
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
 Default relay is WebSocket at `https://app.getfda.dev/relay` (served by the CP).
-Optional standalone `relay` service: `docker compose --profile standalone-relay up -d`
-(after `make docker-prep`). `--relay off` disables.
+Optional standalone `relay` service: `docker compose --profile standalone-relay up -d --build`.
+`--relay off` disables.
 
 Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
-**Images do not compile Go by default** — `make docker-prep` builds `bin/*` on the host
-(or CI), then Docker only packs distroless. Use `make docker-source` only when the
-build host has no Go toolchain (needs RAM/swap on 1C/1G).  
+Default `docker compose build` compiles **inside** the golang image (works without buildx).
+`make docker` is the optional fast path (host compile → `Dockerfile.*.prebuilt`). On 1C/1G, prefer
+`make docker` on a fat machine and copy the image/`bin/controlpanel`, or add swap for in-Docker compile.  
 **CP state is in-memory only** — restarting the controlpanel container drops registrations, invites, and peer pairs. The relay holds no durable session state.
 
 CP stores pairing metadata (ids + public keys) only — never session/TTY data.
