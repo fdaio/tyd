@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ed25519"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"tyd/internal/peers"
 	"tyd/internal/peerstate"
 	"tyd/internal/recent"
+	"tyd/internal/relay"
 	"tyd/internal/server"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -52,6 +54,7 @@ type options struct {
 	advertise   string
 	addr        string
 	peer        string
+	relay       string
 	identity    string
 	trust       string
 	peers       string
@@ -112,6 +115,7 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 			Address: opts.socket,
 		}, "", nil
 	}
+	rurl := relayURL(opts)
 	platform, err := platformFor(opts)
 	if err != nil {
 		return client.Endpoint{}, "", err
@@ -119,6 +123,14 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	cli := cpclient.New(platform)
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
+		if rurl != "" && rurl != "off" {
+			// Tailcat-style: still attempt relay when CP has no fresh endpoint.
+			return client.Endpoint{
+				Kind:     transport.KindRelay,
+				RelayURL: rurl,
+				PeerID:   peerID,
+			}, peerID, nil
+		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
 	kind := transport.KindTLS
@@ -127,6 +139,13 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	}
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
+		if rurl != "" && rurl != "off" {
+			return client.Endpoint{
+				Kind:     transport.KindRelay,
+				RelayURL: rurl,
+				PeerID:   peerID,
+			}, peerID, nil
+		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
 	}
 	return client.Endpoint{
@@ -134,7 +153,17 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 		Address:    addrs[0],
 		CertFP:     ep.CertFP,
 		Candidates: addrs[1:],
+		RelayURL:   rurl,
+		PeerID:     peerID,
 	}, peerID, nil
+}
+
+func relayURL(opts options) string {
+	v := strings.TrimSpace(opts.relay)
+	if v == "" {
+		return paths.DefaultRelay()
+	}
+	return v
 }
 
 func endpointDialOrder(ep *controlpanel.EndpointResponse) []string {
@@ -275,6 +304,7 @@ func startLocalDaemonProcess(opts options) error {
 		"--data-listen", opts.dataListen,
 		"--live", opts.live,
 		"--platform", opts.platform,
+		"--relay", opts.relay,
 	}
 	if opts.advertise != "" {
 		args = append(args, "--advertise", opts.advertise)
@@ -425,6 +455,7 @@ func endpointFromRecord(rec catalog.Record) (client.Endpoint, bool) {
 		Address:    rec.Addr,
 		CertFP:     rec.CertFP,
 		Candidates: append([]string(nil), rec.Candidates...),
+		PeerID:     rec.PeerID,
 	}, true
 }
 
@@ -432,6 +463,10 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 	cat := loadLocalCatalog(opts)
 	if rec, ok := cat.Get(sessionID); ok {
 		if ep, ok := endpointFromRecord(rec); ok {
+			ep.RelayURL = relayURL(opts)
+			if ep.PeerID == "" {
+				ep.PeerID = rec.PeerID
+			}
 			return ep, rec.PeerID, true, nil
 		}
 		if rec.PeerID != "" && opts.peer == "" {
@@ -447,6 +482,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	if peerID == "" {
 		return client.Endpoint{}, fmt.Errorf("empty peer id")
 	}
+	rurl := relayURL(opts)
 	platform, err := platformFor(opts)
 	if err != nil {
 		return client.Endpoint{}, err
@@ -454,6 +490,9 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	cli := cpclient.New(platform)
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
+		if rurl != "" && rurl != "off" {
+			return client.Endpoint{Kind: transport.KindRelay, RelayURL: rurl, PeerID: peerID}, nil
+		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
 	kind := transport.KindTLS
@@ -462,6 +501,9 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	}
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
+		if rurl != "" && rurl != "off" {
+			return client.Endpoint{Kind: transport.KindRelay, RelayURL: rurl, PeerID: peerID}, nil
+		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
 	}
 	return client.Endpoint{
@@ -469,6 +511,8 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		Address:    addrs[0],
 		CertFP:     ep.CertFP,
 		Candidates: addrs[1:],
+		RelayURL:   rurl,
+		PeerID:     peerID,
 	}, nil
 }
 
@@ -1151,6 +1195,7 @@ func runUp(opts options) error {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 		}
 	}
+	go maintainRelay(opts, state, srv, stop)
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
@@ -1370,6 +1415,38 @@ func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, 
 			}
 		}
 	}
+}
+
+// maintainRelay registers this daemon on the rendezvous relay (outbound) so
+// dual-NAT clients can fall back after direct QUIC candidates fail.
+func maintainRelay(opts options, state *peerstate.State, srv *server.Server, stop <-chan struct{}) {
+	url := relayURL(opts)
+	if url == "" || url == "off" {
+		return
+	}
+	reg, ok := state.Registration()
+	if !ok || strings.TrimSpace(reg.ID) == "" {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "tyd relay offering %s via %s\n", reg.ID, url)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-stop
+		cancel()
+	}()
+	_ = relay.Offer(ctx, url, reg.ID, func(ticket string) {
+		go func(ticket string) {
+			c, err := relay.Accept(context.Background(), url, ticket)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "tyd relay accept: %v\n", err)
+				return
+			}
+			srv.ServeConn(transport.Wrap(c, transport.Info{
+				Transport:  transport.KindRelay,
+				RemoteAddr: "relay:" + ticket[:8],
+			}))
+		}(ticket)
+	})
 }
 
 func injectPeerTrust(trust *auth.Store, doc *peers.File) {
@@ -1864,6 +1941,7 @@ func parseArgs(args []string) (options, error) {
 		sessions:   paths.DefaultSessions(),
 		live:       paths.DefaultLive(),
 		platform:   paths.DefaultPlatform(),
+		relay:      paths.DefaultRelay(),
 		approval:   controlpanel.DefaultApproval,
 		cert:       paths.DefaultServerCert(),
 		key:        paths.DefaultServerKey(),
@@ -1923,6 +2001,14 @@ func parseArgs(args []string) (options, error) {
 			opts.peer = args[i]
 		case strings.HasPrefix(a, "--peer="):
 			opts.peer = strings.TrimPrefix(a, "--peer=")
+		case a == "--relay":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a URL or 'off'", a)
+			}
+			i++
+			opts.relay = args[i]
+		case strings.HasPrefix(a, "--relay="):
+			opts.relay = strings.TrimPrefix(a, "--relay=")
 		case a == "--identity":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -2266,6 +2352,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--advertise HOST", "Host to prefer in CP candidates (default: auto interface IPs)"},
 		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
 		{"--peer ID|NICK", "Target paired peer for session commands"},
+		{"--relay URL|off", fmt.Sprintf("Dual-NAT rendezvous (default %s; off disables)", paths.DefaultRelay())},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)

@@ -115,15 +115,25 @@ CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon 
 After register, `tyd up --data-listen auto` (default) starts a **QUIC** data-plane listener
 on all interfaces (`0.0.0.0:0`), publishes `addr` + `candidates` + cert fingerprint to CP
 with `transport=quic` (ephemeral signaling only). Refresh every ~30s. Client dials try
-candidates in order; if all fail, the error lists each attempt (no relay fallback yet).
+candidates in order; if all fail, tyd falls back to `--relay` (default
+`https://relay.getfda.dev`) like Tailcat — direct first, relay last.
 
 ```bash
 ./tyd up --platform http://127.0.0.1:8080   # auto data-plane when registered
 ./tyd up --data-listen off                  # disable data-plane
 ./tyd up --advertise example.com            # put this host first in candidates
+./tyd up --relay http://127.0.0.1:9090      # dual-NAT fallback rendezvous
+./tyd up --relay off                        # disable relay offer/fallback
 ```
 
-See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay (Phase 3).
+Relay deploy (separate from CP; TLS at the edge):
+
+```bash
+docker compose up -d relay
+# public: relay.getfda.dev → container :9090
+```
+
+See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay details.
 
 Peer **create / attach / watch / close** (direct QUIC; data plane not through CP):
 

@@ -1,0 +1,20 @@
+# Blind rendezvous relay for dual-NAT tyd peers (not Control Panel).
+# Put TLS at the edge (Cloudflare). Runtime is small for 1C/1G hosts.
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache ca-certificates git
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ENV GOMAXPROCS=1
+RUN CGO_ENABLED=0 GOOS=linux go build -p 1 -trimpath -ldflags "-s -w" \
+	-o /out/relay ./cmd/relay
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/relay /relay
+EXPOSE 9090
+USER nonroot:nonroot
+ENV GOMAXPROCS=1
+ENTRYPOINT ["/relay"]
+CMD ["-listen", "0.0.0.0:9090"]

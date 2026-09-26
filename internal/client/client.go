@@ -18,6 +18,7 @@ import (
 
 	"tyd/internal/auth"
 	"tyd/internal/protocol"
+	"tyd/internal/relay"
 	"tyd/internal/transport"
 )
 
@@ -27,6 +28,8 @@ type Endpoint struct {
 	CertPath       string   // TLS pin via cert file (optional if CertFP set)
 	CertFP         string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
 	Candidates     []string // extra dial addresses tried after Address (peer data-plane)
+	RelayURL       string   // dual-NAT fallback after direct candidates fail
+	PeerID         string   // CP daemon id for relay dial
 	OnDial         func(addr string)
 	OnAttach       func()
 	OnReady        func()
@@ -79,7 +82,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		seen[a] = struct{}{}
 		addrs = append(addrs, a)
 	}
-	if len(addrs) == 0 {
+	if len(addrs) == 0 && (strings.TrimSpace(ep.RelayURL) == "" || strings.TrimSpace(ep.RelayURL) == "off" || strings.TrimSpace(ep.PeerID) == "") {
 		return nil, fmt.Errorf("dial: empty address")
 	}
 
@@ -94,6 +97,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		try := ep
 		try.Address = addr
 		try.Candidates = nil
+		try.RelayURL = "" // direct only in this loop
 		c, err := dialOnce(ctx, try, key)
 		if err == nil {
 			return c, nil
@@ -103,7 +107,49 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		}
 		errs = append(errs, err.Error())
 	}
+
+	relayURL := strings.TrimSpace(ep.RelayURL)
+	peerID := strings.TrimSpace(ep.PeerID)
+	if relayURL != "" && relayURL != "off" && peerID != "" {
+		if ep.OnDial != nil {
+			ep.OnDial("relay " + relayURL)
+		}
+		c, err := dialViaRelay(ctx, ep, key)
+		if err == nil {
+			return c, nil
+		}
+		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
+			return nil, errInterrupted
+		}
+		errs = append(errs, err.Error())
+	}
+
 	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
+}
+
+func dialViaRelay(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	attemptCtx, cancel := context.WithTimeout(ctx, dialAttemptTimeout+20*time.Second)
+	defer cancel()
+	raw, err := relay.Dial(attemptCtx, ep.RelayURL, ep.PeerID)
+	if err != nil {
+		return nil, err
+	}
+	nc := transport.Wrap(raw, transport.Info{
+		Transport:  transport.KindRelay,
+		RemoteAddr: ep.PeerID + "@" + ep.RelayURL,
+		TLS:        strings.HasPrefix(strings.ToLower(ep.RelayURL), "https"),
+	})
+	c := &Conn{nc: nc, info: nc.Info()}
+	if dl, ok := attemptCtx.Deadline(); ok {
+		_ = c.SetDeadline(dl)
+	}
+	authErr := c.Authenticate(key)
+	_ = c.SetDeadline(time.Time{})
+	if authErr != nil {
+		_ = c.Close()
+		return nil, authErr
+	}
+	return c, nil
 }
 
 func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {

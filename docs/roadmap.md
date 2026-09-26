@@ -87,7 +87,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 |------|--------|
 | Tailcat / NetBird / STUN / custom relay | Superseded by [dataplane-networking.md](requirements/dataplane-networking.md): Phase1 QUIC direct, Phase2 WG, Phase3 separate relay |
 | WireGuard data plane | Phase 2 after QUIC direct |
-| Separate relay module | Phase 3 — not inside CP |
+| Separate relay module | Phase 3 MVP — `cmd/relay` + compose; direct then relay fallback |
 | Bind TLS on `0.0.0.0` by default | Default stays loopback when TLS enabled |
 | SSH protocol or sshd dependency | Out of scope |
 | Switch shell to another Unix user (setuid) | Not implemented |
