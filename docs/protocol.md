@@ -29,7 +29,7 @@ Maximum frame size: 1 MiB.
 | `resize` | Rows/cols | `resize` |
 | `signal` | e.g. `INT`, `TSTP` | `signal` |
 | `detach` | Leave attach/watch without killing shell | (must be attached/watching) |
-| `close` | Close session (kept until daemon restart) | `close` |
+| `close` | Close session (kept as history until daemon restart) | `close` |
 | `approve` | Start PTY for a `PENDING` session | `create` (unix transport only) |
 | `reject` | Remove a `PENDING` session | `create` (unix transport only) |
 
@@ -86,7 +86,7 @@ Owner caps after create: `attach`, `write`, `resize`, `signal`, `close`.
   "local_addr": "…",
   "remote_addr": "…",
   "tls": true,
-  "cert_fp": "first 16 hex of SHA-256",
+  "cert_fp": "SHA-256 hex of the server certificate (status shows the first 16)",
   "state": "handshaking" | "authenticated" | "attached",
   "principal": "local",
   "session_id": "…",
@@ -95,6 +95,10 @@ Owner caps after create: `attach`, `write`, `resize`, `signal`, `close`.
 ```
 
 This is the daemon’s view of **control connections**, not a mesh/network path graph.
+
+Frames never change shape because of where the PTY lives: the daemon proxies them
+to a per-session live-agent process, so a session keeps working across a daemon
+restart with the same protocol.
 
 ## Transport
 

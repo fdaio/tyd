@@ -1,5 +1,10 @@
 # Control plane pairing (requirements)
 
+> Historical requirements document for peer pairing via a Control Panel (CP).
+> It records what pairing must guarantee. For how to use tyd today, read
+> [connect.md](../connect.md) and [session.md](../session.md) first; for the
+> current implementation status see [roadmap.md](../roadmap.md).
+
 Authoritative product requirements for tyd peer pairing via a Control Panel (CP).
 Implementation is phased; see [docs/roadmap.md](../roadmap.md).
 
@@ -106,7 +111,10 @@ holds standing access.
 
 ## Client UX
 
-- `tyd alias` is for **sessions** (not peers). Stored client-side in `~/.tyd/aliases.json`.
+- `tyd session alias` is for **sessions** (not peers). Stored client-side in `~/.tyd/aliases.json`.
+  The older top-level `tyd alias` still works but is deprecated.
+- Peer nicknames live on the peer, not the session: `tyd peer alias <id|nick> <name>`,
+  listed with `tyd peer list` and detailed by `tyd peer show`.
 - Client session catalog: `~/.tyd/sessions.json` (written on create; `session list` is file-only).
 - Peer targeting for dialing commands (`session create` / `attach` / `watch` / `close`):
   - `--peer <cp-id>` or peer nickname set at accept (`--as`)
@@ -183,12 +191,12 @@ These guide Step 2+; not implemented in Step 1.
 
 ## Step 4 deliverables
 
-- `tyd alias [<session_id>] <name>` / `tyd alias list` / `tyd alias rm <name>` → `~/.tyd/aliases.json`
+- `tyd session alias [<session_id>] <name>` / `tyd session alias list` / `tyd session alias rm <name>` → `~/.tyd/aliases.json`
 - Session commands resolve alias names; omitting id uses `recent.json` session placeholder
 - `session list` shows ALIAS / PEER columns from the **client catalog** (`sessions.json`)
 - `tyd status` prints Control Panel / Peers / Recent / Session aliases / Connections
 - Help tips show recent session as placeholder when available
-- Docs (roadmap, guide, README) updated
+- Docs updated: [roadmap.md](../roadmap.md), [session.md](../session.md), [operations.md](../operations.md), [cli.md](../cli.md), and the README index
 
 ### Client catalog + attach UX (post Step 4)
 

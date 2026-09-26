@@ -1,86 +1,91 @@
 # Connect to a tyd server
 
-tyd holds a persistent shell on a **server**. A **client** pairs with that server, then creates or attaches sessions. Session bytes never go through the Control Panel.
+tyd holds a persistent shell on a **server**. A **client** pairs with that server,
+then creates or attaches sessions. Session bytes never go through the Control Panel.
 
 ## Install
-
-One-click (Control Panel at app.getfda.dev; binaries from the same origin `/releases/`):
 
 ```bash
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
-- **Human, TTY:** choose server or client. After a server install, you can mint an invite and copy a client command.
-- **Automated / no TTY:** treated as server. Prints one client bootstrap line on stdout.
+Binaries are downloaded from the same origin as the script (`/releases/`), so the
+GitHub repository can stay private.
+
+- **Human, TTY:** choose server or client. After a server install you can mint an
+  invite and copy one client command.
+- **Automated / no TTY:** treated as a server. Prints one client bootstrap line.
 
 ```bash
-# Server (non-interactive): install daemon, register, print client command
+# Server, non-interactive: install, register, print the client command
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 
-# Client: install binary and accept the invite
+# Client: install and accept an invite
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
-**Do not use sudo.** tyd holds your own shells, so everything installs for the invoking user: the binary goes to `~/.local/bin` (override with `TYD_BINDIR`) and the daemon runs under **systemd --user** (Linux), a **LaunchAgent** (macOS), or **nohup** if neither is available. There is no system-wide service. Clients do not run a resident `tyd up`; local session commands start the daemon on demand when needed.
+**Do not use sudo.** tyd holds your own shells, so everything installs for the
+invoking user: the binary goes to `~/.local/bin` (override with `TYD_BINDIR`) and
+the daemon runs under **systemd --user** (Linux), a **LaunchAgent** (macOS), or
+**nohup** if neither is available. There is no system-wide service.
 
-Custom Control Panel: `--platform URL` or `TYD_PLATFORM`.
+Environment overrides: `TYD_PLATFORM` (Control Panel URL), `TYD_BINDIR`,
+`TYD_RELEASE_URL`, `TYD_INSTALL_URL`. A custom Control Panel otherwise needs
+`--platform URL` or `TYD_PLATFORM`.
 
-## Request access (pairing)
+## Pair
 
-The server must be registered and running (`tyd up`). Then mint an invite (about 10 minutes TTL):
+The server must be registered and running:
 
 ```bash
-tyd invite --no-wait
+tyd up                 # daemon
+tyd invite --no-wait   # mint a token (10 minute TTL)
 ```
 
-Give the peer this one-liner (token from the invite output):
+Hand the peer the token, as a one-liner:
 
 ```bash
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
-Or, if tyd is already installed on the client:
+or, if tyd is already installed there:
 
 ```bash
 tyd accept TOKEN --as laptop
 ```
 
-Either side can drop the pair later: `tyd revoke <peer-id|nickname>`.
+`register` and `invite` wait for the peer by default (with a TTL countdown;
+Ctrl-C revokes the invite); `--no-wait` prints the accept line and exits.
+
+Either side can drop the pair later:
+
+```bash
+tyd revoke laptop
+```
 
 ## Connect
 
 On the **client**, after pairing:
 
 ```bash
-tyd peer list
-tyd --peer <id-or-nick> session create    # creates a shell and attaches
+tyd peer list                            # paired peers and nicknames
+tyd --peer laptop session create         # create a shell and attach
 ```
 
-If you already have a session:
+With an existing session:
 
 ```bash
 tyd session list
-tyd session attach <id-or-alias>          # Ctrl-\ detaches; the shell keeps running
-tyd session watch <id-or-alias>           # read-only
+tyd session attach <id-or-alias>         # Ctrl-\ detaches; the shell keeps running
+tyd session watch <id-or-alias>          # read-only
 ```
 
-Omit the session id to reuse the most recent one (`tyd status` / `recent.json`).
+Omit the session id to reuse the most recent one (`recent.json`; also shown in
+`tyd status`).
 
-The **server** must stay up (`tyd status` should not say the local daemon is down). Data-plane addresses expire on the Control Panel after about 90s without `tyd up`.
-
-### Dual NAT / no public IP
-
-Pairing metadata stays on the Control Panel; TTY bytes are never stored there.
-After pairing, the client tries the server’s published **QUIC** candidates first. If every
-direct dial fails (typical when both sides are behind NAT with no public address), tyd
-falls back to a **blind WebSocket relay** (default `https://app.getfda.dev/relay` on the
-same CP origin) — Tailcat-style: direct first, rendezvous last.
-
-- Production default needs no extra flag once CP serves `/relay`.
-- Optional dedicated relay: compose service `relay` / `go run ./cmd/relay`, then `--relay URL`.
-- Server `tyd up` offers its daemon id on the relay automatically; `--relay off` disables.
-
-Details: [guide.md](guide.md), [dataplane-networking.md](requirements/dataplane-networking.md).
+The **server** must stay up — `tyd status` should not report the local daemon as
+down. Published data-plane addresses expire on the Control Panel about every 90
+seconds, so a long-lived pairing keeps refreshing them only while `tyd up` runs.
 
 ## Detach and close
 
@@ -90,10 +95,28 @@ Details: [guide.md](guide.md), [dataplane-networking.md](requirements/dataplane-
 | Follow output only | `tyd session watch` |
 | Kill the shell | `tyd session close <id-or-alias>` |
 
-`session close` marks the session closed in the client catalog. Detach is not close.
+Detach is not close. `session close` marks the session `CLOSED` in the client
+catalog and leaves it as history until the daemon restarts.
+
+## Dual NAT / no public IP
+
+Pairing metadata stays on the Control Panel; TTY bytes are never stored there.
+After pairing, the client tries the server's published **QUIC** candidates first.
+If every direct dial fails — typical when both sides are behind NAT with no public
+address — tyd falls back to a **blind WebSocket relay** (default
+`https://app.getfda.dev/relay` on the CP origin). Direct first, rendezvous last.
+
+- No extra flag is needed once the Control Panel serves `/relay`.
+- Optional dedicated relay: compose service `relay` or `go run ./cmd/relay`, then
+  point the server at it with `--relay URL`.
+- The server offers its daemon id on the relay automatically during `tyd up`;
+  `--relay off` disables both offering and fallback.
+
+Details: [operations.md](operations.md),
+[requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 
 ## See also
 
-- [guide.md](guide.md) — flags, approval modes, TLS, relay
+- [session.md](session.md) — session lifecycle, aliases, approval modes
+- [operations.md](operations.md) — daemon flags, data plane, Docker, recovery
 - [overview.md](overview.md) — what tyd is and is not
-- [dataplane-networking.md](requirements/dataplane-networking.md) — QUIC + relay

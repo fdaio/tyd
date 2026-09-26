@@ -1,5 +1,9 @@
 # Data-plane networking after pairing
 
+> Historical requirements document (REQ-110) for the peer data plane. For how it
+> behaves today, read [operations.md](../operations.md); for implementation
+> status see [roadmap.md](../roadmap.md).
+
 Product decision (REQ-110): after Control Panel pairing, peers form a **1:1 data plane**
 inside tyd. Keys reuse the existing Ed25519 pair identity.
 
@@ -7,14 +11,15 @@ inside tyd. Keys reuse the existing Ed25519 pair identity.
 
 | Phase | Transport | Status |
 |-------|-----------|--------|
-| **1** | **QUIC direct** | Done — prefer direct; fail with error if unreachable |
+| **1** | **QUIC direct** | Done — clients try published candidates in order, then use the Phase 3 relay if every candidate fails |
 | **2** | WireGuard | Planned |
-| **3** | Relay | MVP done — WebSocket on CP `/relay` (+ optional `tyd-relay`); direct first, then relay |
+| **3** | Relay | MVP done — WebSocket on CP `/relay` (+ optional `tyd-relay`); direct first, relay as fallback |
 
 ## Hard rules
 
 - Session / TTY bytes **never** go through Control Panel.
-- Relay is an independent service; CP stays pairing + ephemeral signaling only.
+- The relay is a separate data path: the CP may host `/relay`, but it keeps only
+  pairing metadata and never sees or stores session bytes.
 - Topology is **1:1** per pair (not a full mesh yet).
 
 ## Lifecycle
