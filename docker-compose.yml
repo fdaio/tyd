@@ -1,28 +1,24 @@
-# tyd Control Panel (pairing) + optional relay (dual-NAT rendezvous).
-# TLS is expected at the edge (e.g. Cloudflare) for both services.
+# tyd Control Panel (pairing + WebSocket /relay). Optional standalone relay.
+# TLS is expected at the edge (e.g. Cloudflare).
 #
 # Config (optional .env next to this file — Compose loads it automatically):
 #   TYD_CP_BASE_URL=https://app.getfda.dev
 #   TYD_CP_PORT=8080
 #   TYD_RELAY_PORT=9090
 #
-# Put release archives next to compose (see releases/):
+# Fast deploy (compile on a machine with Go, Docker only COPY — no golang image):
 #   make dist && cp dist/tyd-*.tar.gz releases/
+#   make docker-prep && docker compose up -d --build
+#
+# Slow path (compile inside Docker; needs RAM/swap on 1C/1G):
+#   make docker-source
+#
+# Standalone relay (usually unnecessary — CP already serves /relay):
+#   make docker-prep && docker compose --profile standalone-relay up -d --build
 #
 # Local smoke:
-#   docker compose up -d --build
 #   curl -s http://127.0.0.1:8080/healthz
-#   curl -fsSL http://127.0.0.1:8080/install.sh | sh -s -- --agent --platform http://127.0.0.1:8080
 #   tyd --platform http://127.0.0.1:8080 --relay http://127.0.0.1:8080/relay register
-#   # production clients default to --relay https://app.getfda.dev/relay
-#
-# Production: set TYD_CP_BASE_URL to the public HTTPS origin (default below).
-# Default relay is WebSocket on the CP at /relay; optional dedicated relay
-# service can still be published separately (:9090).
-# Clients default to that same CP host — use: tyd register
-#
-# 1C/1G: runtime caps below keep the process small. First `docker compose build`
-# still needs headroom (or ~1G swap) because the Go toolchain is heavy.
 #
 # WARNING: CP pairing state is in-memory — container restart loses registrations,
 # invites, and peer pairs. Relay holds no durable session state.
@@ -32,6 +28,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.controlpanel
+      # Default stage `runtime` expects bin/controlpanel from `make docker-prep`.
+      target: runtime
     image: tyd-controlpanel:local
     ports:
       - "${TYD_CP_PORT:-8080}:8080"
@@ -48,13 +46,13 @@ services:
     memswap_limit: 128m
     restart: unless-stopped
 
-  # Blind dual-NAT rendezvous (TTY bytes are end-to-end encrypted by tyd).
-  # Optional dedicated relay (WebSocket). Default clients use CP /relay instead.
-  # via --relay or TYD_RELAY.
+  # Optional dedicated WebSocket relay. Default clients use CP /relay.
   relay:
+    profiles: ["standalone-relay"]
     build:
       context: .
       dockerfile: Dockerfile.relay
+      target: runtime
     image: tyd-relay:local
     ports:
       - "${TYD_RELAY_PORT:-9090}:9090"

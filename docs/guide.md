@@ -90,7 +90,7 @@ mint a new registration.
 ```bash
 cp .env.example .env   # optional; default base URL is https://app.getfda.dev
 make dist && cp dist/tyd-*.tar.gz releases/
-docker compose up -d --build
+make docker-prep && docker compose up -d --build   # host Go → COPY-only image
 curl -s http://127.0.0.1:${TYD_CP_PORT:-8080}/healthz
 curl -fsSL http://127.0.0.1:${TYD_CP_PORT:-8080}/releases/tyd-linux.tar.gz -o /dev/null
 ./tyd register                                  # platform defaults to https://app.getfda.dev
@@ -102,10 +102,12 @@ curl -fsSL http://127.0.0.1:${TYD_CP_PORT:-8080}/releases/tyd-linux.tar.gz -o /d
 `--platform` is only needed for a custom / local Control Panel (e.g. `--platform http://127.0.0.1:8080`).
 
 Container listens on `0.0.0.0:8080` (no TLS inside — terminate at Cloudflare).  
-Compose caps the running CP at about half a CPU and 128MB; the image build uses Alpine
-and a single-threaded compile so a 1C/1G host can build on-box (add ~1G swap if OOM).  
-Default in-repo CP state is **in-memory**; restart loses pairing metadata until daemons `up` and
-restore from local `peers.json`. See `Dockerfile.controlpanel` and `docker-compose.yml`.
+Compose caps the running CP at about half a CPU and 128MB. **Default image builds do not
+run the Go toolchain** — `make docker-prep` compiles `bin/controlpanel` on the host (or CI),
+then Docker packs distroless. Use `make docker-source` only without a local Go toolchain
+(needs RAM/swap on 1C/1G). Default in-repo CP state is **in-memory**; restart loses pairing
+metadata until daemons `up` and restore from local `peers.json`.
+See `Dockerfile.controlpanel` and `docker-compose.yml`.
 
 Paired peer public keys are stored in `~/.tyd/peers.json`.  
 CP stores pairing metadata only. Revoke removes the pair on CP; the next daemon peer-sync drops inbound trust.
@@ -132,8 +134,8 @@ Relay is WebSocket. Production default is the CP path; optional dedicated proces
 # default production: already on the Control Panel
 #   https://app.getfda.dev/relay
 
-# optional standalone (compose service relay):
-docker compose up -d relay
+# optional standalone:
+docker compose --profile standalone-relay up -d
 # then: tyd up --relay http://127.0.0.1:9090
 ```
 See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay details.
