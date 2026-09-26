@@ -469,6 +469,17 @@ func TestParseInviteToken(t *testing.T) {
 	}
 }
 
+func TestInviteTTLCursorOffsets(t *testing.T) {
+	up, down := inviteTTLCursorOffsets(false)
+	if up != 4 || down != 3 {
+		t.Fatalf("no relay: up=%d down=%d", up, down)
+	}
+	up, down = inviteTTLCursorOffsets(true)
+	if up != 5 || down != 4 {
+		t.Fatalf("with relay: up=%d down=%d", up, down)
+	}
+}
+
 func TestPrintInviteResult(t *testing.T) {
 	var errBuf, outBuf bytes.Buffer
 	printInviteResult(&errBuf, &outBuf, inviteResult{
