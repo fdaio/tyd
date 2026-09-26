@@ -419,6 +419,15 @@ is_registered() {
 
 mint_invite() {
 	errf="$TMP/tyd-invite.err"
+	# Daemon restore runs during `tyd up`; wait so invite sees the CP registration.
+	i=0
+	while [ "$i" -lt 50 ]; do
+		if [ -S "${TYD_DIR}/tyd.sock" ]; then
+			break
+		fi
+		i=$((i + 1))
+		sleep 0.1
+	done
 	cmd=invite
 	if ! is_registered; then
 		cmd=register
@@ -434,6 +443,21 @@ mint_invite() {
 	out="$("$@" 2>"$errf")"
 	st=$?
 	set -e
+	if [ "$st" -ne 0 ] && [ "$cmd" = invite ]; then
+		# Local peers.json still has registration, but CP lost it (restart).
+		if grep -qiE 'not found|404|restore' "$errf" 2>/dev/null; then
+			log "Invite failed (CP missing registration); re-registering"
+			set -- "$TYD"
+			if [ -n "$PLATFORM_URL" ]; then
+				set -- "$@" --platform "$PLATFORM_URL"
+			fi
+			set -- "$@" register --force --no-wait
+			set +e
+			out="$("$@" 2>"$errf")"
+			st=$?
+			set -e
+		fi
+	fi
 	if [ "$st" -ne 0 ]; then
 		cat "$errf" >&2 || true
 		die "register/invite failed"
