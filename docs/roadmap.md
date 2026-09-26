@@ -46,6 +46,7 @@ Full requirements: [docs/requirements/control-plane-pairing.md](requirements/con
 - Data frames never through CP — client dials peer directly
 - `tyd up --data-listen auto` starts data-plane when registered; publishes/refreshes endpoint
 - **Phase 1:** QUIC listen on all interfaces + multi-candidate dial (see [dataplane-networking.md](requirements/dataplane-networking.md)); default data-plane is QUIC (`transport=quic`)
+- **Phase 3 MVP:** separate `tyd-relay` (compose `relay` / `cmd/relay`); `tyd up` offers on `--relay` (default `https://relay.getfda.dev`); client direct-first then relay fallback
 - Session targeting: `--peer <id|nickname>` for dialing commands; recent peer / single-outbound defaults; `~/.tyd/recent.json`
 - Client catalog `~/.tyd/sessions.json`: `session list` is local-only; create stores dial addr for later attach
 

@@ -135,7 +135,7 @@ docker compose up -d relay
 
 See [dataplane-networking.md](requirements/dataplane-networking.md) for WG (Phase 2) and relay details.
 
-Peer **create / attach / watch / close** (direct QUIC; data plane not through CP):
+Peer **create / attach / watch / close** (direct QUIC, then relay if needed; never through CP):
 
 ```bash
 ./tyd --peer laptop session create   # CP GetEndpoint (or catalog addr later) + direct dial; attaches by default

@@ -1,6 +1,6 @@
 # Protocol and authorization
 
-The application protocol is independent of Transport. Any reliable bidirectional byte stream can carry it (today: Unix socket or TLS).
+The application protocol is independent of Transport. Any reliable bidirectional byte stream can carry it (today: Unix socket, TLS, QUIC, or a relay splice).
 
 ## Framing
 
@@ -82,7 +82,7 @@ Owner caps after create: `attach`, `write`, `resize`, `signal`, `close`.
 ```json
 {
   "id": "…",
-  "transport": "unix" | "tls",
+  "transport": "unix" | "tls" | "quic" | "relay",
   "local_addr": "…",
   "remote_addr": "…",
   "tls": true,
@@ -98,13 +98,18 @@ This is the daemon’s view of **control connections**, not a mesh/network path 
 
 ## Transport
 
-| Kind | Dial | Listen |
-|------|------|--------|
+| Kind | Dial | Listen / path |
+|------|------|----------------|
 | `unix` | `--socket` (default `~/.tyd/tyd.sock`) | always (unless misconfigured) |
-| `tls` | `--addr host:port` + `--tls-cert` pin | `--listen` (default `127.0.0.1:61211`, or `off`) |
+| `tls` | `--addr host:port` + `--tls-cert` pin | `--listen` (default off) |
+| `quic` | peer endpoint from CP (`transport=quic` + cert fingerprint) | `--data-listen auto` on registered `tyd up` |
+| `relay` | `--relay URL` after direct candidates fail | server offers on the same `--relay` during `tyd up` |
 
 TLS details:
 
 - TLS 1.3
 - Self-signed server cert generated on demand
 - Client verifies by **certificate fingerprint pin**, not the system CA pool
+
+QUIC data-plane and relay fallback: [dataplane-networking.md](requirements/dataplane-networking.md).
+The relay is a blind TCP splice; AuthN and session frames remain end-to-end.

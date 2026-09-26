@@ -13,7 +13,7 @@ tyd is a daemon plus a single CLI binary. On the target machine it:
 3. Lets a client reattach later
 4. Authenticates who is connecting (Ed25519)
 5. Authorizes what that identity may do on which session
-6. Speaks over a local Unix socket and/or TLS TCP
+6. Speaks over a local Unix socket, optional TLS TCP, QUIC peer data-plane, and relay fallback
 
 FDA-facing features (file transfer, non-interactive exec, approval workflows, mesh networking) are **out of scope** for tyd. They can sit on top of it.
 
@@ -22,12 +22,12 @@ FDA-facing features (file transfer, non-interactive exec, approval workflows, me
 ```text
   tyd CLI (keygen / up / register / accept / alias / status / session …)
            │
-           │  Transport: unix  |  tls (TCP+TLS, opt-in; peer data-plane)
+           │  Transport: unix | tls (opt-in) | quic (peer DP) | relay (fallback)
            │  Frame protocol (length-prefixed JSON)
            │  Ed25519 challenge-response
            ▼
-        ┌─────┐
-        │ tyd │  up  (daemon)
+        ┌─────┐         optional rendezvous
+        │ tyd │  up  ───▶  tyd-relay (blind splice; not CP)
         └──┬──┘
            │  reconnects on restart
            ▼
@@ -56,10 +56,10 @@ Layers from bottom to top:
 | AuthZ | Capabilities: list, create, attach, write, resize, signal, close |
 | AuthN | Ed25519 identity; trust file of public keys |
 | Protocol | Shared frames over any byte stream |
-| Transport | How the stream is obtained: `unix` or `tls` |
+| Transport | How the stream is obtained: `unix`, `tls`, `quic`, or `relay` |
 
 Connectivity overlays (WireGuard Phase 2, QUIC Phase 1, separate relay Phase 3)
-are described in [docs/requirements/dataplane-networking.md](docs/requirements/dataplane-networking.md).
+are described in [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 QUIC direct is preferred after pairing; if candidates fail, clients fall back to
 `tyd-relay` (default `https://relay.getfda.dev`). WireGuard is not done yet.
 
@@ -75,16 +75,17 @@ QUIC direct is preferred after pairing; if candidates fail, clients fall back to
 
 ## Security model (completed)
 
-1. **Transport confidentiality (TLS path):** TLS 1.3; client pins server certificate (fingerprint via `--tls-cert`). Plain TCP is not a supported client mode.
+1. **Transport confidentiality (TLS/QUIC path):** TLS 1.3 / QUIC; client pins server certificate fingerprint. Plain TCP is not a supported peer data-plane mode (relay path is a blind splice under edge TLS).
 2. **Identity:** Every connection must complete Ed25519 challenge-response against `trusted.json`.
 3. **Authorization:** Global caps (`list`, `create`) vs session-bound caps (`attach`, `write`, …). Creating a session grants the creator owner caps on that session **in memory** only.
 
 ## Explicit non-goals (so far)
 
 - SSH as a dependency or protocol
-- Tailcat / NetBird / STUN / custom relay inside tyd
+- Embedding Tailcat / NetBird / STUN **inside** the tyd binary (relay is a **separate** `tyd-relay` deployable)
 - Unix user switching (UID/GID) for shells
 - Durable audit log of terminal contents
 - Session restore after daemon restart
 - Multiple simultaneous writers on one session
 - File transfer, port forward, non-interactive command API
+- Putting session/TTY bytes through the Control Panel
