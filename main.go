@@ -1899,7 +1899,9 @@ func runRevoke(opts options) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "revoked peer %s\n", p.ID)
-	fmt.Println(p.ID)
+	if !colorEnabled(os.Stdout) || !colorEnabled(os.Stderr) {
+		fmt.Println(p.ID)
+	}
 	return nil
 }
 
@@ -1948,7 +1950,10 @@ func runAccept(opts options) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "paired with %s\n", acc.PeerID)
-	fmt.Println(acc.PeerID)
+	// Scripts capturing stdout still get the id; avoid a duplicate on a TTY.
+	if !colorEnabled(os.Stdout) || !colorEnabled(os.Stderr) {
+		fmt.Println(acc.PeerID)
+	}
 	return nil
 }
 
