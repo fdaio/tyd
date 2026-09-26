@@ -44,13 +44,14 @@ var (
 
 // Service is an in-memory CP suitable for local runs and tests.
 type Service struct {
-	mu        sync.Mutex
-	daemons   map[string]*Daemon   // id -> daemon
-	byPub     map[string]string    // public_key -> id
-	invites   map[string]*Invite   // token -> invite
-	endpoints map[string]*Endpoint // daemon id -> current endpoint (ephemeral signaling only)
-	now       func() time.Time
-	baseURL   string // optional; used when building public URLs
+	mu         sync.Mutex
+	daemons    map[string]*Daemon   // id -> daemon
+	byPub      map[string]string    // public_key -> id
+	invites    map[string]*Invite   // token -> invite
+	endpoints  map[string]*Endpoint // daemon id -> current endpoint (ephemeral signaling only)
+	now        func() time.Time
+	baseURL    string // optional; used when building public URLs
+	releaseDir string // optional; directory served at /releases/ (install binaries)
 }
 
 // Endpoint is ephemeral dial signaling for the data plane.
@@ -172,6 +173,14 @@ func (s *Service) SetBaseURL(u string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.baseURL = strings.TrimRight(u, "/")
+}
+
+// SetReleaseDir sets the directory of install archives served under /releases/.
+// Empty disables the route (requests return 404).
+func (s *Service) SetReleaseDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.releaseDir = strings.TrimSpace(dir)
 }
 
 func (s *Service) SetNow(fn func() time.Time) {
@@ -702,6 +711,12 @@ func (s *Service) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/install.sh", handleInstallScript)
+	s.mu.Lock()
+	relDir := s.releaseDir
+	s.mu.Unlock()
+	if relDir != "" {
+		mux.Handle("/releases/", http.StripPrefix("/releases/", http.FileServer(http.Dir(relDir))))
+	}
 	mux.HandleFunc("/v1/register", s.handleRegister)
 	mux.HandleFunc("/v1/restore", s.handleRestore)
 	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)

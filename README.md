@@ -79,15 +79,19 @@ Control Panel only (no TLS in the container — put Cloudflare or another edge i
 
 ```bash
 cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT
+make dist && cp dist/tyd-*.tar.gz releases/   # binaries for install.sh
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz   # ok
 curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 ./tyd register                          # --platform defaults to https://app.getfda.dev
 ```
 
+`install.sh` downloads `https://<CP>/releases/tyd-<os>.tar.gz` (not GitHub). Keep those
+archives in `./releases` (mounted read-only into the container).
+
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
-Files: `Dockerfile.controlpanel`, `docker-compose.yml`, `.env.example`.  
+Files: `Dockerfile.controlpanel`, `docker-compose.yml`, `.env.example`, `releases/`.  
 Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded
 `go build` to lower peak RAM. On 1C/1G, add ~1G swap if the first build is OOM-killed.  
 **In-memory only** — restarting the container drops registrations, invites, and peer pairs.

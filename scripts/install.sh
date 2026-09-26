@@ -1,5 +1,5 @@
 #!/bin/sh
-# tyd one-click install: GitHub release binary + pairing bootstrap.
+# tyd one-click install: Control Panel release binary + pairing bootstrap.
 # Human (TTY): choose server or client; server can mint a copy-paste client command.
 # Agent / non-TTY: --agent (default server) or --client --accept TOKEN.
 #
@@ -7,9 +7,9 @@
 # tyd holds that user's shells, so it never needs more privilege than the user has.
 set -eu
 
-REPO="${TYD_REPO:-fdaio/tyd}"
 INSTALL_URL="${TYD_INSTALL_URL:-}"
 PLATFORM_URL="${TYD_PLATFORM:-}"
+RELEASE_URL="${TYD_RELEASE_URL:-}"
 ROLE=""
 ACCEPT_TOKEN=""
 AGENT=0
@@ -17,7 +17,7 @@ AS_NAME=""
 
 usage() {
 	cat <<'EOF'
-Install tyd from GitHub Releases.
+Install tyd from the Control Panel release archive.
 
 Usage:
   curl -fsSL https://app.getfda.dev/install.sh | sh
@@ -33,10 +33,13 @@ Options:
   --platform URL      Control Panel URL
   -h, --help          Show this help
 
-Env: TYD_REPO, TYD_INSTALL_URL, TYD_PLATFORM, TYD_BINDIR
+Env: TYD_INSTALL_URL, TYD_PLATFORM, TYD_RELEASE_URL, TYD_BINDIR
 
 Installs for the current user only (~/.local/bin, systemd --user or launchd).
 Do not run this with sudo.
+
+Binaries are fetched from <platform>/releases/tyd-<os>.tar.gz
+(default platform https://app.getfda.dev).
 EOF
 }
 
@@ -100,6 +103,15 @@ if [ -z "$INSTALL_URL" ]; then
 		base="${PLATFORM_URL%/}"
 	fi
 	INSTALL_URL="${base}/install.sh"
+else
+	base="${INSTALL_URL%/install.sh}"
+	base="${base%/}"
+	if [ -n "$PLATFORM_URL" ]; then
+		base="${PLATFORM_URL%/}"
+	fi
+fi
+if [ -z "$PLATFORM_URL" ]; then
+	PLATFORM_URL="$base"
 fi
 
 if [ "$AGENT" -eq 1 ] && [ -z "$ROLE" ]; then
@@ -174,9 +186,12 @@ log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT HUP
 ARCHIVE="$TMP/tyd.tgz"
-URL="https://github.com/${REPO}/releases/latest/download/tyd-${OS}.tar.gz"
+if [ -z "$RELEASE_URL" ]; then
+	RELEASE_URL="${base}/releases/tyd-${OS}.tar.gz"
+fi
+URL="$RELEASE_URL"
 if ! curl -fsSL --retry 3 -o "$ARCHIVE" "$URL"; then
-	die "download failed: $URL (publish a v* GitHub release, or build with make build)"
+	die "download failed: $URL (place tyd-${OS}.tar.gz on the Control Panel /releases/, or build with make build)"
 fi
 tar -xzf "$ARCHIVE" -C "$TMP"
 SRC="$TMP/${OS}/tyd-${ARCH}"
@@ -368,7 +383,7 @@ install_client() {
 	fi
 	"$@"
 	log "Client ready. Binary: $TYD"
-	log "Handbook: https://github.com/${REPO}/blob/main/docs/connect.md"
+	log "Handbook: https://github.com/fdaio/tyd/blob/main/docs/connect.md"
 }
 
 install_server() {
@@ -384,7 +399,7 @@ install_server() {
 	*) mint_invite ;;
 	esac
 	log "Server ready. Binary: $TYD"
-	log "Handbook: https://github.com/${REPO}/blob/main/docs/connect.md"
+	log "Handbook: https://github.com/fdaio/tyd/blob/main/docs/connect.md"
 }
 
 case ":$PATH:" in
