@@ -1,20 +1,28 @@
-# Blind rendezvous relay for dual-NAT tyd peers (not Control Panel).
-# Put TLS at the edge (Cloudflare). Runtime is small for 1C/1G hosts.
+# Optional standalone tyd-relay (WebSocket). Default clients use CP /relay instead.
+#
+# Default stage: prebuilt via make docker-prep (scratch — no base image pull).
+# Compile in-image: docker build --target runtime-from-source -f Dockerfile.relay .
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ENV GOMAXPROCS=1
-RUN CGO_ENABLED=0 GOOS=linux go build -p 1 -trimpath -ldflags "-s -w" \
+ARG GOMAXPROCS=1
+ENV GOMAXPROCS=$GOMAXPROCS
+RUN CGO_ENABLED=0 GOOS=linux go build -p "$GOMAXPROCS" -trimpath -ldflags "-s -w" \
 	-o /out/relay ./cmd/relay
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM scratch AS runtime-from-source
 COPY --from=build /out/relay /relay
 EXPOSE 9090
-USER nonroot:nonroot
-ENV GOMAXPROCS=1
+USER 65532:65532
+ENTRYPOINT ["/relay"]
+CMD ["-listen", "0.0.0.0:9090"]
+
+FROM scratch AS runtime
+COPY bin/relay /relay
+EXPOSE 9090
+USER 65532:65532
 ENTRYPOINT ["/relay"]
 CMD ["-listen", "0.0.0.0:9090"]

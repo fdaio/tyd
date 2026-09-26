@@ -87,7 +87,7 @@ Control Panel + optional relay (no TLS in the containers — put Cloudflare or a
 ```bash
 cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
 make dist && cp dist/tyd-*.tar.gz releases/   # binaries for install.sh
-docker compose up -d --build                  # controlpanel + relay
+make docker-prep && docker compose up -d --build   # host Go compile + COPY-only image
 curl -s http://127.0.0.1:8080/healthz   # ok
 curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 ./tyd register                          # --platform defaults to https://app.getfda.dev
@@ -99,12 +99,13 @@ archives in `./releases` (mounted read-only into the container).
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
 Default relay is WebSocket at `https://app.getfda.dev/relay` (served by the CP).
-Optional standalone `relay` service listens on `${TYD_RELAY_PORT:-9090}`; point
-`--relay` at it when not using CP `/relay`. `--relay off` disables.
+Optional standalone `relay` service: `docker compose --profile standalone-relay up -d`
+(after `make docker-prep`). `--relay off` disables.
 
 Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
-Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded
-`go build` to lower peak RAM. On 1C/1G, add ~1G swap if the first build is OOM-killed.  
+**Images do not compile Go by default** — `make docker-prep` builds `bin/*` on the host
+(or CI), then Docker only packs distroless. Use `make docker-source` only when the
+build host has no Go toolchain (needs RAM/swap on 1C/1G).  
 **CP state is in-memory only** — restarting the controlpanel container drops registrations, invites, and peer pairs. The relay holds no durable session state.
 
 CP stores pairing metadata (ids + public keys) only — never session/TTY data.

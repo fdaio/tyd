@@ -1,28 +1,36 @@
-# Control Panel only — pairing metadata HTTP API (no TTY / session data).
-# Restart drops in-memory registration, invites, and peer pairs.
+# Control Panel — pairing HTTP API + WebSocket /relay (no TTY storage).
 #
-# Tuned for small VPS (1C/1G): Alpine build + single-threaded compile to cut
-# peak RAM. Runtime stays distroless/static. Prefer 1G swap if `docker build`
-# is OOM-killed on first compile.
+# Default (last) stage COPIES a prebuilt linux binary — no Go toolchain in Docker.
+#   make docker-prep && docker compose build
+# On a 1C/1G VPS: copy bin/controlpanel from CI, then compose build (seconds).
 #
-# No BuildKit-only features (RUN --mount) so plain `docker compose build` works
-# on older Docker daemons without DOCKER_BUILDKIT=1.
+# Compile inside Docker only when needed (slow / high RAM):
+#   docker build --target runtime-from-source -f Dockerfile.controlpanel .
+#
+# Runtime base is scratch (static Go binary) — avoids pulling distroless/golang
+# on the common path.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-RUN apk add --no-cache ca-certificates git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# One compile job + one Go thread: slower, much less peak memory on 1C/1G.
-ENV GOMAXPROCS=1
-RUN CGO_ENABLED=0 GOOS=linux go build -p 1 -trimpath -ldflags "-s -w" \
+ARG GOMAXPROCS=1
+ENV GOMAXPROCS=$GOMAXPROCS
+RUN CGO_ENABLED=0 GOOS=linux go build -p "$GOMAXPROCS" -trimpath -ldflags "-s -w" \
 	-o /out/controlpanel ./cmd/controlpanel
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM scratch AS runtime-from-source
 COPY --from=build /out/controlpanel /controlpanel
 EXPOSE 8080
-USER nonroot:nonroot
-ENV GOMAXPROCS=1
+USER 65532:65532
+ENTRYPOINT ["/controlpanel"]
+CMD ["-listen", "0.0.0.0:8080"]
+
+# Default target: prebuilt binary from make docker-prep (must be last stage).
+FROM scratch AS runtime
+COPY bin/controlpanel /controlpanel
+EXPOSE 8080
+USER 65532:65532
 ENTRYPOINT ["/controlpanel"]
 CMD ["-listen", "0.0.0.0:8080"]

@@ -1,6 +1,7 @@
 /tyd
 /controlpanel
 /dist
+/bin
 .wf/
 .DS_Store
 .env
