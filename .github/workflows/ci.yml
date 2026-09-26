@@ -44,6 +44,9 @@ jobs:
   test-macos:
     name: test (macos)
     runs-on: macos-latest
+    # Private-repo macOS minutes are currently blocked by billing; don't block
+    # the self-hosted Linux pipeline.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +75,7 @@ jobs:
         run: go build -o tyd .
 
   dist:
-    needs: [test-linux, test-macos]
+    needs: [test-linux]
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
