@@ -1747,23 +1747,29 @@ func formatRemaining(d time.Duration) string {
 // After printInviteResult, stderr looks like:
 //
 //	invite ttl …
+//	relay …                 (optional)
 //	<blank>
 //	Copy and run on the peer:
 //	  tyd accept …
 //
 // From the line after the accept command, move up to rewrite the ttl row.
-const (
-	inviteTTLCursorUp   = 4
-	inviteTTLCursorDown = 3
-)
+func inviteTTLCursorOffsets(showRelay bool) (up, down int) {
+	// blank + "Copy…" + accept command
+	below := 3
+	if showRelay {
+		below++
+	}
+	return below + 1, below
+}
 
-func rewriteInviteTTL(expiresAt time.Time, color bool, desc string) {
+func rewriteInviteTTL(expiresAt time.Time, color bool, desc string, showRelay bool) {
 	if desc == "" {
 		desc = formatRemaining(time.Until(expiresAt))
 	}
-	fmt.Fprintf(os.Stderr, "\033[%dA\r\033[K", inviteTTLCursorUp)
+	up, down := inviteTTLCursorOffsets(showRelay)
+	fmt.Fprintf(os.Stderr, "\033[%dA\r\033[K", up)
 	writeHelpRows(os.Stderr, []helpRow{{"invite ttl", desc}}, color)
-	fmt.Fprintf(os.Stderr, "\033[%dB", inviteTTLCursorDown)
+	fmt.Fprintf(os.Stderr, "\033[%dB", down)
 }
 
 // waitForInviteAccept keeps the process alive until a peer accepts the invite,
@@ -1786,12 +1792,14 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 
 	tty := colorEnabled(os.Stderr)
 	color := tty
+	rurl := relayURL(opts)
+	showRelay := rurl != "" && rurl != "off"
 
 	for {
 		remaining := time.Until(expiresAt)
 		if remaining <= 0 {
 			if tty {
-				rewriteInviteTTL(expiresAt, color, "expired")
+				rewriteInviteTTL(expiresAt, color, "expired", showRelay)
 			}
 			return fmt.Errorf("invite expired")
 		}
@@ -1803,7 +1811,7 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 			return fmt.Errorf("invite revoked")
 		case <-ticker.C:
 			if tty {
-				rewriteInviteTTL(expiresAt, color, "")
+				rewriteInviteTTL(expiresAt, color, "", showRelay)
 			}
 			remote, err := cli.ListPeers(daemonID, pub)
 			if err != nil {
