@@ -12,17 +12,38 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux
-            runs-on: [self-hosted, Linux, X64]
-          - name: macos
-            runs-on: macos-latest
-    runs-on: ${{ matrix.runs-on }}
-    name: test (${{ matrix.name }})
+  test-linux:
+    name: test (linux)
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: |
+          for i in 1 2 3 4 5; do
+            go mod download && exit 0
+            echo "go mod download failed (attempt $i); retrying..."
+            sleep $((i * 5))
+          done
+          exit 1
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -o tyd .
+
+  test-macos:
+    name: test (macos)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -51,7 +72,7 @@ jobs:
         run: go build -o tyd .
 
   dist:
-    needs: test
+    needs: [test-linux, test-macos]
     runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
