@@ -4,7 +4,7 @@
 
 It holds PTY/shell sessions on a target host. Clients may attach, detach, and reattach without killing the shell. It is not an agent, not a VPN, and not a file-transfer tool.
 
-Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS + QUIC data-plane), Control Panel pairing including data-plane, approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and optional SSH-style `--verbose` connect debug.
+Completed so far: local detachable PTY, Ed25519 identity + session capabilities, Transport (`unix` + TLS + QUIC data-plane), Control Panel pairing, **dual-NAT `tyd-relay` fallback** (direct first, then rendezvous), approval modes, session aliases, peer/invite revoke, client-local session catalog (`session list` without CP/daemon), create-then-attach UX, and optional SSH-style `--verbose` connect debug.
 
 ## Documentation
 
@@ -12,10 +12,11 @@ Completed so far: local detachable PTY, Ed25519 identity + session capabilities,
 |-----|----------|
 | [docs/overview.md](docs/overview.md) | Positioning, architecture, boundaries |
 | [docs/connect.md](docs/connect.md) | Pair, connect, detach, close (human and automated) |
-| [docs/guide.md](docs/guide.md) | Install, up, session, TLS, pairing pointers |
+| [docs/guide.md](docs/guide.md) | Install, up, session, TLS, relay, pairing pointers |
 | [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
 | [docs/roadmap.md](docs/roadmap.md) | Done + control-plane pairing steps |
 | [docs/requirements/control-plane-pairing.md](docs/requirements/control-plane-pairing.md) | CP pairing requirements (full) |
+| [docs/requirements/dataplane-networking.md](docs/requirements/dataplane-networking.md) | QUIC direct + relay data-plane |
 
 ## Install
 
@@ -68,19 +69,24 @@ go run ./cmd/controlpanel -listen 127.0.0.1:8080
 ./tyd --platform http://127.0.0.1:8080 register   # prints accept line; waits until peer accepts (Ctrl-C revokes)
 ./tyd --platform http://127.0.0.1:8080 accept <token> --as peer-nick
 # production: tyd register  →  peer pastes stdout; use --no-wait to print and exit
-./tyd --peer peer-nick session create   # CP signaling once, then direct dial; attaches by default
+./tyd --peer peer-nick session create   # CP signaling; direct dial, then relay if needed
 ./tyd session list                      # still local — does not hit CP
 ./tyd revoke peer-nick
 ```
 
+Across two NATs with no public IP, keep the default `--relay https://relay.getfda.dev`
+(or point both sides at your own relay). Clients try published QUIC candidates first,
+then fall back through the rendezvous. Details: [docs/guide.md](docs/guide.md),
+[dataplane-networking.md](docs/requirements/dataplane-networking.md).
+
 ### Docker Compose (production-oriented)
 
-Control Panel only (no TLS in the container — put Cloudflare or another edge in front):
+Control Panel + optional relay (no TLS in the containers — put Cloudflare or another edge in front):
 
 ```bash
-cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT
+cp .env.example .env   # optional; edit TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
 make dist && cp dist/tyd-*.tar.gz releases/   # binaries for install.sh
-docker compose up -d --build
+docker compose up -d --build                  # controlpanel + relay
 curl -s http://127.0.0.1:8080/healthz   # ok
 curl -fsSL http://127.0.0.1:8080/install.sh | head -1
 ./tyd register                          # --platform defaults to https://app.getfda.dev
@@ -91,10 +97,14 @@ archives in `./releases` (mounted read-only into the container).
 
 Local / self-hosted CP only: `./tyd --platform http://127.0.0.1:8080 register`.
 
-Files: `Dockerfile.controlpanel`, `docker-compose.yml`, `.env.example`, `releases/`.  
+Relay listens on `${TYD_RELAY_PORT:-9090}`; production hostname is typically
+`relay.getfda.dev` with edge TLS. Clients and servers default to
+`--relay https://relay.getfda.dev` (`--relay off` disables).
+
+Files: `Dockerfile.controlpanel`, `Dockerfile.relay`, `docker-compose.yml`, `.env.example`, `releases/`.  
 Runtime is capped (~0.5 CPU / 128MB) for small VPS; build uses Alpine + single-threaded
 `go build` to lower peak RAM. On 1C/1G, add ~1G swap if the first build is OOM-killed.  
-**In-memory only** — restarting the container drops registrations, invites, and peer pairs.
+**CP state is in-memory only** — restarting the controlpanel container drops registrations, invites, and peer pairs. The relay holds no durable session state.
 
 CP stores pairing metadata (ids + public keys) only — never session/TTY data.
 
@@ -118,6 +128,7 @@ CP stores pairing metadata (ids + public keys) only — never session/TTY data.
 | Session aliases | `~/.tyd/aliases.json` |
 | Session catalog | `~/.tyd/sessions.json` (client-local; used by `session list`) |
 | Platform | `https://app.getfda.dev` |
+| Relay | `https://relay.getfda.dev` (`--relay off` to disable) |
 | Server cert/key | `~/.tyd/server.crt`, `~/.tyd/server.key` |
 
 `attach` ≠ `write`. A key granted only `attach` can watch output (via `attach` or `watch`) but cannot type. `watch` is read-only and does not take the exclusive attach lock.

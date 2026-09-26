@@ -167,10 +167,9 @@ These guide Step 2+; not implemented in Step 1.
 
 ## Explicitly out of Step 1–5
 
-- Remote mesh beyond loopback advertise / data-listen
+- Remote mesh beyond loopback advertise / data-listen (relay MVP is separate; see dataplane-networking.md)
 - Production deployment of `app.getfda.dev` (local CP is enough for tests)
-- NAT traversal / STUN
-
+- NAT traversal / STUN (relay fallback covers dual-NAT without hole punching)
 ## Step 3 deliverables
 
 - Daemon reads `Registration.ApprovalMode` into `server.Config` (default `full`)

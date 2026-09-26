@@ -68,6 +68,19 @@ Omit the session id to reuse the most recent one (`tyd status` / `recent.json`).
 
 The **server** must stay up (`tyd status` should not say the local daemon is down). Data-plane addresses expire on the Control Panel after about 90s without `tyd up`.
 
+### Dual NAT / no public IP
+
+Peer traffic never goes through the Control Panel. After pairing, the client tries the
+server’s published **QUIC** candidates first. If every direct dial fails (typical when
+both sides are behind NAT with no public address), tyd falls back to **`tyd-relay`**
+(default `https://relay.getfda.dev`) — same idea as Tailcat: direct first, rendezvous last.
+
+- Deploy relay separately (compose service `relay`, or `go run ./cmd/relay`); put TLS at the edge.
+- Server `tyd up` offers its daemon id on the relay automatically.
+- Client needs no extra flags if the default relay URL is reachable; use `--relay URL` or `--relay off`.
+
+Details: [guide.md](guide.md), [dataplane-networking.md](requirements/dataplane-networking.md).
+
 ## Detach and close
 
 | Action | Command / key |
@@ -80,5 +93,6 @@ The **server** must stay up (`tyd status` should not say the local daemon is dow
 
 ## See also
 
-- [guide.md](guide.md) — flags, approval modes, TLS
+- [guide.md](guide.md) — flags, approval modes, TLS, relay
 - [overview.md](overview.md) — what tyd is and is not
+- [dataplane-networking.md](requirements/dataplane-networking.md) — QUIC + relay
