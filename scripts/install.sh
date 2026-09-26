@@ -196,8 +196,24 @@ fi
 tar -xzf "$ARCHIVE" -C "$TMP"
 SRC="$TMP/${OS}/tyd-${ARCH}"
 [ -f "$SRC" ] || die "archive missing ${OS}/tyd-${ARCH}"
-cp "$SRC" "${BINDIR}/tyd"
-chmod 755 "${BINDIR}/tyd"
+
+# Replace via temp + mv so a running tyd (ETXTBSY) does not block upgrade.
+# The old process keeps the previous inode; new invocations use the new file.
+install_binary() {
+	src="$1"
+	dest="$2"
+	dir="$(dirname "$dest")"
+	mkdir -p "$dir"
+	tmp="${dest}.new.$$"
+	cp "$src" "$tmp"
+	chmod 755 "$tmp"
+	if ! mv -f "$tmp" "$dest"; then
+		rm -f "$tmp"
+		die "could not install binary to $dest"
+	fi
+}
+
+install_binary "$SRC" "${BINDIR}/tyd"
 TYD="${BINDIR}/tyd"
 [ -x "$TYD" ] || die "binary not executable: $TYD"
 
@@ -291,9 +307,10 @@ PLIST
 }
 
 start_daemon_nohup() {
+	# Caller (restart_daemon / fresh install) must ensure no live daemon remains.
 	if [ -S "${TYD_DIR}/tyd.sock" ]; then
-		log "tyd socket already present; not starting another daemon"
-		return 0
+		log "removing stale socket ${TYD_DIR}/tyd.sock"
+		rm -f "${TYD_DIR}/tyd.sock"
 	fi
 	nohup "$TYD" up >>"${TYD_DIR}/tyd.log" 2>&1 &
 	printf '%s\n' "$!" >"${TYD_DIR}/tyd.pid"
@@ -332,6 +349,68 @@ start_daemon() {
 		sleep 1
 	done
 	log "warning: tyd.sock not seen yet; check ${TYD_DIR}/tyd.log"
+}
+
+daemon_is_running() {
+	if [ -S "${TYD_DIR}/tyd.sock" ]; then
+		return 0
+	fi
+	if has_systemd_user && systemctl --user is-active --quiet tyd.service 2>/dev/null; then
+		return 0
+	fi
+	if [ -f "${HOME_DIR}/Library/LaunchAgents/dev.getfda.tyd.plist" ]; then
+		if launchctl list 2>/dev/null | grep -q 'dev.getfda.tyd'; then
+			return 0
+		fi
+	fi
+	if [ -f "${TYD_DIR}/tyd.pid" ]; then
+		pid="$(cat "${TYD_DIR}/tyd.pid" 2>/dev/null || true)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			return 0
+		fi
+	fi
+	return 1
+}
+
+stop_daemon() {
+	stopped=0
+	if has_systemd_user && systemctl --user cat tyd.service >/dev/null 2>&1; then
+		systemctl --user stop tyd.service >/dev/null 2>&1 || true
+		stopped=1
+	fi
+	plist="${HOME_DIR}/Library/LaunchAgents/dev.getfda.tyd.plist"
+	if [ -f "$plist" ]; then
+		launchctl unload "$plist" >/dev/null 2>&1 || true
+		stopped=1
+	fi
+	if [ -f "${TYD_DIR}/tyd.pid" ]; then
+		pid="$(cat "${TYD_DIR}/tyd.pid" 2>/dev/null || true)"
+		if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+			kill "$pid" >/dev/null 2>&1 || true
+			i=0
+			while [ "$i" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+				i=$((i + 1))
+				sleep 0.1
+			done
+			kill -9 "$pid" >/dev/null 2>&1 || true
+			stopped=1
+		fi
+		rm -f "${TYD_DIR}/tyd.pid"
+	fi
+	# Drop a stale socket so the next start can bind.
+	i=0
+	while [ "$i" -lt 20 ] && [ -S "${TYD_DIR}/tyd.sock" ]; do
+		rm -f "${TYD_DIR}/tyd.sock" 2>/dev/null || true
+		i=$((i + 1))
+		sleep 0.1
+	done
+	[ "$stopped" -eq 1 ] && log "Stopped previous tyd daemon"
+}
+
+restart_daemon() {
+	log "Restarting tyd daemon with the new binary"
+	stop_daemon
+	start_daemon
 }
 
 is_registered() {
@@ -387,7 +466,11 @@ install_client() {
 }
 
 install_server() {
-	start_daemon
+	if [ "$WAS_RUNNING" -eq 1 ]; then
+		restart_daemon
+	else
+		start_daemon
+	fi
 	if [ "$AGENT" -eq 1 ] || ! have_tty; then
 		mint_invite
 		log "Server ready. Binary: $TYD"
@@ -406,6 +489,11 @@ case ":$PATH:" in
 *":$BINDIR:"*) ;;
 *) log "Add ${BINDIR} to PATH (e.g. export PATH=\"${BINDIR}:\$PATH\")" ;;
 esac
+
+WAS_RUNNING=0
+if daemon_is_running; then
+	WAS_RUNNING=1
+fi
 
 if [ "$ROLE" = client ]; then
 	install_client
