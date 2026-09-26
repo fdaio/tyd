@@ -1,6 +1,6 @@
 //go:build darwin || freebsd || netbsd || openbsd || dragonfly
 
-package main
+package ttyutil
 
 import "golang.org/x/sys/unix"
 

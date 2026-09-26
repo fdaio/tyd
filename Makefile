@@ -1,7 +1,7 @@
 .PHONY: build test fmt clean dist dist-bins controlpanel docker-prep docker docker-source
 
 build:
-	go build -o tyd .
+	go build -o tyd ./cmd/tyd
 
 controlpanel:
 	go build -o controlpanel ./cmd/controlpanel
@@ -56,19 +56,19 @@ dist-bins: \
 
 dist/linux/tyd-amd64:
 	mkdir -p dist/linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
 dist/linux/tyd-arm64:
 	mkdir -p dist/linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
 dist/darwin/tyd-amd64:
 	mkdir -p dist/darwin
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
 dist/darwin/tyd-arm64:
 	mkdir -p dist/darwin
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
 dist/freebsd/tyd-amd64:
 	mkdir -p dist/freebsd
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
 dist/freebsd/tyd-arm64:
 	mkdir -p dist/freebsd
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ .
+	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd

@@ -1,6 +1,6 @@
 //go:build linux || android || solaris || illumos || aix
 
-package main
+package ttyutil
 
 import "golang.org/x/sys/unix"
 

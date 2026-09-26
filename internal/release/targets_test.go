@@ -58,7 +58,7 @@ func TestReleaseTargetsCrossCompile(t *testing.T) {
 	for _, tg := range Targets() {
 		t.Run(tg.GOOS+"/"+tg.GOARCH, func(t *testing.T) {
 			out := filepath.Join(dest, tg.GOOS+"-"+tg.GOARCH)
-			cmd := exec.Command("go", "build", "-o", out, ".")
+			cmd := exec.Command("go", "build", "-o", out, "./cmd/tyd")
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(),
 				"CGO_ENABLED=0",

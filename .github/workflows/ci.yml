@@ -41,7 +41,7 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o tyd .
+        run: go build -o tyd ./cmd/tyd
 
   test-macos:
     name: test (macos)
@@ -74,7 +74,7 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o tyd .
+        run: go build -o tyd ./cmd/tyd
 
   dist:
     needs: [test-linux]
@@ -97,7 +97,7 @@ jobs:
             local os="$1" arch="$2"
             echo "==> $os/$arch"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/$os/tyd-$arch" .
+              -o "dist/$os/tyd-$arch" ./cmd/tyd
           }
           pids=
           for os in linux darwin freebsd; do

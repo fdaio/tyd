@@ -1,4 +1,4 @@
-package main
+package scripts_test
 
 import (
 	"os"
@@ -15,7 +15,7 @@ func installScriptPath(t *testing.T) string {
 	if !ok {
 		t.Fatal("caller")
 	}
-	return filepath.Join(filepath.Dir(file), "scripts", "install.sh")
+	return filepath.Join(filepath.Dir(file), "install.sh")
 }
 
 func TestInstallScriptSyntax(t *testing.T) {
