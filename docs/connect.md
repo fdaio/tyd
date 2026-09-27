@@ -54,6 +54,12 @@ or, if tyd is already installed there:
 tyd accept TOKEN --as laptop
 ```
 
+Accepting an invite you already used for this peer prints that peer (`already paired with <id> (laptop)`) instead of failing. When the peer's daemon is up, accept also prints the next command:
+
+```bash
+tyd session create --peer laptop
+```
+
 `register` and `invite` wait for the peer by default (with a TTL countdown;
 Ctrl-C revokes the invite); `--no-wait` prints the accept line and exits.
 
