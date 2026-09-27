@@ -6,13 +6,6 @@ A daemon holds PTY/shell sessions on a target host. A client pairs with that hos
 then creates or attaches sessions; the shell keeps running when the client goes
 away. tyd is not an agent, not a VPN, and not a file-transfer tool.
 
-## Demo
-
-![tyd session create attaches a shell on a paired machine](docs/demo/session-create.gif)
-
-`tyd session create` opens a shell on the paired host. That shell is not SSH:
-`ps` shows only the `grep`. `exit` returns to the local prompt.
-
 ## Install
 
 ```bash
