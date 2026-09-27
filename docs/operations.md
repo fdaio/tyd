@@ -17,6 +17,18 @@ to `~/.local`) and starts the per-user daemon, which stays up after logout.
 Set `DESTDIR` to stage a packaging root without starting a daemon.
 `controlpanel` is a separate binary and is not installed.
 
+## Daily release
+
+GitHub Actions workflow `Release` runs every day at 23:00 Asia/Shanghai
+(`0 15 * * *` UTC), and can be started by hand. The version is the Shanghai
+calendar date plus the 7-character commit id, for example `2026.09.27-19d5e02`.
+
+It publishes one GitHub Release of `main` when that commit is not already tagged
+in this form. The archives are `tyd-linux.tar.gz`, `tyd-darwin.tar.gz`, and
+`tyd-freebsd.tar.gz`. A manual tag such as `v0.1.0` is not a daily version. If
+`main` has no new commit since the last daily tag, the workflow succeeds and
+skips the build and the release.
+
 ## Run the daemon
 
 ```bash

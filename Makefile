@@ -22,6 +22,7 @@ controlpanel:
 test:
 	go test ./...
 	sh -n scripts/install.sh
+	sh scripts/release_plan_test.sh
 
 fmt:
 	go fmt ./...
