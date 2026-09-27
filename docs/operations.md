@@ -7,7 +7,9 @@ git clone git@github.com:fdaio/tyd.git && cd tyd
 make test
 make build          # ./tyd
 make install        # ~/.local/bin/tyd
+make fmt            # gofmt the tree
 make controlpanel   # ./controlpanel
+make dist           # ./dist/tyd-<os>.tar.gz release archives
 ```
 
 `make install` copies only the `tyd` binary to `$(PREFIX)/bin` (`PREFIX`

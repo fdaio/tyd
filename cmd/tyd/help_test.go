@@ -6,6 +6,38 @@ import (
 	"testing"
 )
 
+func TestHelpRowsNeverGlueNameToDesc(t *testing.T) {
+	rows := []helpRow{
+		{"--short", "desc"},
+		{"--exactly-at-pad-width-xx", "desc"},
+		{"--session-idle-timeout D", "up: close sessions idle this long"},
+		{"--live PATH", "up/doctor: live-agent state root"},
+		{"a-very-long-flag-name-that-exceeds-the-column", "desc"},
+	}
+	for _, color := range []bool{false, true} {
+		for _, r := range rows {
+			var buf bytes.Buffer
+			writeHelpRows(&buf, []helpRow{r}, color)
+			line := strings.TrimRight(buf.String(), "\n")
+			if color {
+				line = strings.ReplaceAll(line, ansiCyan, "")
+				line = strings.ReplaceAll(line, ansiReset, "")
+			}
+			line = strings.TrimPrefix(line, "  ")
+			if !strings.HasPrefix(line, r.name) {
+				t.Fatalf("color=%v: name mangled for %q: %q", color, r.name, line)
+			}
+			rest := line[len(r.name):]
+			if rest == "" || strings.HasPrefix(rest, r.desc) {
+				t.Fatalf("color=%v: name and desc glued for %q: %q", color, r.name, line)
+			}
+			if !strings.HasPrefix(strings.TrimLeft(rest, " "), r.desc) {
+				t.Fatalf("color=%v: desc not separated for %q: %q", color, r.name, line)
+			}
+		}
+	}
+}
+
 func TestRootHelpPlain(t *testing.T) {
 	var buf bytes.Buffer
 	writeRootHelp(&buf, false)

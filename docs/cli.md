@@ -75,6 +75,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr |
 | `--force` | `register`: replace an existing registration (invalidates peers) |
 | `--fix` | `doctor`: rebuild a damaged `peers.json` from the Control Panel |
+| `--live PATH` | `up` / `doctor`: live-agent state root (default `~/.tyd/live`) |
 
 ## State directory
 
