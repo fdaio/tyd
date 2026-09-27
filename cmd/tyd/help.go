@@ -26,7 +26,7 @@ func writeHelpRows(w io.Writer, rows []helpRow, color bool) {
 			fmt.Fprintf(w, "  %s%s%s%s%s\n", ansiCyan, name, ansiReset, strings.Repeat(" ", pad), r.desc)
 			continue
 		}
-		fmt.Fprintf(w, "  %-*s%s\n", helpColPad, name, r.desc)
+		fmt.Fprintf(w, "  %s%s%s\n", name, strings.Repeat(" ", pad), r.desc)
 	}
 }
 
@@ -67,7 +67,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Daemon:")
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
-		{"status", "Show CP registration, peers, and connections"},
+		{"status", "Show CP registration, peers, aliases, and connections"},
 		{"approval", "Show or set approval mode (full|pre|post)"},
 		{"doctor", "Check state files and disk; --fix rebuilds peers.json"},
 		{"serve", "Deprecated alias for up"},
@@ -93,6 +93,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--trust PATH", fmt.Sprintf("Trust file (default %s)", paths.DefaultTrust())},
 		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
 		{"--aliases PATH", fmt.Sprintf("Session aliases file (default %s)", paths.DefaultAliases())},
+		{"--recent PATH", fmt.Sprintf("Recent peer/session file (default %s)", paths.DefaultRecent())},
 		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
 	}, color)
 	fmt.Fprintln(w)
@@ -100,13 +101,14 @@ func writeRootHelp(w io.Writer, color bool) {
 	writeHelpRows(w, []helpRow{
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--audit-log PATH", fmt.Sprintf("up: record control events as JSON lines (e.g. %s)", paths.DefaultAudit())},
-		{"--session-idle-timeout", "up: close sessions idle this long, e.g. 8h (default off)"},
+		{"--session-idle-timeout D", "up: close sessions idle this long, e.g. 8h (default off)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--force", "register: replace existing registration (invalidates peers)"},
 		{"--fix", "doctor: rebuild a damaged peers.json from the Control Panel"},
+		{"--live PATH", fmt.Sprintf("up/doctor: live-agent state root (default %s)", paths.DefaultLive())},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")

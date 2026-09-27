@@ -74,15 +74,18 @@ $ tyd session attach jammy          # same session id, a brand new shell
 `logout` is not in that list on purpose: it only ends a login shell, and tyd
 starts the shell as a plain interactive one, so use `exit` or Ctrl-D.
 
-`attach` on an `EXITED` session starts a fresh shell with the same shell, working
-directory, and window size, replaying the recorded output first, so you still see
-what the previous shell printed. `watch` on an `EXITED` session prints the notice
-and stops.
+`attach` on an `EXITED` session starts a fresh shell with the same shell program,
+working directory, and window size, replaying the recorded output first, so you
+still see what the previous shell printed. `watch` on an `EXITED` session prints
+the notice and stops.
 
-So a session ends in exactly two ways: `tyd session close`, or
-`--session-idle-timeout` (see below). Sessions are daemon state, so restarting
-the daemon still ends non-live sessions; `tyd session close` is how you keep a
-record of them.
+A session ends in exactly two ways: `tyd session close`, or
+`--session-idle-timeout` (see below). Nothing else ends one — not detaching, not
+the shell exiting, and not restarting the daemon. `tyd up` re-adopts every
+surviving live-agent, and a session whose shell is gone comes back as `EXITED`.
+Retiring a session is therefore a deliberate `tyd session close`; the row stays in
+the client catalog as history, because that catalog is client-local and outlives
+the daemon.
 
 ### Aliases
 

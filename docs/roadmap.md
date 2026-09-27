@@ -8,6 +8,9 @@
 - `tyd up` (alias `serve`) / `session create|list|attach|watch|close` / `status` / `keygen`
 - PTY + shell; resize; SIGINT-style signals via PTY control bytes
 - Client disconnect / detach leaves the shell running; reattach works
+- A shell that exits (`exit`, Ctrl-D, crash, kill) does not close the session: it
+  becomes `EXITED`, stays attachable, and the next attach replays the recorded
+  output before starting a new shell
 - One **live-agent process per session** (`~/.tyd/live/<id>/`), so sessions survive
   client disconnects *and* daemon restarts; the next `tyd up` re-adopts them and
   re-grants the creator's caps

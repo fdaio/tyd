@@ -93,10 +93,15 @@ seconds, so a long-lived pairing keeps refreshing them only while `tyd up` runs.
 |--------|----------------|
 | Leave the shell running | `Ctrl-\` while attached |
 | Follow output only | `tyd session watch` |
-| Kill the shell | `tyd session close <id-or-alias>` |
+| End the shell, keep the session | `exit` or Ctrl-D inside the shell → `EXITED` |
+| End the session | `tyd session close <id-or-alias>` |
 
-Detach is not close. `session close` marks the session `CLOSED` in the client
-catalog and leaves it as history until the daemon restarts.
+Detach is not close, and neither is a shell that exits on its own. `exit`,
+Ctrl-D, a crash, or a kill ends only the shell: the session turns `EXITED` and
+stays attachable, so the next `tyd session attach` replays what that shell printed
+and starts a new one for the same session id. `session close` is the deliberate
+end of a session — it marks the session `CLOSED` in the client catalog, where the
+row remains as history.
 
 ## Dual NAT / no public IP
 

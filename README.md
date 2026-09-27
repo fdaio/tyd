@@ -41,8 +41,9 @@ tyd session watch laptop              # read-only follow
 tyd session close laptop              # kill the shell
 ```
 
-`Ctrl-\` detaches and leaves the shell running; `session close` ends it. Pairing,
-dual-NAT, and network details: [docs/connect.md](docs/connect.md).
+`Ctrl-\` detaches and leaves the shell running; `session close` ends the session. A
+shell that exits on its own (`exit`, Ctrl-D) leaves the session `EXITED` and still
+attachable. Pairing, dual-NAT, and network details: [docs/connect.md](docs/connect.md).
 
 ## Documentation
 

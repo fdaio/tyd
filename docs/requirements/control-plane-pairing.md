@@ -94,7 +94,8 @@ holds standing access.
 ### Session idle timeout
 
 - `tyd up --session-idle-timeout D` closes sessions unattended for longer than `D`
-- **Default off**; idle starts at the last detach and resets on attach
+- **Default off**; idle starts at the last detach and resets on attach — or, when
+  the shell has exited, at the moment the shell went away
 - `PENDING` sessions are never reaped
 
 ## Identity / daemon
@@ -186,7 +187,8 @@ These guide Step 2+; not implemented in Step 1.
 - **post**: create as full; on CLOSED emit audit line (principal, session id, created_at, closed_at, peer id if known); no TTY in log; audit stays local (not sent to CP)
 - **full**: create works without approve
 - Protocol: `approve` / `reject` (unix only); CLI `tyd session approve|reject`
-- List shows `PENDING`; alive-first sort treats PENDING as alive
+- List shows `PENDING`; alive-first sort treats PENDING as alive (the alive group
+  is `ATTACHED`, `EXITED`, `PENDING`, `DETACHED` — see [session.md](../session.md))
 - Tests for pre/post/full and unix bypass under pre
 
 ## Step 4 deliverables

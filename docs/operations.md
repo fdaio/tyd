@@ -6,7 +6,9 @@
 git clone git@github.com:fdaio/tyd.git && cd tyd
 make build      # ./tyd
 make test
+make fmt        # gofmt the tree
 make controlpanel   # ./controlpanel
+make dist       # ./dist/tyd-<os>.tar.gz release archives
 ```
 
 ## Run the daemon

@@ -15,8 +15,10 @@ tyd is a daemon plus a single CLI binary. On the target machine it:
 5. Authorizes what that identity may do on which session
 6. Speaks over a local Unix socket, optional TLS TCP, a QUIC peer data plane, and a relay fallback
 
-File transfer, non-interactive exec, approval workflows, and mesh networking are **out of
-scope** for tyd. They can sit on top of it.
+File transfer, non-interactive exec, per-command authorization policy, and mesh
+networking are **out of scope** for tyd. They can sit on top of it. Gating remote
+sessions behind a local decision is in scope instead — see
+[session.md](session.md).
 
 ## Architecture
 
