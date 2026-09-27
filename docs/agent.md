@@ -14,7 +14,7 @@ One binary (`tyd`) does everything. `tyd up` is the daemon; every other subcomma
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
-Per-user only, no sudo. The binary goes to `~/.local/bin` (override with `TYD_BINDIR`). The daemon runs under `systemd --user` on Linux, a LaunchAgent on macOS, otherwise `nohup`/`setsid`. Binaries are fetched from the same Control Panel origin (`/releases/tyd-<os>.tar.gz`), so the repo can stay private.
+Per-user only, no sudo. The binary goes to `~/.local/bin` (override with `TYD_BINDIR`). The daemon runs under `systemd --user` on Linux, a LaunchAgent on macOS, otherwise `nohup`/`setsid`. Binaries are fetched from the latest GitHub Release (`tyd-<os>.tar.gz`).
 
 Non-interactive forms — use these from an agent:
 

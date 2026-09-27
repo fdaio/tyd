@@ -75,4 +75,4 @@ make install     # ~/.local/bin/tyd
 `~/.local`) and starts the per-user daemon (systemd --user, a LaunchAgent, or
 a detached process). That daemon keeps running after the shell exits. A
 `DESTDIR` install only stages the binary and does not start anything. The
-[install script](#install) downloads a release and does the same daemon setup.
+[install script](#install) downloads the latest GitHub Release and does the same daemon setup.

@@ -7,7 +7,7 @@
 #   TYD_RELAY_PORT=9090
 #
 # Default (works on a VPS with only Docker; no buildx / no host Go required):
-#   make dist && cp dist/tyd-*.tar.gz releases/   # optional install archives
+#   make dist   # GitHub Release archives; install.sh does not use ./releases
 #   docker compose up -d --build
 #
 # Faster (host has Go — compile once, Docker only packs scratch):

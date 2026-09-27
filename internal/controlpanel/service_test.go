@@ -571,11 +571,11 @@ func TestInstallScriptHTTP(t *testing.T) {
 	if !bytes.Contains(body, []byte("https://app.getfda.dev/install.sh")) {
 		t.Fatal("expected production install URL in script")
 	}
-	if !bytes.Contains(body, []byte("/releases/tyd-")) {
-		t.Fatal("expected Control Panel /releases/ download path in script")
+	if !bytes.Contains(body, []byte("https://github.com/fdaio/tyd/releases/latest/download/tyd-")) {
+		t.Fatal("expected GitHub Release download path in script")
 	}
-	if bytes.Contains(body, []byte("github.com/${REPO}/releases")) || bytes.Contains(body, []byte("github.com/fdaio/tyd/releases/latest")) {
-		t.Fatal("install script must not download binaries from GitHub Releases")
+	if bytes.Contains(body, []byte("/releases/tyd-")) {
+		t.Fatal("install script must not download binaries from the Control Panel /releases/")
 	}
 
 	req, err := http.NewRequest(http.MethodHead, ts.URL+"/install.sh", nil)
