@@ -153,6 +153,9 @@ type AcceptResponse struct {
 	PeerID        string `json:"peer_id"`
 	PeerPublicKey string `json:"peer_public_key"`
 	PeerNickname  string `json:"peer_nickname,omitempty"`
+	// AlreadyPaired is set when this client was already paired with the
+	// inviter. The invite is left unused and no second pair is recorded.
+	AlreadyPaired bool `json:"already_paired,omitempty"`
 }
 
 type RevokeInviteRequest struct {
@@ -462,7 +465,7 @@ func (s *Service) Accept(req AcceptRequest) (*AcceptResponse, error) {
 
 	// Unidirectional: client may operate on server.
 	if peerIndex(server.Peers, client.ID) >= 0 || peerIndex(client.Peers, server.ID) >= 0 {
-		return nil, ErrAlreadyPaired
+		return alreadyPairedResponse(client, server, nick), nil
 	}
 	now := s.now()
 	server.Peers = append(server.Peers, Peer{
@@ -687,6 +690,28 @@ func uniqueNonEmpty(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// alreadyPairedResponse reports the existing pair. An empty stored nickname
+// is filled from this accept's --as; an existing nickname is kept.
+func alreadyPairedResponse(client, server *Daemon, nick string) *AcceptResponse {
+	nickStored := nick
+	if i := peerIndex(client.Peers, server.ID); i >= 0 {
+		if client.Peers[i].Nickname != "" {
+			nickStored = client.Peers[i].Nickname
+		} else if nick != "" {
+			client.Peers[i].Nickname = nick
+			nickStored = nick
+		}
+	}
+	return &AcceptResponse{
+		SelfID:        client.ID,
+		SelfPublicKey: client.PublicKey,
+		PeerID:        server.ID,
+		PeerPublicKey: server.PublicKey,
+		PeerNickname:  nickStored,
+		AlreadyPaired: true,
+	}
 }
 
 func peerIndex(peers []Peer, id string) int {

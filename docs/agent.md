@@ -83,6 +83,8 @@ Hand the peer one line:
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 # or, if tyd is already installed there:
 tyd accept TOKEN --as laptop
+# already paired: prints that peer, exit 0 (not an error)
+# peer daemon up: also prints `tyd session create --peer <nick>`
 tyd status                  # shows registration, peers, recent, aliases, live connections
 tyd peer list               # paired peers and nicknames
 ```

@@ -110,6 +110,52 @@ func TestAcceptExchangesPeerKeys(t *testing.T) {
 	}
 }
 
+func TestAcceptAlreadyPairedReturnsExistingPeer(t *testing.T) {
+	s := New()
+	sReg, err := s.Register(RegisterRequest{PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: sReg.ID, PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "client-pub", Nickname: "laptop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AlreadyPaired {
+		t.Fatal("first accept should create the pair")
+	}
+
+	inv2, err := s.CreateInvite(CreateInviteRequest{DaemonID: sReg.ID, PublicKey: "server-pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.Accept(AcceptRequest{Token: inv2.Token, PublicKey: "client-pub", Nickname: "other"})
+	if err != nil {
+		t.Fatalf("already paired should not error: %v", err)
+	}
+	if !again.AlreadyPaired || again.PeerID != sReg.ID || again.PeerPublicKey != "server-pub" {
+		t.Fatalf("again %+v", again)
+	}
+	if again.SelfID != first.SelfID || again.PeerNickname != "laptop" {
+		t.Fatalf("nickname/id changed: %+v", again)
+	}
+	peers, err := s.ListPeers(sReg.ID, "server-pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("duplicate pair: %+v", peers)
+	}
+	// The retried invite stays usable for a different client.
+	other, err := s.Accept(AcceptRequest{Token: inv2.Token, PublicKey: "client-pub-2"})
+	if err != nil || other.AlreadyPaired || other.PeerID != sReg.ID {
+		t.Fatalf("invite should still be open, got %+v %v", other, err)
+	}
+}
+
 func TestEndpointPublishFetchExpire(t *testing.T) {
 	s := New()
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)

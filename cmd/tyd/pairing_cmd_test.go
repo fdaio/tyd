@@ -16,6 +16,36 @@ import (
 	"tyd/internal/peerstate"
 )
 
+func TestPrintAcceptResult(t *testing.T) {
+	acc := &controlpanel.AcceptResponse{PeerID: "peer1", PeerNickname: "laptop"}
+	var errBuf, outBuf bytes.Buffer
+	printAcceptResult(&errBuf, &outBuf, acc, true)
+	if !strings.Contains(errBuf.String(), "paired with peer1") || strings.Contains(errBuf.String(), "already paired") {
+		t.Fatalf("fresh: %q", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "tyd session create --peer laptop") {
+		t.Fatalf("fresh hint: %q", errBuf.String())
+	}
+	if strings.TrimSpace(outBuf.String()) != "peer1" {
+		t.Fatalf("stdout %q", outBuf.String())
+	}
+
+	errBuf.Reset()
+	outBuf.Reset()
+	printAcceptResult(&errBuf, &outBuf, acc, false)
+	if strings.Contains(errBuf.String(), "session create") {
+		t.Fatalf("offline hint: %q", errBuf.String())
+	}
+
+	errBuf.Reset()
+	acc.AlreadyPaired = true
+	printAcceptResult(&errBuf, &outBuf, acc, true)
+	got := errBuf.String()
+	if !strings.Contains(got, "already paired with peer1 (laptop)") || !strings.Contains(got, "tyd session create --peer laptop") {
+		t.Fatalf("already: %q", got)
+	}
+}
+
 func TestFormatAcceptCommand(t *testing.T) {
 	tok := "abc123"
 	if got := formatAcceptCommand(paths.DefaultPlatform(), tok); got != "tyd accept "+tok {
@@ -387,5 +417,103 @@ func TestRunApprovalRejectsBadMode(t *testing.T) {
 	if err := runApproval(options{cmd: "approval", rest: []string{"pre"}, peers: filepath.Join(dir, "missing.json")}); err == nil ||
 		!strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("unregistered: %v", err)
+	}
+}
+
+func TestAcceptAlreadyPairedNamesPeerAndHintsWhenLive(t *testing.T) {
+	dir := t.TempDir()
+	addr, srv, err := startTestCP(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	serverDir := filepath.Join(dir, "server")
+	clientDir := filepath.Join(dir, "client")
+	_ = os.MkdirAll(serverDir, 0o700)
+	_ = os.MkdirAll(clientDir, 0o700)
+	platform := "http://" + addr
+	sOpts := options{
+		identity: filepath.Join(serverDir, "id_ed25519"),
+		trust:    filepath.Join(serverDir, "trusted.json"),
+		peers:    filepath.Join(serverDir, "peers.json"),
+		platform: platform,
+		approval: "full",
+		noWait:   true,
+		cmd:      "register",
+	}
+	acceptLine := strings.TrimSpace(captureStdout(t, func() {
+		if err := run(sOpts); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	cOpts := options{
+		identity: filepath.Join(clientDir, "id_ed25519"),
+		trust:    filepath.Join(clientDir, "trusted.json"),
+		peers:    filepath.Join(clientDir, "peers.json"),
+		platform: platform,
+		as:       "laptop",
+		cmd:      "accept",
+		rest:     []string{acceptLine},
+	}
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			if err := run(cOpts); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	if !strings.Contains(stderr, "paired with ") || strings.Contains(stderr, "already paired") {
+		t.Fatalf("first accept stderr: %q", stderr)
+	}
+	if strings.Contains(stderr, "session create") {
+		t.Fatalf("offline peer should not suggest connect: %q", stderr)
+	}
+	peerID := strings.TrimSpace(stdout)
+	if peerID == "" {
+		t.Fatal("empty peer id")
+	}
+
+	sDoc, err := peers.Load(sOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cpclient.New(platform).PublishEndpointFull(sDoc.Registration.ID, controlpanel.PublishEndpointRequest{
+		PublicKey: sDoc.Registration.PublicKey,
+		Addr:      "127.0.0.1:1",
+		CertFP:    "ab",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sOpts.cmd = "invite"
+	secondLine := strings.TrimSpace(captureStdout(t, func() {
+		if err := run(sOpts); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	cOpts.rest = []string{secondLine}
+	stderr = captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			if err := run(cOpts); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	if strings.TrimSpace(stdout) != peerID {
+		t.Fatalf("stdout %q want %q", stdout, peerID)
+	}
+	if !strings.Contains(stderr, "already paired with "+peerID+" (laptop)") {
+		t.Fatalf("stderr missing peer: %q", stderr)
+	}
+	if !strings.Contains(stderr, "tyd session create --peer laptop") {
+		t.Fatalf("stderr missing connect hint: %q", stderr)
+	}
+	cDoc, err := peers.Load(cOpts.peers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cDoc.Peers) != 1 || cDoc.Peers[0].Nickname != "laptop" {
+		t.Fatalf("client peers %+v", cDoc.Peers)
 	}
 }

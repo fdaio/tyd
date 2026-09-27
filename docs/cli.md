@@ -22,7 +22,7 @@ the binary. This page is the map plus the defaults.
 | Pairing | `keygen` | Generate the Ed25519 identity (also created automatically) |
 | | `register` | Register with the Control Panel (`--force` replaces) |
 | | `invite` | Mint an invite, print the accept line, wait (10m TTL); `invite revoke <token>` |
-| | `accept` | Accept an invite (token or a pasted accept line), `--as <nickname>` |
+| | `accept` | Accept an invite (token or a pasted accept line), `--as <nickname>`. Already paired: print that peer instead of failing. If the peer has a live endpoint, print `tyd session create --peer <nick\|id>` |
 | Daemon | `up` | Start the daemon (unix socket; TLS off by default) |
 | | `status` | Show CP registration, peers, aliases, connections |
 | | `approval` | Show or set the approval mode: `full`, `pre`, `post` |

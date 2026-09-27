@@ -490,12 +490,54 @@ func runAccept(opts options) error {
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "paired with %s\n", acc.PeerID)
-
-	if !colorEnabled(os.Stdout) || !colorEnabled(os.Stderr) {
-		fmt.Println(acc.PeerID)
-	}
+	printAcceptResult(os.Stderr, os.Stdout, acc, peerHasLiveEndpoint(cli, acc.PeerID))
 	return nil
+}
+
+func peerHasLiveEndpoint(cli *cpclient.Client, peerID string) bool {
+	if cli == nil || peerID == "" {
+		return false
+	}
+	_, err := cli.GetEndpointFull(peerID)
+	return err == nil
+}
+
+func sessionCreateCommand(peerID, nickname string) string {
+	target := nickname
+	if target == "" {
+		target = peerID
+	}
+	if target == "" {
+		return ""
+	}
+	return "tyd session create --peer " + target
+}
+
+func printAcceptResult(errW, outW io.Writer, acc *controlpanel.AcceptResponse, live bool) {
+	if acc.AlreadyPaired {
+		label := acc.PeerID
+		if acc.PeerNickname != "" {
+			label = fmt.Sprintf("%s (%s)", acc.PeerID, acc.PeerNickname)
+		}
+		fmt.Fprintf(errW, "already paired with %s\n", label)
+	} else {
+		fmt.Fprintf(errW, "paired with %s\n", acc.PeerID)
+	}
+	if live {
+		cmd := sessionCreateCommand(acc.PeerID, acc.PeerNickname)
+		if cmd != "" {
+			fmt.Fprintln(errW)
+			fmt.Fprintln(errW, "Connect with:")
+			if colorEnabled(errW) {
+				fmt.Fprintf(errW, "  %s%s%s\n", ansiCyan, cmd, ansiReset)
+			} else {
+				fmt.Fprintf(errW, "  %s\n", cmd)
+			}
+		}
+	}
+	if !colorEnabled(outW) || !colorEnabled(errW) {
+		fmt.Fprintln(outW, acc.PeerID)
+	}
 }
 
 type inviteResult struct {
