@@ -91,12 +91,22 @@ func TestInstallBinaryReplacesBusyExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix only")
 	}
-	dir := t.TempDir()
-	dest := filepath.Join(dir, "tyd")
-	if err := os.WriteFile(dest, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755); err != nil {
+	// A shell script is not mapped as the running executable (the interpreter
+	// is), so cp onto it does not return ETXTBSY. Use a real ELF.
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not on PATH")
+	}
+	sleepData, err := os.ReadFile(sleepBin)
+	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(dest)
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "tyd")
+	if err := os.WriteFile(dest, sleepData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(dest, "30")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
