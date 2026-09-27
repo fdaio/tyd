@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -407,8 +408,8 @@ func TestWatchIgnoresInputAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hints int
-	ep.OnInputIgnored = func() { hints++ }
+	var hints atomic.Int64
+	ep.OnInputIgnored = func() { hints.Add(1) }
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -420,10 +421,10 @@ func TestWatchIgnoresInputAndHints(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && hints == 0 {
+	for time.Now().Before(deadline) && hints.Load() == 0 {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if hints == 0 {
+	if hints.Load() == 0 {
 		t.Fatal("expected OnInputIgnored hint")
 	}
 	if _, err := inW.Write([]byte{detachByte}); err != nil {

@@ -238,3 +238,290 @@ func TestInProcessCreateStillWorks(t *testing.T) {
 	}
 	t.Fatalf("got %q", got)
 }
+
+// liveManager builds a manager whose live-agents are real subprocesses.
+func liveManager(t *testing.T, root string) *Manager {
+	t.Helper()
+	m := NewManager()
+	m.ConfigureLive(root, "")
+	m.SetStarter(testLiveStarter(t))
+	return m
+}
+
+// waitStreamEnd drains an attachment until its stream ends.
+func waitStreamEnd(t *testing.T, att *Attachment) []byte {
+	t.Helper()
+	acc := []byte{}
+	for {
+		b, err := att.RecvTimeout(10 * time.Second)
+		if err != nil {
+			return acc
+		}
+		acc = append(acc, b...)
+	}
+}
+
+func TestLiveShellExitKeepsSession(t *testing.T) {
+	root, err := os.MkdirTemp("", "tl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	cwd, err := os.MkdirTemp("", "tc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cwd) })
+
+	m := liveManager(t, root)
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: cwd, Owner: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := live.Dir(root, s.ID)
+
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := filepath.Join(cwd, "before-exit")
+	if _, err := att.Write([]byte("touch '" + before + "'\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, before)
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	acc := waitStreamEnd(t, att)
+	if !strings.Contains(string(acc), "shell exited (status 0)") {
+		t.Fatalf("missing exit notice: %q", acc)
+	}
+	if !att.ShellExited() {
+		t.Fatal("attachment should report a shell exit")
+	}
+	if att.SessionClosed() {
+		t.Fatal("session must stay open after the shell exits")
+	}
+	if got := s.State(); got != StateExited {
+		t.Fatalf("state=%s want EXITED", got)
+	}
+	if !live.Alive(dir) {
+		t.Fatal("agent should outlive its shell")
+	}
+	if live.ShellAlive(dir) {
+		t.Fatal("shell pid file should be gone")
+	}
+	if s.IdleSince().IsZero() {
+		t.Fatal("exited session should be idle")
+	}
+
+	// Re-attaching starts a new shell in the same session and replays history.
+	att2, snap, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(snap), "shell exited (status 0)") {
+		t.Fatalf("replay lost the exit notice: %q", snap)
+	}
+	if !live.ShellAlive(dir) {
+		t.Fatal("reattach should have started a shell")
+	}
+	after := filepath.Join(cwd, "after-exit")
+	if _, err := att2.Write([]byte("touch '" + after + "'\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, after)
+	if got := s.State(); got != StateAttached {
+		t.Fatalf("state=%s want ATTACHED", got)
+	}
+	att2.Detach()
+
+	// A watch on the exited session reports the exit instead of hanging.
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitAgentGone(t, dir)
+}
+
+func TestLiveExitedSessionWatchEnds(t *testing.T) {
+	root, err := os.MkdirTemp("", "tl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	cwd, err := os.MkdirTemp("", "tc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cwd) })
+
+	m := liveManager(t, root)
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: cwd, Owner: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := live.Dir(root, s.ID)
+	t.Cleanup(func() { _ = m.Close(s.ID) })
+
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 7\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitStreamEnd(t, att)
+
+	w, snap, err := s.Watch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	acc := append([]byte(nil), snap...)
+	for {
+		b, err := w.RecvTimeout(10 * time.Second)
+		if err != nil {
+			break
+		}
+		acc = append(acc, b...)
+	}
+	if !strings.Contains(string(acc), "shell exited (status 7)") {
+		t.Fatalf("watch missed the notice: %q", acc)
+	}
+	if !w.ShellExited() {
+		t.Fatal("watcher should report a shell exit")
+	}
+	if w.SessionClosed() {
+		t.Fatal("watcher must not report a closed session")
+	}
+	if !live.Alive(dir) {
+		t.Fatal("agent should survive")
+	}
+}
+
+func TestLiveExitedSessionRestoredAndReattached(t *testing.T) {
+	root, err := os.MkdirTemp("", "tl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	cwd, err := os.MkdirTemp("", "tc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cwd) })
+
+	m1 := liveManager(t, root)
+	s, err := m1.Create(CreateOpts{Shell: "/bin/sh", Cwd: cwd, Owner: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitStreamEnd(t, att)
+	m1.Shutdown()
+
+	m2 := liveManager(t, root)
+	restored, err := m2.RestoreLive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 {
+		t.Fatalf("restore=%v", restored)
+	}
+	s2, err := m2.Get(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.State(); got != StateExited {
+		t.Fatalf("restored state=%s want EXITED", got)
+	}
+	// The restored, shell-less session still gets a working shell.
+	att2, _, err := s2.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(cwd, "after-restore")
+	if _, err := att2.Write([]byte("touch '" + marker + "'\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, marker)
+	att2.Detach()
+	if err := m2.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitAgentGone(t, live.Dir(root, s.ID))
+}
+
+func TestLiveExitedAgentRespawnedWhenLost(t *testing.T) {
+	root, err := os.MkdirTemp("", "tl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	cwd, err := os.MkdirTemp("", "tc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(cwd) })
+
+	m := liveManager(t, root)
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: cwd, Owner: "tester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := live.Dir(root, s.ID)
+	// Simulate an agent that dies without the session being closed.
+	live.KillAgent(dir)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && s.State() != StateExited {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := s.State(); got != StateExited {
+		t.Fatalf("state=%s want EXITED after the agent died", got)
+	}
+
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(cwd, "after-respawn")
+	if _, err := att.Write([]byte("touch '" + marker + "'\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitFile(t, marker)
+	att.Detach()
+	if err := m.Close(s.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitAgentGone(t, dir)
+}
+
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("shell never created %s", path)
+}
+
+func waitAgentGone(t *testing.T, dir string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !live.Alive(dir) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("agent still alive")
+}

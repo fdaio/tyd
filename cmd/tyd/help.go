@@ -144,6 +144,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintf(w, "  %-24s Interactive; Ctrl-\\ detaches.\n", attachEx)
 	fmt.Fprintln(w, "  create --detach          Print session id only (for scripts).")
+	fmt.Fprintln(w, "  exit in the shell         Ends the shell only; the session stays attachable.")
 	fmt.Fprintln(w, "  --verbose                SSH-style connect debug on stderr.")
 	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only follow; banner + type-ignored hint.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")

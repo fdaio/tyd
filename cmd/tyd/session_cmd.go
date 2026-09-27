@@ -15,6 +15,33 @@ import (
 	"tyd/internal/transport"
 )
 
+// finishStream turns the result of an attach or watch stream into a CLI exit
+// status. When the shell exited, the daemon already streamed an explanatory
+// notice, so all that is left is to record the session as exited (so
+// `tyd session list` stays truthful) and report success: the session is still
+// alive and re-attachable.
+func finishStream(opts options, sessionID string, err error) error {
+	if !client.IsShellExited(err) {
+		return err
+	}
+	markSessionExited(opts, sessionID)
+	return nil
+}
+
+// markSessionExited records EXITED in the local catalog, keeping the rest of
+// the record as it is.
+func markSessionExited(opts options, sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	rec, ok := loadLocalCatalog(opts).Get(sessionID)
+	if !ok {
+		return
+	}
+	rec.State = string(session.StateExited)
+	rememberSession(opts, rec)
+}
+
 func runSession(opts options) error {
 	if len(opts.rest) == 0 {
 		writeSessionHelp(os.Stderr, colorEnabled(os.Stderr))
@@ -66,7 +93,7 @@ func runSession(opts options) error {
 		}
 		err = client.Attach(ep, key, info.ID, os.Stdin, os.Stdout)
 		st.Clear()
-		return err
+		return finishStream(opts, info.ID, err)
 	case "list":
 		return runSessionList(opts)
 	case "attach":
@@ -99,7 +126,7 @@ func runSession(opts options) error {
 			return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
-		return err
+		return finishStream(opts, sid, err)
 	case "watch":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
@@ -131,7 +158,7 @@ func runSession(opts options) error {
 			return client.Watch(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
-		return err
+		return finishStream(opts, sid, err)
 	case "close":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {

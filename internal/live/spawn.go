@@ -87,3 +87,14 @@ func KillAgent(dir string) {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 }
+
+// ShellAlive reports whether the session's shell process is recorded as
+// running. An agent that outlived its shell removes the pid file, so a live
+// agent without one means "session alive, no shell".
+func ShellAlive(dir string) bool {
+	pid, err := ReadPID(ShellPIDPath(dir))
+	if err != nil {
+		return false
+	}
+	return syscall.Kill(pid, 0) == nil
+}

@@ -50,21 +50,23 @@ func (m *Manager) startLiveSession(id string, opts CreateOpts) (*Session, error)
 		return nil, err
 	}
 	s := &Session{
-		ID:        id,
-		Owner:     owner,
-		User:      owner,
-		PeerID:    opts.PeerID,
-		CreatedAt: created,
-		state:     StateDetached,
-		idleSince: created,
-		rows:      opts.Rows,
-		cols:      opts.Cols,
-		cmdDone:   make(chan struct{}),
-		liveDir:   dir,
-		agentCmd:  cmd,
-		ownerPub:  opts.OwnerPub,
+		ID:         id,
+		Owner:      owner,
+		User:       owner,
+		PeerID:     opts.PeerID,
+		CreatedAt:  created,
+		state:      StateDetached,
+		idleSince:  created,
+		rows:       opts.Rows,
+		cols:       opts.Cols,
+		cmdDone:    make(chan struct{}),
+		liveDir:    dir,
+		agentCmd:   cmd,
+		ownerPub:   opts.OwnerPub,
+		opts:       opts,
+		agentSpawn: m.agentSpawner(id, owner, opts, created),
 	}
-	go s.liveWaitLoop()
+	s.startLiveWaitLocked()
 	return s, nil
 }
 
@@ -74,6 +76,25 @@ func (m *Manager) spawnAgent(id, owner string, opts CreateOpts, created time.Tim
 	execPath := m.execPath
 	starter := m.starter
 	m.mu.Unlock()
+	return spawnAgentWith(root, execPath, starter, id, owner, opts, created)
+}
+
+// agentSpawner snapshots the spawn parameters now and returns a callable that
+// needs no manager lock. Sessions respawn their agent while holding s.mu, and
+// m.mu is acquired before s.mu elsewhere, so taking m.mu here would invert the
+// order.
+func (m *Manager) agentSpawner(id, owner string, opts CreateOpts, created time.Time) func() (string, *exec.Cmd, error) {
+	m.mu.Lock()
+	root := m.liveRoot
+	execPath := m.execPath
+	starter := m.starter
+	m.mu.Unlock()
+	return func() (string, *exec.Cmd, error) {
+		return spawnAgentWith(root, execPath, starter, id, owner, opts, created)
+	}
+}
+
+func spawnAgentWith(root, execPath string, starter live.Starter, id, owner string, opts CreateOpts, created time.Time) (string, *exec.Cmd, error) {
 	if starter == nil {
 		starter = live.DefaultStarter
 	}
@@ -141,12 +162,14 @@ func (s *Session) approveLive(m *Manager) error {
 	s.liveDir = dir
 	s.agentCmd = cmd
 	s.ownerPub = opts.OwnerPub
+	s.opts = opts
+	s.agentSpawn = m.agentSpawner(id, owner, opts, created)
 	s.rows = opts.Rows
 	s.cols = opts.Cols
 	s.state = StateDetached
 	s.idleSince = time.Now().UTC()
 	s.cmdDone = make(chan struct{})
-	go s.liveWaitLoop()
+	s.startLiveWaitLocked()
 	return nil
 }
 
@@ -179,20 +202,37 @@ func (m *Manager) RestoreLive() ([]RestoredLive, error) {
 		if t, err := time.Parse(time.RFC3339, meta.CreatedAt); err == nil {
 			created = t
 		}
+		opts := CreateOpts{
+			Rows:     meta.Rows,
+			Cols:     meta.Cols,
+			Shell:    meta.Shell,
+			Cwd:      meta.Cwd,
+			Owner:    meta.Owner,
+			OwnerPub: meta.OwnerPub,
+			PeerID:   meta.PeerID,
+		}
+		// A live agent with no shell pid outlived its shell: it is still a
+		// session, and attaching to it starts a new shell.
+		state := StateDetached
+		if !live.ShellAlive(dir) {
+			state = StateExited
+		}
 		s := &Session{
-			ID:        meta.ID,
-			Owner:     meta.Owner,
-			User:      meta.Owner,
-			PeerID:    meta.PeerID,
-			CreatedAt: created,
-			state:     StateDetached,
-			idleSince: time.Now().UTC(),
-			rows:      meta.Rows,
-			cols:      meta.Cols,
-			cmdDone:   make(chan struct{}),
-			liveDir:   dir,
-			ownerPub:  meta.OwnerPub,
-			onClosed:  onClosed,
+			ID:         meta.ID,
+			Owner:      meta.Owner,
+			User:       meta.Owner,
+			PeerID:     meta.PeerID,
+			CreatedAt:  created,
+			state:      state,
+			idleSince:  time.Now().UTC(),
+			rows:       meta.Rows,
+			cols:       meta.Cols,
+			cmdDone:    make(chan struct{}),
+			liveDir:    dir,
+			ownerPub:   meta.OwnerPub,
+			opts:       opts,
+			agentSpawn: m.agentSpawner(meta.ID, meta.Owner, opts, created),
+			onClosed:   onClosed,
 		}
 		m.mu.Lock()
 		if _, exists := m.sessions[s.ID]; exists {
@@ -201,7 +241,7 @@ func (m *Manager) RestoreLive() ([]RestoredLive, error) {
 		}
 		m.sessions[s.ID] = s
 		m.mu.Unlock()
-		go s.liveWaitLoop()
+		s.startLiveWaitLocked()
 		out = append(out, RestoredLive{Session: s, OwnerPub: meta.OwnerPub})
 	}
 	return out, nil
@@ -264,41 +304,76 @@ func (s *Session) release() {
 	s.closeWatchersLocked()
 }
 
-func (s *Session) liveWaitLoop() {
-	if s.agentCmd != nil {
-		_ = s.agentCmd.Wait()
+// startLiveWaitLocked starts the agent watcher for the current generation. The
+// caller must hold s.mu, or own the session before it is shared: the generation
+// is captured here so that a later respawn cannot make an older loop wait on the
+// new agent.
+func (s *Session) startLiveWaitLocked() {
+	go s.liveWaitLoop(s.agentCmd, s.liveDir, s.cmdDone)
+}
+
+// liveWaitLoop waits for the live agent process to go away. Like the in-process
+// path, that leaves the session alive rather than closed: a new agent is
+// started on the next attach. An explicit close still wins the race and must
+// not be undone here.
+func (s *Session) liveWaitLoop(agentCmd *exec.Cmd, dir string, cmdDone chan struct{}) {
+	if agentCmd != nil {
+		_ = agentCmd.Wait()
 	} else {
-		for live.Alive(s.liveDir) {
+		for live.Alive(dir) {
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
 	s.mu.Lock()
-	if s.closed || s.state == StateClosed {
+	if s.cmdDone != cmdDone {
+		// A newer agent generation owns the session now: this loop is stale and
+		// must not touch the state the new generation already installed.
 		s.mu.Unlock()
-		s.markCmdDone()
 		return
 	}
-	s.closed = true
-	s.state = StateClosed
-	s.closedAt = time.Now().UTC()
-	if s.attach != nil {
-		if s.attach.live != nil {
-			s.attach.live.Close()
+	if s.closed || s.state == StateClosed {
+		s.mu.Unlock()
+		markDone(cmdDone)
+		return
+	}
+	s.agentCmd = nil
+	s.state = StateExited
+	// Idle reaping counts from the moment the agent went away.
+	s.idleSince = time.Now().UTC()
+	notice := exitNotice(s.exitCode)
+	s.ringAppendLocked(notice)
+	att := s.attach
+	if att != nil {
+		if att.live != nil {
+			att.live.Close()
 		}
-		s.attach.closeOut()
+		att.shellExited = true
+		att.closeOut()
 		s.attach = nil
 	}
+	watchers := append([]*Watcher(nil), s.watchers...)
+	for _, w := range watchers {
+		if w.live != nil {
+			w.live.Close()
+		}
+		w.shellExited = true
+	}
 	s.closeWatchersLocked()
-	s.fireClosedLocked()
 	s.mu.Unlock()
-	s.markCmdDone()
+
+	deliver(att, watchers, notice)
+	markDone(cmdDone)
 }
 
-func (s *Session) markCmdDone() {
+// markDone closes a done channel at most once.
+func markDone(done chan struct{}) {
+	if done == nil {
+		return
+	}
 	select {
-	case <-s.cmdDone:
+	case <-done:
 	default:
-		close(s.cmdDone)
+		close(done)
 	}
 }
 
@@ -314,8 +389,11 @@ func (s *Session) closeLive() error {
 	}
 	s.mu.Unlock()
 	_ = live.RequestClose(dir)
+	s.mu.Lock()
+	cmdDone := s.cmdDone
+	s.mu.Unlock()
 	select {
-	case <-s.cmdDone:
+	case <-cmdDone:
 	case <-time.After(3 * time.Second):
 		live.KillAgent(dir)
 		live.RemoveDir(dir)
@@ -331,11 +409,19 @@ func (s *Session) closeLive() error {
 	s.closeWatchersLocked()
 	s.fireClosedLocked()
 	s.mu.Unlock()
-	s.markCmdDone()
+	markDone(cmdDone)
 	return nil
 }
 
 func (s *Session) attachLive() (*Attachment, []byte, error) {
+	if s.state == StateExited {
+		// The agent is gone but the session is alive: bring a new one up for
+		// the same id. The fresh agent has no history, so the replay starts
+		// empty; the previous shell's output went with the old agent.
+		if err := s.respawnAgentLocked(); err != nil {
+			return nil, nil, err
+		}
+	}
 	var lc *live.Conn
 	var snap []byte
 	var info protocol.SessionInfo
@@ -410,4 +496,48 @@ func shellPIDFile(dir string) int {
 		return 0
 	}
 	return pid
+}
+
+// respawnAgentLocked starts a fresh live-agent for a session whose previous
+// agent is gone. The session keeps its id, creation time, and recorded
+// options; only the agent (and with it any output the agent still held) is
+// new. The caller must hold s.mu.
+func (s *Session) respawnAgentLocked() error {
+	if s.agentSpawn == nil {
+		return fmt.Errorf("session %s has no live agent to restart", s.ID)
+	}
+	dir, cmd, err := s.agentSpawn()
+	if err != nil {
+		return err
+	}
+	s.liveDir = dir
+	s.agentCmd = cmd
+	s.cmdDone = make(chan struct{})
+	s.state = StateDetached
+	s.startLiveWaitLocked()
+	return nil
+}
+
+// refreshLiveLocked syncs the daemon's view with the live agent. An agent that
+// outlived its shell leaves the session alive but shell-less; the agent records
+// that by removing its shell pid file. The exit time does not survive in the
+// agent, so the idle clock starts when the daemon first notices.
+// The caller must hold s.mu.
+func (s *Session) refreshLiveLocked() {
+	if s.liveDir == "" || s.closed || s.state == StateClosed || s.state == StatePending {
+		return
+	}
+	switch s.state {
+	case StateExited:
+		// An attach may have started a new shell in the agent.
+		if live.ShellAlive(s.liveDir) {
+			s.state = StateDetached
+			s.idleSince = time.Now().UTC()
+		}
+	case StateDetached, StateAttached:
+		if !live.ShellAlive(s.liveDir) {
+			s.state = StateExited
+			s.idleSince = time.Now().UTC()
+		}
+	}
 }

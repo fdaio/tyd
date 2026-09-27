@@ -36,10 +36,12 @@ address is refreshed from the Control Panel and retried once.
 ```
 SESSION    ALIAS   PEER    STATE     CREATED
 a1b2c3     jammy   laptop  ATTACHED  2026-09-26 10:04
+c7d8e9     -       -       EXITED    2026-09-26 10:02
 d4e5f6     -       -       CLOSED    2026-09-26 09:58
 ```
 
-Alive sessions come first, then closed ones; newest first inside each group.
+Alive sessions come first (`ATTACHED`, `EXITED`, `PENDING`, `DETACHED`), then
+closed ones; newest first inside each group.
 
 ### Detach, watch, close
 
@@ -48,12 +50,39 @@ Alive sessions come first, then closed ones; newest first inside each group.
 | `Ctrl-\` (attach) | Detach; PTY and shell keep running |
 | `Ctrl-C` / `Ctrl-\` (watch) | Stop watching; session unchanged |
 | Client crash or socket drop | Same: the session stays |
+| `exit`, Ctrl-D, shell crash or kill | Shell goes away; session becomes `EXITED`, still attachable |
 | `tyd session close <id>` | Kill the shell; mark `CLOSED` in the local catalog |
 
 Connect progress is silent by default. `--verbose` prints SSH-style `debug1:`
 lines on stderr (resolve → dial → attach) for `create` / `attach` / `watch`.
 Ctrl-C cancels before the session is live. Each dial candidate gets about 12
 seconds for connect, TLS, and auth.
+
+### The shell can exit; the session does not
+
+Running `exit` (or Ctrl-D, a crash, or a kill) inside a session ends only the
+shell. The session is **not** closed — it becomes `EXITED` and stays
+attachable:
+
+```
+$ tyd session attach jammy
+$ exit
+[tyd] shell exited (status 0) — session still attachable; attach again for a new shell
+$ tyd session attach jammy          # same session id, a brand new shell
+```
+
+`logout` is not in that list on purpose: it only ends a login shell, and tyd
+starts the shell as a plain interactive one, so use `exit` or Ctrl-D.
+
+`attach` on an `EXITED` session starts a fresh shell with the same shell, working
+directory, and window size, replaying the recorded output first, so you still see
+what the previous shell printed. `watch` on an `EXITED` session prints the notice
+and stops.
+
+So a session ends in exactly two ways: `tyd session close`, or
+`--session-idle-timeout` (see below). Sessions are daemon state, so restarting
+the daemon still ends non-live sessions; `tyd session close` is how you keep a
+record of them.
 
 ### Aliases
 
@@ -133,14 +162,16 @@ same records to stderr, and `full` / `pre` write nothing.
 
 ## Idle sessions
 
-Sessions live until closed. To expire unattended ones:
+With no idle timeout, a session lives until you `tyd session close` it. To
+expire unattended ones:
 
 ```bash
 tyd up --session-idle-timeout 8h   # default: off
 ```
 
-A session counts as idle from the moment the last client detaches; attaching
-resets the clock. `PENDING` sessions are never reaped — they wait for you.
+A session counts as idle from the moment the last client detaches — or, if its
+shell exited, from the moment the shell went away; attaching resets the clock.
+`PENDING` sessions are never reaped — they wait for you.
 
 ## Who may do what
 

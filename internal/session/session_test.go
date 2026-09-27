@@ -537,3 +537,260 @@ func TestReapIdleLeavesPending(t *testing.T) {
 		t.Fatalf("state=%s", st)
 	}
 }
+
+// exitShell types exit into the attached shell and returns once the stream has
+// ended, checking that the end was reported as a shell exit rather than a
+// closed session.
+func exitShell(t *testing.T, att *Attachment, code string) []byte {
+	t.Helper()
+	acc := []byte(code)
+	for {
+		b, err := att.RecvTimeout(5 * time.Second)
+		if err != nil {
+			return acc
+		}
+		acc = append(acc, b...)
+	}
+}
+
+func TestShellExitKeepsSessionAlive(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	acc := exitShell(t, att, "")
+	if !bytes.Contains(acc, []byte("shell exited (status 0)")) {
+		t.Fatalf("missing exit notice, got %q", acc)
+	}
+	if !bytes.Contains(acc, []byte("still attachable")) {
+		t.Fatalf("notice should say the session survives, got %q", acc)
+	}
+	if !att.ShellExited() {
+		t.Fatal("attachment should report a shell exit")
+	}
+	if att.SessionClosed() {
+		t.Fatal("session must not be reported closed after shell exit")
+	}
+	if got := s.State(); got != StateExited {
+		t.Fatalf("state=%s want EXITED", got)
+	}
+	if s.Alive() {
+		t.Fatal("shell should be gone")
+	}
+	// The session is still there and still attachable.
+	if got, err := m.Get(s.ID); err != nil || got != s {
+		t.Fatalf("session should survive shell exit: %v", err)
+	}
+}
+
+func TestAttachAfterExitRespawnsShell(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "tyd-before-exit"
+	if _, err := att.Write([]byte("echo " + marker + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitContains(t, att, nil, marker, 5*time.Second)
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	exitShell(t, att, "")
+	firstPID := s.PID()
+	if firstPID != 0 {
+		t.Fatalf("exited session should have no pid, got %d", firstPID)
+	}
+
+	att2, snap, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.State(); got != StateAttached {
+		t.Fatalf("state=%s want ATTACHED", got)
+	}
+	// The old output is replayed before the new shell produces anything.
+	if !bytes.Contains(snap, []byte(marker)) {
+		t.Fatalf("replay lost earlier output, got %q", snap)
+	}
+	if !bytes.Contains(snap, []byte("shell exited (status 0)")) {
+		t.Fatalf("replay lost exit notice, got %q", snap)
+	}
+	live := "tyd-after-exit"
+	if _, err := att2.Write([]byte("echo " + live + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	waitContains(t, att2, snap, live, 5*time.Second)
+	if !s.Alive() {
+		t.Fatal("respawned shell should be running")
+	}
+	if s.PID() == firstPID {
+		t.Fatal("respawn should use a new process")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRespawnKeepsWindowSize(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := att.Resize(30, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	exitShell(t, att, "")
+
+	att2, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att2.Detach()
+	info := s.Info()
+	if info.Rows != 30 || info.Cols != 100 {
+		t.Fatalf("respawned pty lost size: %dx%d", info.Cols, info.Rows)
+	}
+}
+
+func TestReapIdleClosesExitedSession(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	exitShell(t, att, "")
+	if s.IdleSince().IsZero() {
+		t.Fatal("exited session should be idle since the shell went away")
+	}
+	closed := m.ReapIdle(time.Nanosecond, time.Now().Add(time.Hour))
+	if len(closed) != 1 || closed[0] != s.ID {
+		t.Fatalf("exited session should be reaped, got %v", closed)
+	}
+	if got := s.State(); got != StateClosed {
+		t.Fatalf("state=%s want CLOSED", got)
+	}
+}
+
+func TestCloseExitedSession(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	exitShell(t, att, "")
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.State(); got != StateClosed {
+		t.Fatalf("state=%s want CLOSED", got)
+	}
+	if _, _, err := s.Attach(); err == nil {
+		t.Fatal("attach on a closed session must fail")
+	}
+	if err := s.Close(); err == nil || !strings.Contains(err.Error(), "already closed") {
+		t.Fatalf("expected already closed, got %v", err)
+	}
+}
+
+func TestWatchEndsOnShellExit(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _, err := s.Watch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 3\n")); err != nil {
+		t.Fatal(err)
+	}
+	acc := []byte{}
+	for {
+		b, err := w.RecvTimeout(5 * time.Second)
+		if err != nil {
+			break
+		}
+		acc = append(acc, b...)
+	}
+	if !bytes.Contains(acc, []byte("shell exited (status 3)")) {
+		t.Fatalf("watcher missed the exit notice, got %q", acc)
+	}
+	if !w.ShellExited() {
+		t.Fatal("watcher should report a shell exit")
+	}
+	if w.SessionClosed() {
+		t.Fatal("watcher must not report a closed session")
+	}
+	if got := s.State(); got != StateExited {
+		t.Fatalf("state=%s want EXITED", got)
+	}
+}
+
+func TestSignalOnExitedSessionErrors(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.CloseAll)
+	s, err := m.Create(testOpts(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := att.Write([]byte("exit 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	exitShell(t, att, "")
+	// Resize targets the PTY, so it must report the missing shell instead of
+	// panicking on a nil file.
+	if err := att.Resize(24, 80); err == nil {
+		t.Fatal("resize on an exited session should fail")
+	}
+}

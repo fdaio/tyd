@@ -35,6 +35,7 @@ const (
 	TypeDetached    Type = "detached"
 	TypeClosed      Type = "closed"
 	TypeExit        Type = "exit"
+	TypeExited      Type = "exited" // shell exited; session is still alive
 	TypeSessions    Type = "sessions"
 	TypeConnections Type = "connections"
 )

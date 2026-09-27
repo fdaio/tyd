@@ -387,11 +387,22 @@ func Reject(ep Endpoint, key ed25519.PrivateKey, id string) error {
 
 const detachByte = 0x1c // Ctrl-\
 
+// drainWait bounds how long one half of a finished watch waits for the other.
+const drainWait = 500 * time.Millisecond
+
 var (
 	errUserDetach   = errors.New("detached")
 	errSessionEnded = errors.New("session ended")
 	errInterrupted  = errors.New("interrupted")
 )
+
+// ErrShellExited reports that the session shell exited but the session itself
+// is still alive, so it can be attached again.
+var ErrShellExited = errors.New("shell exited")
+
+// IsShellExited reports whether err means the shell exited while the session
+// survived.
+func IsShellExited(err error) bool { return errors.Is(err, ErrShellExited) }
 
 func attachStopError(err error) error {
 	if err == nil || errors.Is(err, errUserDetach) || errors.Is(err, errSessionEnded) {
@@ -403,6 +414,9 @@ func attachStopError(err error) error {
 func leaveMessage(err error) string {
 	if errors.Is(err, errSessionEnded) {
 		return "session ended"
+	}
+	if errors.Is(err, ErrShellExited) {
+		return "shell exited"
 	}
 	if errors.Is(err, errInterrupted) {
 		return "interrupted"
@@ -488,6 +502,25 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdou
 	}
 
 	err = <-errCh
+	if errors.Is(err, errUserDetach) {
+		// The input side is done (stdin closed or the user asked to detach) and
+		// has already sent the detach frame, so the peer is about to end the
+		// stream. Give the output side a moment to finish instead of closing
+		// the connection now: the history and any exit notice may still be in
+		// flight, and cutting the connection would drop them. The wait is
+		// bounded because the detach may have come from the output side, with
+		// the input side still parked on a terminal that never types.
+		select {
+		case second := <-errCh:
+			if second != nil && !errors.Is(second, errUserDetach) {
+				err = second
+			} else {
+				err = nil
+			}
+		case <-time.After(drainWait):
+			err = nil
+		}
+	}
 	_ = c.Close()
 	if stdin != nil {
 		_ = stdin.SetReadDeadline(time.Now())
@@ -496,7 +529,7 @@ func Watch(ep Endpoint, key ed25519.PrivateKey, id string, stdin *os.File, stdou
 			if err == nil {
 				err = second
 			}
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(drainWait):
 		}
 		_ = stdin.SetReadDeadline(time.Time{})
 	}
@@ -721,6 +754,8 @@ func copyOutput(c *Conn, stdout *os.File) error {
 			}
 		case protocol.TypeExit:
 			return errSessionEnded
+		case protocol.TypeExited:
+			return ErrShellExited
 		case protocol.TypeDetached:
 			return errUserDetach
 		case protocol.TypeError:
