@@ -9,8 +9,8 @@ then creates or attaches sessions. Session bytes never go through the Control Pa
 curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
-Binaries are downloaded from the same origin as the script (`/releases/`), so the
-GitHub repository can stay private.
+The script is served by the Control Panel. The binary comes from the latest
+GitHub Release (`tyd-<os>.tar.gz`).
 
 - **Human, TTY:** choose server or client. After a server install you can mint an
   invite and copy one client command.

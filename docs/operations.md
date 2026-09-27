@@ -25,9 +25,10 @@ calendar date plus the 7-character commit id, for example `2026.09.27-19d5e02`.
 
 It publishes one GitHub Release of `main` when that commit is not already tagged
 in this form. The archives are `tyd-linux.tar.gz`, `tyd-darwin.tar.gz`, and
-`tyd-freebsd.tar.gz`. A manual tag such as `v0.1.0` is not a daily version. If
-`main` has no new commit since the last daily tag, the workflow succeeds and
-skips the build and the release.
+`tyd-freebsd.tar.gz`. `install.sh` downloads the latest of those assets. A
+manual tag such as `v0.1.0` is not a daily version. If `main` has no new commit
+since the last daily tag, the workflow succeeds and skips the build and the
+release.
 
 ## Run the daemon
 
@@ -77,7 +78,7 @@ end-to-end. The default is the Control Panel's own `/relay`
 
 ```bash
 cp .env.example .env      # optional: TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
-make dist && cp dist/tyd-*.tar.gz releases/   # archives for install.sh
+make dist   # tyd-<os>.tar.gz; install.sh downloads these from GitHub Releases
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz
 ```
@@ -87,8 +88,8 @@ Notes:
 - The default build compiles **inside** the golang stage, so classic Compose works
   without buildx or a host Go toolchain. With Go on the host, `make docker`
   compiles once and `docker compose up -d` just packs the image.
-- `install.sh` and the binaries are served from the same Control Panel origin
-  (`/releases/tyd-<os>.tar.gz`), so the GitHub repository can stay private.
+- `install.sh` is still served at `/install.sh`. The binary is downloaded from
+  `https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>.tar.gz`.
 - `--platform` is only needed for a custom or local Control Panel.
 - The container listens on `0.0.0.0:8080` with no TLS — terminate at the edge
   (e.g. Cloudflare). Compose caps it at 0.5 CPU and 128 MB.
