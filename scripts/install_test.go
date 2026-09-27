@@ -61,6 +61,17 @@ func TestInstallScriptStaysUserLevel(t *testing.T) {
 	if strings.Contains(body, `cp "$SRC" "${BINDIR}/tyd"`) {
 		t.Error(`install.sh must not cp directly onto ${BINDIR}/tyd (ETXTBSY when daemon runs)`)
 	}
+	if !strings.Contains(body, "--service") {
+		t.Error("install.sh should support --service for an already installed binary")
+	}
+	linger := strings.Index(body, "loginctl enable-linger")
+	enable := strings.Index(body, "systemctl --user enable --now tyd.service")
+	if linger < 0 || enable < 0 || linger > enable {
+		t.Error("enable-linger must run before the user service starts")
+	}
+	if !strings.Contains(body, "setsid") {
+		t.Error("fallback daemon start should detach with setsid")
+	}
 
 	for i, line := range strings.Split(body, "\n") {
 		fields := strings.Fields(line)
@@ -128,5 +139,28 @@ install_binary "$1" "$2"
 	}
 	if !strings.Contains(string(got), "echo ok") {
 		t.Fatalf("dest not replaced: %q", got)
+	}
+}
+
+func TestServiceOnlyRequiresInstalledBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	dir := t.TempDir()
+	cmd := exec.Command("sh", installScriptPath(t), "--service")
+	cmd.Env = append(os.Environ(),
+		"HOME="+dir,
+		"TYD_BINDIR="+filepath.Join(dir, "bin"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure without a binary, got %s", out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "no binary") {
+		t.Fatalf("output: %s", text)
+	}
+	if strings.Contains(text, "download failed") {
+		t.Fatalf("service install tried to download: %s", text)
 	}
 }

@@ -14,6 +14,7 @@ ROLE=""
 ACCEPT_TOKEN=""
 AGENT=0
 AS_NAME=""
+SERVICE_ONLY=0
 
 usage() {
 	cat <<'EOF'
@@ -27,6 +28,7 @@ Usage:
 Options:
   --server            Install as server (this machine holds sessions)
   --client            Install as client (no daemon)
+  --service           Start the user daemon for an already installed binary
   --agent             Non-interactive server; print client bootstrap and exit
   --accept TOKEN      Invite token (client)
   --as NAME           Peer nickname when accepting
@@ -67,6 +69,10 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--server) ROLE=server ;;
 	--client) ROLE=client ;;
+	--service)
+		SERVICE_ONLY=1
+		ROLE=server
+		;;
 	--agent)
 		AGENT=1
 		[ -n "$ROLE" ] || ROLE=server
@@ -181,22 +187,6 @@ if is_root; then
 	log "      this puts tyd and its sessions under $(id -un) ($HOME_DIR)."
 fi
 
-log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT HUP
-ARCHIVE="$TMP/tyd.tgz"
-if [ -z "$RELEASE_URL" ]; then
-	RELEASE_URL="${base}/releases/tyd-${OS}.tar.gz"
-fi
-URL="$RELEASE_URL"
-if ! curl -fsSL --retry 3 -o "$ARCHIVE" "$URL"; then
-	die "download failed: $URL (place tyd-${OS}.tar.gz on the Control Panel /releases/, or build with make build)"
-fi
-tar -xzf "$ARCHIVE" -C "$TMP"
-SRC="$TMP/${OS}/tyd-${ARCH}"
-[ -f "$SRC" ] || die "archive missing ${OS}/tyd-${ARCH}"
-
 # Replace via temp + mv so a running tyd (ETXTBSY) does not block upgrade.
 # The old process keeps the previous inode; new invocations use the new file.
 install_binary() {
@@ -213,8 +203,30 @@ install_binary() {
 	fi
 }
 
-install_binary "$SRC" "${BINDIR}/tyd"
-TYD="${BINDIR}/tyd"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT INT HUP
+
+if [ "$SERVICE_ONLY" -eq 1 ]; then
+	TYD="${BINDIR}/tyd"
+	[ -x "$TYD" ] || die "no binary at $TYD"
+	log "Using installed binary $TYD"
+else
+	log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
+	ARCHIVE="$TMP/tyd.tgz"
+	if [ -z "$RELEASE_URL" ]; then
+		RELEASE_URL="${base}/releases/tyd-${OS}.tar.gz"
+	fi
+	URL="$RELEASE_URL"
+	if ! curl -fsSL --retry 3 -o "$ARCHIVE" "$URL"; then
+		die "download failed: $URL (place tyd-${OS}.tar.gz on the Control Panel /releases/, or build with make build)"
+	fi
+	tar -xzf "$ARCHIVE" -C "$TMP"
+	SRC="$TMP/${OS}/tyd-${ARCH}"
+	[ -f "$SRC" ] || die "archive missing ${OS}/tyd-${ARCH}"
+	install_binary "$SRC" "${BINDIR}/tyd"
+	TYD="${BINDIR}/tyd"
+fi
+
 [ -x "$TYD" ] || die "binary not executable: $TYD"
 
 extract_token() {
@@ -269,9 +281,10 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 UNIT
+	# Linger first, so the user manager (and this service) survive SSH logout.
+	loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || log "warning: could not enable linger; the daemon may stop at logout"
 	systemctl --user daemon-reload
 	systemctl --user enable --now tyd.service
-	loginctl enable-linger "$(id -un)" >/dev/null 2>&1 || true
 	log "Started tyd via systemd --user (tyd.service)"
 }
 
@@ -312,9 +325,15 @@ start_daemon_nohup() {
 		log "removing stale socket ${TYD_DIR}/tyd.sock"
 		rm -f "${TYD_DIR}/tyd.sock"
 	fi
-	nohup "$TYD" up >>"${TYD_DIR}/tyd.log" 2>&1 &
+	# setsid leaves the installing shell and an SSH session. A foreground
+	# `tyd up` dies on logout; this path must not.
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$TYD" up >>"${TYD_DIR}/tyd.log" 2>&1 </dev/null &
+	else
+		nohup "$TYD" up >>"${TYD_DIR}/tyd.log" 2>&1 </dev/null &
+	fi
 	printf '%s\n' "$!" >"${TYD_DIR}/tyd.pid"
-	log "Started tyd with nohup (pid $(cat "${TYD_DIR}/tyd.pid"), log ${TYD_DIR}/tyd.log)"
+	log "Started tyd (pid $(cat "${TYD_DIR}/tyd.pid"), log ${TYD_DIR}/tyd.log)"
 }
 
 start_daemon() {
@@ -348,7 +367,8 @@ start_daemon() {
 		i=$((i + 1))
 		sleep 1
 	done
-	log "warning: tyd.sock not seen yet; check ${TYD_DIR}/tyd.log"
+	log "error: daemon did not create ${TYD_DIR}/tyd.sock; check ${TYD_DIR}/tyd.log"
+	return 1
 }
 
 daemon_is_running() {
@@ -494,6 +514,11 @@ install_server() {
 		restart_daemon
 	else
 		start_daemon
+	fi
+	if [ "$SERVICE_ONLY" -eq 1 ]; then
+		log "Daemon ready. Binary: $TYD"
+		log "It keeps running after this shell exits."
+		return 0
 	fi
 	if [ "$AGENT" -eq 1 ] || ! have_tty; then
 		mint_invite
