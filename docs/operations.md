@@ -4,10 +4,16 @@
 
 ```bash
 git clone git@github.com:fdaio/tyd.git && cd tyd
-make build      # ./tyd
 make test
+make build          # ./tyd
+make install        # ~/.local/bin/tyd
 make controlpanel   # ./controlpanel
 ```
+
+`make install` copies only the `tyd` binary to `$(PREFIX)/bin` (`PREFIX`
+defaults to `~/.local`; set `DESTDIR` to stage a packaging root). It does not
+change `PATH` or register a service — the install script does. `controlpanel`
+is a separate binary and is not installed.
 
 ## Run the daemon
 

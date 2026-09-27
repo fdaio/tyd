@@ -61,5 +61,12 @@ dual-NAT, and network details: [docs/connect.md](docs/connect.md).
 
 ```bash
 git clone git@github.com:fdaio/tyd.git && cd tyd
-make build && make test    # ./tyd
+make test
+make build       # ./tyd
+make install     # ~/.local/bin/tyd
 ```
+
+`make test` compiles the packages on its own, so it runs before `make build`.
+`make install` copies the binary to `$(PREFIX)/bin` (`PREFIX` defaults to
+`~/.local`). It does not change `PATH` or install a service. The
+[install script](#install) does both.

@@ -1,7 +1,19 @@
-.PHONY: build test fmt clean dist dist-bins controlpanel docker-prep docker docker-source
+.PHONY: build install test fmt clean dist dist-bins controlpanel docker-prep docker docker-source
+
+# GNU prefix. The binary lands in $(DESTDIR)$(PREFIX)/bin/tyd.
+# Default PREFIX matches scripts/install.sh, which installs to ~/.local/bin.
+# DESTDIR is empty for a normal install and set when staging a package.
+PREFIX ?= $(HOME)/.local
+DESTDIR ?=
 
 build:
 	go build -o tyd ./cmd/tyd
+
+# Developer install: the tyd binary only. It does not touch PATH, create state
+# under ~/.tyd, or register a service — scripts/install.sh is what does that.
+install: build
+	install -d "$(DESTDIR)$(PREFIX)/bin"
+	install -m 0755 tyd "$(DESTDIR)$(PREFIX)/bin/tyd"
 
 controlpanel:
 	go build -o controlpanel ./cmd/controlpanel
