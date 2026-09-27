@@ -46,7 +46,8 @@ Maximum frame size: 1 MiB.
 | `watching` | Watch succeeded |
 | `output` | PTY output bytes |
 | `detached` | Detach acknowledged |
-| `exit` | Shell exited (or closed-session watch finished) |
+| `exited` | Shell exited; the session stays attachable and is now `EXITED` |
+| `exit` | Session closed, or a closed-session watch finished |
 | `closed` | Session close acknowledged |
 
 ## Authentication handshake
