@@ -14,11 +14,12 @@ concurrency:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   plan:
     name: plan
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.plan.outputs.publish }}
       version: ${{ steps.plan.outputs.version }}
@@ -38,7 +39,7 @@ jobs:
     name: test (linux)
     needs: plan
     if: needs.plan.outputs.publish == 'true'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +48,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
 
       - name: Download modules
         run: |
@@ -68,7 +69,7 @@ jobs:
     name: dist
     needs: [plan, test]
     if: needs.plan.outputs.publish == 'true' && needs.test.result == 'success'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -77,7 +78,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false
+          cache: true
 
       - name: Package linux, darwin, and freebsd releases
         run: |
@@ -113,7 +114,7 @@ jobs:
     name: publish
     needs: [plan, dist]
     if: needs.plan.outputs.publish == 'true' && needs.dist.result == 'success'
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
