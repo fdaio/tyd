@@ -981,3 +981,83 @@ func TestGateCoversQUIC(t *testing.T) {
 		t.Fatal("approval must be one-shot")
 	}
 }
+
+// TestShellExitStreamEnd checks the wire contract: when the shell exits while
+// attached, the server ends the stream with "exited" (session alive), not
+// "exit" (session closed), and a later attach gets a fresh shell.
+func TestShellExitStreamEnd(t *testing.T) {
+	ep, key, _ := startTestServer(t)
+	info, err := client.Create(ep, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID, Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := c.Recv(); err != nil || f.Type != protocol.TypeAttached {
+		t.Fatalf("attach: %s %v", f.Type, err)
+	}
+	if err := c.Send(protocol.Frame{Type: protocol.TypeWrite, Data: []byte("exit 0\n")}); err != nil {
+		t.Fatal(err)
+	}
+	var out []byte
+	var end protocol.Type
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = c.SetDeadline(deadline)
+		f, err := c.Recv()
+		if err != nil {
+			break
+		}
+		switch f.Type {
+		case protocol.TypeOutput:
+			out = append(out, f.Data...)
+		case protocol.TypeExit, protocol.TypeExited:
+			end = f.Type
+		}
+		if end != "" {
+			break
+		}
+	}
+	if end != protocol.TypeExited {
+		t.Fatalf("stream end frame=%q want exited, output=%q", end, out)
+	}
+	if !bytes.Contains(out, []byte("still attachable")) {
+		t.Fatalf("missing exit notice: %q", out)
+	}
+
+	listed, err := client.List(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range listed {
+		if s.ID == info.ID && s.State != string(session.StateExited) {
+			t.Fatalf("state=%s want EXITED", s.State)
+		}
+	}
+
+	// Re-attaching starts a new shell on the same session.
+	marker := "tyd-respawned"
+	c2, err := client.Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if err := c2.Send(protocol.Frame{Type: protocol.TypeAttach, SessionID: info.ID, Rows: 24, Cols: 80}); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := c2.Recv(); err != nil || f.Type != protocol.TypeAttached {
+		t.Fatalf("reattach: %s %v", f.Type, err)
+	}
+	acc := []byte{}
+	if err := c2.Send(protocol.Frame{Type: protocol.TypeWrite, Data: []byte("echo " + marker + "\n")}); err != nil {
+		t.Fatal(err)
+	}
+	waitOutput(t, c2, acc, marker, 5*time.Second)
+}

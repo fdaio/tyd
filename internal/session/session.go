@@ -24,6 +24,9 @@ const (
 	StateAttached State = "ATTACHED"
 	StateDetached State = "DETACHED"
 	StateClosed   State = "CLOSED"
+	// StateExited marks a live session whose shell has exited. The session is
+	// still alive and can be attached again, which starts a fresh shell.
+	StateExited State = "EXITED"
 )
 
 const ringMax = 64 << 10
@@ -195,18 +198,20 @@ func (m *Manager) List() []protocol.SessionInfo {
 }
 
 // IdleSince reports when the session became unattended. Zero means attached,
-// pending, or closed.
+// pending, closed, or exited.
 func (s *Session) IdleSince() time.Time {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state != StateDetached {
+	s.refreshLiveLocked()
+	if s.state != StateDetached && s.state != StateExited {
 		return time.Time{}
 	}
 	return s.idleSince
 }
 
-// ReapIdle closes DETACHED sessions unattended for longer than idle and
-// returns their ids. PENDING sessions are left for the operator to decide.
+// ReapIdle closes DETACHED and EXITED sessions unattended for longer than
+// idle and returns their ids. PENDING sessions are left for the operator to
+// decide.
 func (m *Manager) ReapIdle(idle time.Duration, now time.Time) []string {
 	if idle <= 0 {
 		return nil
@@ -298,22 +303,28 @@ type Session struct {
 	liveDir    string
 	agentCmd   *exec.Cmd
 	ownerPub   string
+	opts       CreateOpts // retained so an exited shell can be respawned on attach
+	// agentSpawn starts a replacement live-agent for this session. Set for
+	// live sessions only; nil means there is nothing to respawn.
+	agentSpawn func() (string, *exec.Cmd, error)
 }
 
 type Attachment struct {
-	s         *Session
-	out       chan []byte
-	closed    chan struct{}
-	closeOnce sync.Once
-	live      *live.Conn
+	s           *Session
+	out         chan []byte
+	closed      chan struct{}
+	closeOnce   sync.Once
+	live        *live.Conn
+	shellExited bool // stream ended because the shell exited, not the session
 }
 
 type Watcher struct {
-	s         *Session
-	out       chan []byte
-	closed    chan struct{}
-	closeOnce sync.Once
-	live      *live.Conn
+	s           *Session
+	out         chan []byte
+	closed      chan struct{}
+	closeOnce   sync.Once
+	live        *live.Conn
+	shellExited bool // stream ended because the shell exited, not the session
 }
 
 func normalizeCreateOpts(opts *CreateOpts) {
@@ -356,6 +367,7 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 		cmd:       cmd,
 		pty:       ptmx,
 		cmdDone:   make(chan struct{}),
+		opts:      opts,
 	}
 	go s.waitLoop()
 	go s.readLoop()
@@ -418,6 +430,7 @@ func (s *Session) approve() error {
 	s.state = StateDetached
 	s.idleSince = time.Now().UTC()
 	s.cmdDone = make(chan struct{})
+	s.opts = opts
 	go s.waitLoop()
 	go s.readLoop()
 	return nil
@@ -438,6 +451,7 @@ func defaultShell() string {
 func (s *Session) Info() protocol.SessionInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshLiveLocked()
 	pid := 0
 	if s.liveDir != "" {
 		pid = shellPIDFile(s.liveDir)
@@ -459,6 +473,7 @@ func (s *Session) Info() protocol.SessionInfo {
 func (s *Session) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.refreshLiveLocked()
 	return s.state
 }
 
@@ -484,10 +499,22 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 		return nil, nil, fmt.Errorf("session %s is closed", s.ID)
 	}
 	if s.attach != nil {
-		return nil, nil, fmt.Errorf("session %s already attached", s.ID)
+		// A finished stream (the shell exited, or the client vanished without
+		// the server tearing the attachment down) must not block a new attach.
+		if !s.attach.endedLocked() {
+			return nil, nil, fmt.Errorf("session %s already attached", s.ID)
+		}
+		s.attach = nil
 	}
 	if s.liveDir != "" {
 		return s.attachLive()
+	}
+	if s.state == StateExited {
+		// The shell is gone but the session is alive: start a fresh one. The
+		// ring is kept, so the replay below still shows the previous shell.
+		if err := s.respawnLocked(); err != nil {
+			return nil, nil, err
+		}
 	}
 	a := &Attachment{
 		s:      s,
@@ -499,6 +526,31 @@ func (s *Session) Attach() (*Attachment, []byte, error) {
 	s.idleSince = time.Time{}
 	snap := append([]byte(nil), s.ring...)
 	return a, snap, nil
+}
+
+// respawnLocked starts a fresh shell for a session whose previous shell
+// exited. It reuses the create options recorded at approval time, with the
+// session's last known window size; the caller re-applies the real size via
+// Attachment.Resize once the new PTY exists. The caller must hold s.mu and must
+// not have set s.attach yet.
+func (s *Session) respawnLocked() error {
+	opts := s.opts
+	opts.Rows = s.rows
+	opts.Cols = s.cols
+	normalizeCreateOpts(&opts)
+	cmd, ptmx, err := startPTY(opts)
+	if err != nil {
+		return err
+	}
+	s.cmd = cmd
+	s.pty = ptmx
+	s.cmdDone = make(chan struct{})
+	s.exitCode = 0
+	s.rows = opts.Rows
+	s.cols = opts.Cols
+	go s.waitLoop()
+	go s.readLoop()
+	return nil
 }
 
 func (s *Session) Watch() (*Watcher, []byte, error) {
@@ -528,10 +580,13 @@ func (a *Attachment) Write(p []byte) (int, error) {
 	if a.live != nil {
 		return a.live.Write(p)
 	}
-	if a.s.pty == nil {
+	a.s.mu.Lock()
+	ptmx := a.s.pty
+	a.s.mu.Unlock()
+	if ptmx == nil {
 		return 0, io.ErrClosedPipe
 	}
-	return a.s.pty.Write(p)
+	return ptmx.Write(p)
 }
 
 func (a *Attachment) Resize(rows, cols uint16) error {
@@ -607,6 +662,17 @@ func (a *Attachment) SessionClosed() bool {
 	return a.s.closed || a.s.state == StateClosed
 }
 
+// ShellExited reports whether the stream ended because the session shell
+// exited while the session itself is still alive and re-attachable.
+func (a *Attachment) ShellExited() bool {
+	if a.live != nil {
+		return a.live.ShellExited()
+	}
+	a.s.mu.Lock()
+	defer a.s.mu.Unlock()
+	return a.shellExited && !a.s.closed && a.s.state != StateClosed
+}
+
 func (a *Attachment) ExitCode() int {
 	if a.live != nil {
 		return a.live.ExitCode()
@@ -630,6 +696,20 @@ func (a *Attachment) Detach() {
 		}
 	}
 	a.s.mu.Unlock()
+}
+
+// endedLocked reports whether this attachment's stream is already finished. The
+// caller must hold a.s.mu.
+func (a *Attachment) endedLocked() bool {
+	if a.live != nil {
+		return a.live.Ended()
+	}
+	select {
+	case <-a.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Attachment) closeOut() {
@@ -677,6 +757,17 @@ func (w *Watcher) SessionClosed() bool {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	return w.s.closed || w.s.state == StateClosed
+}
+
+// ShellExited reports whether the stream ended because the session shell
+// exited while the session itself is still alive and re-attachable.
+func (w *Watcher) ShellExited() bool {
+	if w.live != nil {
+		return w.live.ShellExited()
+	}
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	return w.shellExited && !w.s.closed && w.s.state != StateClosed
 }
 
 func (w *Watcher) ExitCode() int {
@@ -853,9 +944,15 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) readLoop() {
+	s.mu.Lock()
+	ptmx := s.pty
+	s.mu.Unlock()
+	if ptmx == nil {
+		return
+	}
 	buf := make([]byte, 4096)
 	for {
-		n, err := s.pty.Read(buf)
+		n, err := ptmx.Read(buf)
 		if n > 0 {
 			s.broadcast(buf[:n])
 		}
@@ -865,8 +962,19 @@ func (s *Session) readLoop() {
 	}
 }
 
+// waitLoop waits for the session shell to exit. Unlike a live session, a
+// regular session survives its shell: the session only becomes StateExited, so
+// it can be attached again (which respawns a fresh shell) and stays subject to
+// idle reaping and explicit close. The session is deliberately not marked
+// closed and no ClosedInfo fires here.
 func (s *Session) waitLoop() {
-	err := s.cmd.Wait()
+	// Capture the process and its done channel: a later attach may respawn the
+	// shell and replace both fields while this loop is still winding down.
+	s.mu.Lock()
+	cmd := s.cmd
+	cmdDone := s.cmdDone
+	s.mu.Unlock()
+	err := cmd.Wait()
 	code := 0
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
@@ -876,40 +984,85 @@ func (s *Session) waitLoop() {
 		}
 	}
 	s.mu.Lock()
-	s.exitCode = code
-	s.closed = true
-	s.state = StateClosed
-	s.closedAt = time.Now().UTC()
-	if s.attach != nil {
-		s.attach.closeOut()
-		s.attach = nil
+	if s.closed || s.state == StateClosed {
+		// Close won the race with the exiting shell; do not resurrect the
+		// session as EXITED. cmdDone is still ours to close.
+		s.mu.Unlock()
+		close(cmdDone)
+		return
 	}
-	s.closeWatchersLocked()
-	s.fireClosedLocked()
+	s.exitCode = code
+	s.cmd = nil
+	if s.pty != nil {
+		_ = s.pty.Close()
+		s.pty = nil
+	}
+	s.state = StateExited
+	// Idle reaping counts from the moment the shell went away.
+	s.idleSince = time.Now().UTC()
+	// Tell whoever is attached or watching why the stream is ending, then end
+	// it. The notice goes into the ring so a later attach replays it too.
+	notice := exitNotice(code)
+	s.ringAppendLocked(notice)
+	att := s.attach
+	s.attach = nil
+	if att != nil {
+		att.shellExited = true
+	}
+	watchers := append([]*Watcher(nil), s.watchers...)
+	for _, w := range watchers {
+		w.shellExited = true
+	}
 	s.mu.Unlock()
-	close(s.cmdDone)
+
+	// Deliver before closing so the notice is the last thing the client sees.
+	deliver(att, watchers, notice)
+	if att != nil {
+		att.closeOut()
+	}
+	s.mu.Lock()
+	s.closeWatchersLocked()
+	s.mu.Unlock()
+	close(cmdDone)
+}
+
+// exitNotice is the in-band message written to the ring when a session shell
+// exits. It uses CRLF because it is read by terminals in raw mode.
+func exitNotice(code int) []byte {
+	return []byte(fmt.Sprintf("[tyd] shell exited (status %d) — session still attachable; attach again for a new shell\r\n", code))
 }
 
 func (s *Session) broadcast(p []byte) {
 	cp := append([]byte(nil), p...)
 	s.mu.Lock()
-	s.ring = append(s.ring, cp...)
-	if len(s.ring) > ringMax {
-		s.ring = append([]byte(nil), s.ring[len(s.ring)-ringMax:]...)
-	}
+	s.ringAppendLocked(cp)
 	att := s.attach
 	watchers := append([]*Watcher(nil), s.watchers...)
 	s.mu.Unlock()
+	deliver(att, watchers, cp)
+}
+
+// ringAppendLocked adds p to the replay ring. The caller must hold s.mu.
+func (s *Session) ringAppendLocked(p []byte) {
+	s.ring = append(s.ring, p...)
+	if len(s.ring) > ringMax {
+		s.ring = append([]byte(nil), s.ring[len(s.ring)-ringMax:]...)
+	}
+}
+
+// deliver fans p out to the given attachment and watchers. It is deliberately
+// lock-free: the sends block until the consumer drains or the stream is closed.
+func deliver(att *Attachment, watchers []*Watcher, p []byte) {
 	if att != nil {
 		select {
 		case <-att.closed:
-		case att.out <- cp:
+		case att.out <- p:
 		}
 	}
 	for _, w := range watchers {
 		select {
 		case <-w.closed:
-		case w.out <- cp:
+		case w.out <- p:
 		}
 	}
 }

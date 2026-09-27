@@ -16,11 +16,12 @@ type Conn struct {
 	conn net.Conn
 	mu   sync.Mutex
 
-	out        chan []byte
-	closed     chan struct{}
-	closeOnce  sync.Once
-	sessClosed bool
-	exitCode   int
+	out         chan []byte
+	closed      chan struct{}
+	closeOnce   sync.Once
+	sessClosed  bool
+	shellExited bool
+	exitCode    int
 }
 
 // DialAttach connects and takes the exclusive attach slot.
@@ -142,6 +143,13 @@ func (c *Conn) readLoop() {
 			c.exitCode = f.ExitCode
 			c.mu.Unlock()
 			return
+		case protocol.TypeExited:
+			// The shell is gone; the session survives and can be attached again.
+			c.mu.Lock()
+			c.shellExited = true
+			c.exitCode = f.ExitCode
+			c.mu.Unlock()
+			return
 		case protocol.TypeDetached, protocol.TypeClosed:
 			return
 		case protocol.TypeError:
@@ -201,6 +209,24 @@ func (c *Conn) RecvTimeout(d time.Duration) ([]byte, error) {
 	case <-timer.C:
 		return nil, os.ErrDeadlineExceeded
 	}
+}
+
+// Ended reports whether the agent-side stream is finished.
+func (c *Conn) Ended() bool {
+	select {
+	case <-c.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShellExited reports whether the stream ended because the shell exited while
+// the session itself is still alive.
+func (c *Conn) ShellExited() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shellExited && !c.sessClosed
 }
 
 func (c *Conn) SessionClosed() bool {

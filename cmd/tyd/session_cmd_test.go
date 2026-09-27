@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"tyd/internal/alias"
 	"tyd/internal/auth"
+	"tyd/internal/catalog"
+	"tyd/internal/client"
 	"tyd/internal/server"
 	"tyd/internal/session"
 )
@@ -261,5 +264,48 @@ func TestSessionListIsLocalCatalog(t *testing.T) {
 	})
 	if !strings.Contains(out, "878144071a28b83c") || !strings.Contains(out, "amy") {
 		t.Fatalf("local list: %q", out)
+	}
+}
+
+func TestFinishStreamRecordsExited(t *testing.T) {
+	dir := t.TempDir()
+	cli := options{
+		sessions: filepath.Join(dir, "sessions.json"),
+		recent:   filepath.Join(dir, "recent.json"),
+		aliases:  filepath.Join(dir, "aliases.json"),
+	}
+	const sid = "exited-session"
+	rememberSession(cli, catalog.Record{ID: sid, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
+
+	// Unrelated errors pass through untouched.
+	want := errors.New("boom")
+	if got := finishStream(cli, sid, want); !errors.Is(got, want) {
+		t.Fatalf("error should pass through, got %v", got)
+	}
+	if rec, _ := loadLocalCatalog(cli).Get(sid); rec.State != "ATTACHED" {
+		t.Fatalf("state changed on a normal error: %s", rec.State)
+	}
+
+	// A shell exit is a success, and the catalog records the new state.
+	if got := finishStream(cli, sid, client.ErrShellExited); got != nil {
+		t.Fatalf("shell exit must not fail the CLI, got %v", got)
+	}
+	rec, ok := loadLocalCatalog(cli).Get(sid)
+	if !ok {
+		t.Fatal("session vanished from the catalog")
+	}
+	if rec.State != string(session.StateExited) {
+		t.Fatalf("state=%s want EXITED", rec.State)
+	}
+	if rec.Addr != "/tmp/x.sock" {
+		t.Fatalf("endpoint info lost: %q", rec.Addr)
+	}
+
+	// Unknown ids are ignored rather than creating a record.
+	if got := finishStream(cli, "no-such-session", client.ErrShellExited); got != nil {
+		t.Fatalf("got %v", got)
+	}
+	if _, ok := loadLocalCatalog(cli).Get("no-such-session"); ok {
+		t.Fatal("should not invent a catalog record")
 	}
 }

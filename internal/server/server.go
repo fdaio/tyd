@@ -870,9 +870,7 @@ func (s *Server) pumpOutput(st *connState, att *session.Attachment) {
 	for {
 		b, err := att.Recv()
 		if err != nil {
-			if att.SessionClosed() {
-				_ = st.send(protocol.Frame{Type: protocol.TypeExit, ExitCode: att.ExitCode()})
-			}
+			s.sendStreamEnd(st, att.SessionClosed(), att.ShellExited(), att.ExitCode())
 			return
 		}
 		if err := st.send(protocol.Frame{Type: protocol.TypeOutput, Data: b}); err != nil {
@@ -886,14 +884,23 @@ func (s *Server) pumpWatchOutput(st *connState, w *session.Watcher) {
 	for {
 		b, err := w.Recv()
 		if err != nil {
-			if w.SessionClosed() {
-				_ = st.send(protocol.Frame{Type: protocol.TypeExit, ExitCode: w.ExitCode()})
-			}
+			s.sendStreamEnd(st, w.SessionClosed(), w.ShellExited(), w.ExitCode())
 			return
 		}
 		if err := st.send(protocol.Frame{Type: protocol.TypeOutput, Data: b}); err != nil {
 			w.Close()
 			return
 		}
+	}
+}
+
+// sendStreamEnd tells the client why an output stream finished. A closed
+// session is final; an exited shell is not, so the session stays attachable.
+func (s *Server) sendStreamEnd(st *connState, closed, shellExited bool, code int) {
+	switch {
+	case closed:
+		_ = st.send(protocol.Frame{Type: protocol.TypeExit, ExitCode: code})
+	case shellExited:
+		_ = st.send(protocol.Frame{Type: protocol.TypeExited, ExitCode: code})
 	}
 }
