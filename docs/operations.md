@@ -12,10 +12,10 @@ make controlpanel   # ./controlpanel
 make dist           # ./dist/tyd-<os>.tar.gz release archives
 ```
 
-`make install` copies only the `tyd` binary to `$(PREFIX)/bin` (`PREFIX`
-defaults to `~/.local`; set `DESTDIR` to stage a packaging root). It does not
-change `PATH` or register a service — the install script does. `controlpanel`
-is a separate binary and is not installed.
+`make install` copies the `tyd` binary to `$(PREFIX)/bin` (`PREFIX` defaults
+to `~/.local`) and starts the per-user daemon, which stays up after logout.
+Set `DESTDIR` to stage a packaging root without starting a daemon.
+`controlpanel` is a separate binary and is not installed.
 
 ## Run the daemon
 

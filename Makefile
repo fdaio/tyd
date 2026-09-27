@@ -9,11 +9,12 @@ DESTDIR ?=
 build:
 	go build -o tyd ./cmd/tyd
 
-# Developer install: the tyd binary only. It does not touch PATH, create state
-# under ~/.tyd, or register a service — scripts/install.sh is what does that.
+# Host install (empty DESTDIR) also starts the per-user daemon, so the peer
+# stays on the relay after the shell exits. DESTDIR only stages the binary.
 install: build
 	install -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 0755 tyd "$(DESTDIR)$(PREFIX)/bin/tyd"
+	@if [ -z "$(DESTDIR)" ]; then TYD_BINDIR="$(PREFIX)/bin" sh scripts/install.sh --service; fi
 
 controlpanel:
 	go build -o controlpanel ./cmd/controlpanel

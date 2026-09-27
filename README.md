@@ -69,5 +69,7 @@ make install     # ~/.local/bin/tyd
 
 `make test` compiles the packages on its own, so it runs before `make build`.
 `make install` copies the binary to `$(PREFIX)/bin` (`PREFIX` defaults to
-`~/.local`). It does not change `PATH` or install a service. The
-[install script](#install) does both.
+`~/.local`) and starts the per-user daemon (systemd --user, a LaunchAgent, or
+a detached process). That daemon keeps running after the shell exits. A
+`DESTDIR` install only stages the binary and does not start anything. The
+[install script](#install) downloads a release and does the same daemon setup.
