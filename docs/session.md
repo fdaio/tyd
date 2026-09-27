@@ -103,6 +103,12 @@ tyd session alias rm <name>
 A name that collides with an existing session id or alias is rejected. The older
 top-level `tyd alias` still works but prints a deprecation note.
 
+With a peer nickname, attach in one token: `tyd <session>.<peer>`. If the
+session alias is `jammy` and the peer nickname is `laptop`, `tyd jammy.laptop`
+attaches to that session. It is the same as `tyd --peer laptop session attach jammy`.
+Each side may also be a raw id. The token needs exactly one dot. See
+[cli.md](cli.md).
+
 ## Approval modes
 
 The daemon enforces the approval mode stored in `peers.json`. Set it at register

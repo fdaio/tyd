@@ -83,6 +83,7 @@ With an existing session:
 ```bash
 tyd session list
 tyd session attach <id-or-alias>         # Ctrl-\ detaches; the shell keeps running
+tyd jammy.laptop                         # same attach: session alias . peer alias
 tyd session watch <id-or-alias>          # read-only
 ```
 

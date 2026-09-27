@@ -53,6 +53,8 @@ func TestRootHelpPlain(t *testing.T) {
 		"session create",
 		"session list",
 		"session attach",
+		"<session>.<peer>",
+		"tyd jammy.laptop",
 		"session watch",
 		"session approve",
 		"session reject",

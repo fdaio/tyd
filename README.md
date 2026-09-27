@@ -38,6 +38,7 @@ On the peer machine, after installing tyd:
 ```bash
 tyd accept TOKEN --as laptop          # pair
 tyd --peer laptop session create      # create a shell and attach
+tyd jammy.laptop                      # attach: session alias . peer alias
 tyd session list                      # local session catalog
 tyd session watch laptop              # read-only follow
 tyd session close laptop              # kill the shell

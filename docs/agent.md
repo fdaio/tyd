@@ -106,9 +106,12 @@ tyd session alias jammy                   # name the most recent session
 tyd session alias <session_id> jammy      # name a specific session
 tyd session alias list
 tyd session alias rm jammy
+tyd jammy.laptop                          # attach shortcut: session alias . peer alias
 ```
 
 Targeting: `--peer ID|NICK` applies to `session create/attach/watch/close` (the dial commands). Without it, tyd uses `~/.tyd/recent.json` when present, else the only outbound peer, else the local unix socket. `session list` ignores `--peer`.
+
+`tyd <session>.<peer>` attaches only. `tyd jammy.laptop` is `tyd --peer laptop session attach jammy`. Exactly one dot; both sides are an alias or a raw id. It does not watch or close.
 
 Lifecycle notes an agent must know:
 
