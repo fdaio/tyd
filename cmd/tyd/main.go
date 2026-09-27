@@ -33,6 +33,9 @@ func main() {
 }
 
 func run(opts options) error {
+	if err := applyAttachShortcut(&opts); err != nil {
+		return err
+	}
 	switch opts.cmd {
 	case "__live-agent":
 		return runLiveAgent(opts)

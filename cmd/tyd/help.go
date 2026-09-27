@@ -35,12 +35,14 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  tyd [command] [flags]")
+	fmt.Fprintln(w, "  tyd <session>.<peer>")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Sessions:")
 	writeHelpRows(w, []helpRow{
 		{"session create", "Create a session and attach (use --detach for id only)"},
 		{"session list", "List local sessions (alive first, newest first)"},
 		{"session attach", "Attach to a session (id, alias, or recent)"},
+		{"<session>.<peer>", "Attach shortcut (alias or id on each side)"},
 		{"session watch", "Follow session output (read-only)"},
 		{"session approve", "Approve a PENDING remote session (local unix)"},
 		{"session reject", "Reject a PENDING remote session (local unix)"},
@@ -114,6 +116,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  Connecting: Ctrl-C cancels; attached: Ctrl-\\ detaches; watch: Ctrl-C/\\ stops.")
 	fmt.Fprintln(w, "  Use --peer <id|nickname> for create/attach/watch/close on a paired peer.")
+	fmt.Fprintln(w, "  tyd jammy.laptop          Same as: tyd --peer laptop session attach jammy")
 	fmt.Fprintln(w, "  session list is local only; it does not use --peer or CP.")
 	fmt.Fprintln(w, "  register/invite wait by default; --no-wait skips; Ctrl-C revokes the invite.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (recent.json).")
@@ -154,6 +157,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  Omit the id to reuse the most recent session (recent.json).")
 	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer for dialing commands.")
+	fmt.Fprintln(w, "  tyd <session>.<peer>      Attach shortcut; same as --peer <peer> session attach <session>.")
 	fmt.Fprintln(w, "  session list              Local catalog only (no CP / daemon).")
 	fmt.Fprintln(w, "  alias <name>              Name the recent session for later use.")
 	fmt.Fprintln(w, "  alias list | alias rm     List or remove session aliases.")

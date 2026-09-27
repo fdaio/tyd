@@ -92,6 +92,7 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - `tyd peer list` — paired peers with nickname and direction
 - `tyd peer show <id|alias>` — peer detail, published endpoint, reachability
 - `tyd peer alias <id|nick> <name>` / `peer alias rm` — nickname a peer for `--peer` targeting
+- `tyd <session>.<peer>` — attach shortcut (`tyd jammy.laptop` is `tyd --peer laptop session attach jammy`)
 
 ## Not done (intentionally)
 

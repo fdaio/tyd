@@ -10,6 +10,7 @@ the binary. This page is the map plus the defaults.
 | Sessions | `session create` | Create a session and attach (`--detach` prints the id only) |
 | | `session list` | List local sessions (alive first, newest first) |
 | | `session attach` | Attach interactively (exclusive); id, alias, or recent |
+| | `<session>.<peer>` | Attach shortcut: `tyd jammy.laptop` is `tyd --peer laptop session attach jammy` |
 | | `session watch` | Follow output read-only; id, alias, or recent |
 | | `session approve` | Approve a PENDING remote session (local unix only) |
 | | `session reject` | Reject a PENDING session (local unix only) |
@@ -101,3 +102,11 @@ Everything lives under `~/.tyd`:
 only outbound peer, else falls back to the local unix socket; with several
 outbound peers it errors and asks for `--peer`. `session list` ignores `--peer`
 and never dials.
+
+`tyd <session>.<peer>` is the attach shortcut. The left side is a session alias
+or id; the right side is a peer nickname or id. `tyd jammy.laptop` is the same
+command as `tyd --peer laptop session attach jammy`. The token must contain
+exactly one `.`, both sides must be non-empty, and no extra arguments are
+accepted. A `--peer` flag that names a different peer is an error. Names that
+themselves contain `.` stay on the long form. This shortcut only attaches; it
+does not watch or close.
