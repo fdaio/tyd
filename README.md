@@ -22,6 +22,8 @@ curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
+> **Agent?** See [docs/agent.md](docs/agent.md) — one-line install, `--agent` / `--client --accept` recipes, tool model, and troubleshooting for LLM agents.
+
 ## Use
 
 On the machine that holds the shells:
@@ -49,6 +51,7 @@ attachable. Pairing, dual-NAT, and network details: [docs/connect.md](docs/conne
 
 | Doc | Contents |
 |-----|----------|
+| [docs/agent.md](docs/agent.md) | Agent handbook — one-line install, `--agent` / `--client` recipes, tool model, troubleshooting |
 | [docs/overview.md](docs/overview.md) | What tyd is, architecture, non-goals |
 | [docs/connect.md](docs/connect.md) | Install, pair, connect, detach, close |
 | [docs/session.md](docs/session.md) | Session lifecycle, aliases, approval modes, audit log |
