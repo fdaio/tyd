@@ -21,14 +21,13 @@ DOCKER_GOARCH ?= $(shell go env GOARCH)
 # Parallelism for in-Docker source builds (1 keeps peak RAM low on 1C/1G).
 GOMAXPROCS ?= 1
 
-# Cross-compile linux binaries for --target runtime (optional fast path).
+# Cross-compile the linux Control Panel binary for --target runtime (optional
+# fast path). Only the Control Panel image is packed from a prebuilt binary; a
+# dedicated relay image is built in-Docker via the compose `relay` service.
 docker-prep:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(DOCKER_GOARCH) go build -trimpath -ldflags "-s -w" \
-		-o bin/controlpanel ./cmd/controlpanel & \
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(DOCKER_GOARCH) go build -trimpath -ldflags "-s -w" \
-		-o bin/relay ./cmd/relay & \
-	wait
+		-o bin/controlpanel ./cmd/controlpanel
 
 # Fast image: host Go compile + scratch COPY (separate Dockerfile — classic
 # builders run every stage, so prebuilt COPY cannot share the from-source file).
