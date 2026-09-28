@@ -571,8 +571,10 @@ func TestInstallScriptHTTP(t *testing.T) {
 	if !bytes.Contains(body, []byte("https://app.getfda.dev/install.sh")) {
 		t.Fatal("expected production install URL in script")
 	}
-	if !bytes.Contains(body, []byte("https://github.com/fdaio/tyd/releases/latest/download/tyd-")) {
-		t.Fatal("expected GitHub Release download path in script")
+	// The archive name carries os+arch: one download per platform instead of a
+	// per-OS tarball holding every architecture and the relay.
+	if !bytes.Contains(body, []byte("https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}-${ARCH}.tar.gz")) {
+		t.Fatal("expected the per-os+arch GitHub Release download path in script")
 	}
 	if bytes.Contains(body, []byte("/releases/tyd-")) {
 		t.Fatal("install script must not download binaries from the Control Panel /releases/")

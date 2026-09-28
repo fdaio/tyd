@@ -9,7 +9,8 @@ make build          # ./tyd
 make install        # ~/.local/bin/tyd
 make fmt            # gofmt the tree
 make controlpanel   # ./controlpanel
-make dist           # ./dist/tyd-<os>.tar.gz release archives
+make dist           # ./dist/tyd-<os>-<arch>.tar.gz release archives
+make dist-relay     # ./dist/tyd-relay-<os>-<arch>.tar.gz relay archives
 ```
 
 `make install` copies the `tyd` binary to `$(PREFIX)/bin` (`PREFIX` defaults
@@ -24,11 +25,17 @@ GitHub Actions workflow `Release` runs every day at 23:00 Asia/Shanghai
 calendar date plus the 7-character commit id, for example `2026.09.27-19d5e02`.
 
 It publishes one GitHub Release of `main` when that commit is not already tagged
-in this form. The archives are `tyd-linux.tar.gz`, `tyd-darwin.tar.gz`, and
-`tyd-freebsd.tar.gz`. `install.sh` downloads the latest of those assets. A
-manual tag such as `v0.1.0` is not a daily version. If `main` has no new commit
-since the last daily tag, the workflow succeeds and skips the build and the
-release.
+in this form. The install archives are `tyd-<os>-<arch>.tar.gz` — one per
+platform, each holding a single `tyd`, plus `tyd-relay-<os>-<arch>.tar.gz` for
+the relay. `install.sh` downloads the one asset that matches the machine it
+runs on (about 3.7MB; the per-OS archive it replaced was 12.4MB and carried the
+other architecture and the relay as well). A manual tag such as `v0.1.0` is not
+a daily version. If `main` has no new commit since the last daily tag, the
+workflow succeeds and skips the build and the release.
+
+Because the archive name now includes the architecture, an `install.sh` copied
+before this change asks for `tyd-<os>.tar.gz` and fails after the next daily
+release. Fetch the script again (`curl -fsSL https://app.getfda.dev/install.sh | sh`).
 
 ## Run the daemon
 
@@ -124,7 +131,8 @@ tyd relay client observed at 198.51.100.9:51234 via https://relay-1.example
 One relay per host, on separate failure domains. Two relays in containers on the
 same machine are not redundant — they die together.
 
-Build the binary (it ships inside the release tarball as `tyd-relay-<arch>`):
+Build the binary (each release also ships `tyd-relay-<os>-<arch>.tar.gz`, so a
+relay host needs no Go toolchain):
 
 ```bash
 make relay                              # or: go build -o tyd-relay ./cmd/relay
@@ -208,7 +216,7 @@ That is also the fast path on a 1C/1G VPS where an in-Docker compile is slow.
 
 ```bash
 cp .env.example .env      # optional: TYD_CP_BASE_URL / TYD_CP_PORT / TYD_RELAY_PORT
-make dist   # tyd-<os>.tar.gz; install.sh downloads these from GitHub Releases
+make dist   # tyd-<os>-<arch>.tar.gz; install.sh downloads these from GitHub Releases
 docker compose up -d --build
 curl -s http://127.0.0.1:8080/healthz
 ```
@@ -219,7 +227,7 @@ Notes:
   without buildx or a host Go toolchain. With Go on the host, `make docker`
   compiles once and `docker compose up -d` just packs the image.
 - `install.sh` is still served at `/install.sh`. The binary is downloaded from
-  `https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>.tar.gz`.
+  `https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>-<arch>.tar.gz`.
 - `--platform` is only needed for a custom or local Control Panel.
 - The container listens on `0.0.0.0:8080` with no TLS — terminate at the edge
   (e.g. Cloudflare). Compose caps it at 0.5 CPU and 128 MB.

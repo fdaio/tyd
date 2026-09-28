@@ -50,8 +50,9 @@ curl -fsSL https://app.getfda.dev/install.sh | sh
 
 Per-user install, no sudo. What it does:
 
-- downloads the latest GitHub Release, installs `tyd` into `~/.local/bin/tyd`, and
-  keeps state in `~/.tyd`;
+- downloads the latest GitHub Release for your platform — one `tyd-<os>-<arch>.tar.gz`
+  holding a single binary, about 3.7MB — installs `tyd` into `~/.local/bin/tyd`,
+  and keeps state in `~/.tyd`;
 - starts a per-user daemon that keeps running after your shell exits —
   `systemd --user` (with `loginctl enable-linger`) on Linux, a LaunchAgent on
   macOS, `nohup` elsewhere;
@@ -196,6 +197,10 @@ make install     # ~/.local/bin/tyd
 a detached process). That daemon keeps running after the shell exits. A
 `DESTDIR` install only stages the binary and does not start anything. The
 [install script](#install) downloads the latest GitHub Release and does the same daemon setup.
+
+If you saved `install.sh` before 2026-09-28, fetch it again: release archives
+are now named per architecture, so the old copy asks for a name that no longer
+exists.
 
 ## Contributing
 

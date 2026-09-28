@@ -41,7 +41,7 @@ Installs for the current user only (~/.local/bin, systemd --user or launchd).
 Do not run this with sudo.
 
 Binaries are fetched from GitHub Releases:
-  https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>.tar.gz
+  https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>-<arch>.tar.gz
 Override with TYD_RELEASE_URL. --platform only changes the Control Panel.
 EOF
 }
@@ -215,15 +215,15 @@ else
 	log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
 	ARCHIVE="$TMP/tyd.tgz"
 	if [ -z "$RELEASE_URL" ]; then
-		RELEASE_URL="https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}.tar.gz"
+		RELEASE_URL="https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}-${ARCH}.tar.gz"
 	fi
 	URL="$RELEASE_URL"
 	if ! curl -fsSL --retry 3 -o "$ARCHIVE" "$URL"; then
-		die "download failed: $URL (GitHub Release asset tyd-${OS}.tar.gz, or set TYD_RELEASE_URL, or build with make build)"
+		die "download failed: $URL (GitHub Release asset tyd-${OS}-${ARCH}.tar.gz, or set TYD_RELEASE_URL, or build with make build)"
 	fi
 	tar -xzf "$ARCHIVE" -C "$TMP"
-	SRC="$TMP/${OS}/tyd-${ARCH}"
-	[ -f "$SRC" ] || die "archive missing ${OS}/tyd-${ARCH}"
+	SRC="$TMP/tyd"
+	[ -f "$SRC" ] || die "archive missing tyd (expected a tyd-<os>-<arch>.tar.gz built by make dist)"
 	install_binary "$SRC" "${BINDIR}/tyd"
 	TYD="${BINDIR}/tyd"
 fi

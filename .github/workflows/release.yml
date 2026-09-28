@@ -81,17 +81,20 @@ jobs:
           cache: true
 
       - name: Package linux, darwin, and freebsd releases
+        # One archive per os+arch: install.sh pulls a single file, so a shared
+        # per-OS tarball made every install download the other architecture and
+        # the relay for nothing (12.4MB per install versus 3.7MB now).
         run: |
           set -eux
           rm -rf dist
-          mkdir -p dist/linux dist/darwin dist/freebsd
           build() {
             local os="$1" arch="$2"
             echo "==> $os/$arch"
+            mkdir -p "dist/$os-$arch"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/$os/tyd-$arch" ./cmd/tyd
+              -o "dist/$os-$arch/tyd" ./cmd/tyd
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/$os/tyd-relay-$arch" ./cmd/relay
+              -o "dist/$os-$arch/tyd-relay" ./cmd/relay
           }
           pids=
           for os in linux darwin freebsd; do
@@ -102,7 +105,11 @@ jobs:
           done
           for p in $pids; do wait "$p"; done
           for os in linux darwin freebsd; do
-            tar -C dist -czf "dist/tyd-$os.tar.gz" "$os"
+            for arch in amd64 arm64; do
+              tar -C "dist/$os-$arch" -czf "dist/tyd-$os-$arch.tar.gz" tyd
+              # The relay is a fleet component; install.sh never installs it.
+              tar -C "dist/$os-$arch" -czf "dist/tyd-relay-$os-$arch.tar.gz" tyd-relay
+            done
           done
           ls -lh dist
 

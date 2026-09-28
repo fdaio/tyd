@@ -10,7 +10,7 @@ curl -fsSL https://app.getfda.dev/install.sh | sh
 ```
 
 The script is served by the Control Panel. The binary comes from the latest
-GitHub Release (`tyd-<os>.tar.gz`).
+GitHub Release (`tyd-<os>-<arch>.tar.gz`).
 
 - **Human, TTY:** choose server or client. After a server install you can mint an
   invite and copy one client command.
