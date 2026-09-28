@@ -49,8 +49,44 @@ Tailcat-like behavior without DERP/WireGuard:
 4. Existing Ed25519 AuthN + session frames run end-to-end over the splice (relay is blind to TTY).
 5. `--relay URL` overrides the default; `--relay off` disables fallback and offering.
 
+## Phase 4 (relay redundancy)
+
+The relay was a single point of failure: one process, in-memory state, one URL.
+Phase 4 is split, because "the relay died" and "a live session died" need
+different mechanisms and conflating them hides the hard part.
+
+### 4a. Several relays (done)
+
+`--relay` takes a comma-separated list. `tyd up` offers on every entry
+concurrently and independently; clients walk the list in order on fallback. The
+relays share no state — an offer lives in the process it registered with and a
+ticket is only claimed on that same process — so there is nothing to cluster and
+**several replicas behind a round-robin proxy will break the handshake**
+(`unknown ticket`), not provide redundancy. Each relay needs its own hostname.
+
+This covers a dead relay *process*. It does not cover a live session: bytes of a
+spliced session flow through that one process, so killing it kills the session.
+Forwarding tickets between relays (a mesh) would not help either — it makes the
+*dial entry point* redundant, not the byte path.
+
+### 4b. Surviving live sessions (planned)
+
+Only moving the data path off the relay achieves that:
+
+1. The relay cross-announces the addresses it *observes* for each side, so peers
+   can dial each other directly (a STUN-lite, and ground truth — unlike the
+   self-reported interface IPs published to the CP today).
+2. Clients prefer direct QUIC after that announcement; the splice stays as the
+   fallback for hard NATs. Dropping the fallback would *reduce* connectivity,
+   since published candidates are usually unreachable behind NAT.
+3. Client-side reconnect on transport loss: re-dial (direct or another relay) and
+   re-attach the same session id. The server already lets a new connection
+   re-attach a live session, and the PTY is untouched by a transport drop, so the
+   shell is never lost.
+
 ## Out of Phase 1 / this MVP
 
 - STUN / ICE hole punching across strict NATs
 - WireGuard
 - Upgrading an active relay path to direct mid-session
+- Relays sharing offers or tickets across processes (deliberately: see 4a)

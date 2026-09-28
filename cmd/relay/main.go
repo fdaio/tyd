@@ -26,6 +26,7 @@ func main() {
 	fmt.Fprintln(os.Stderr, "production default is CP: https://app.getfda.dev/relay")
 	fmt.Fprintln(os.Stderr, "this process is the optional dedicated relay (--relay URL)")
 	fmt.Fprintln(os.Stderr, "servers: tyd up --relay <this-url>")
+	fmt.Fprintln(os.Stderr, "several relays: tyd up --relay <url1>,<url2>  (each keeps its own state)")
 	fmt.Fprintln(os.Stderr, "clients fall back to the same --relay after direct dial fails")
 
 	ch := make(chan os.Signal, 1)

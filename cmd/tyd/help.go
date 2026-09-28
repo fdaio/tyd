@@ -84,7 +84,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--advertise HOST", "Host to prefer in CP candidates (default: auto interface IPs)"},
 		{"--addr HOST:PORT", "TLS client endpoint (local override)"},
 		{"--peer ID|NICK", "Target paired peer for session commands"},
-		{"--relay URL|off", fmt.Sprintf("Dual-NAT rendezvous (default %s; off disables)", paths.DefaultRelay())},
+		{"--relay URL|off", fmt.Sprintf("Dual-NAT rendezvous; comma-separated for several (default %s; off disables)", paths.DefaultRelay())},
 		{"--tls-cert PATH", fmt.Sprintf("Server cert / client pin (default %s)", paths.DefaultServerCert())},
 		{"--tls-key PATH", "Server key"},
 	}, color)
