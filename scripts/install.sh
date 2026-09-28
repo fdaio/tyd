@@ -35,7 +35,11 @@ Options:
   --platform URL      Control Panel URL
   -h, --help          Show this help
 
-Env: TYD_INSTALL_URL, TYD_PLATFORM, TYD_RELEASE_URL, TYD_BINDIR
+Env: TYD_INSTALL_URL, TYD_PLATFORM, TYD_RELEASE_URL, TYD_BINDIR,
+     TYD_DOWNLOAD_ATTEMPTS (default 8)
+
+The download resumes where a reset left off, so a flaky link costs a retry
+rather than the whole install.
 
 Installs for the current user only (~/.local/bin, systemd --user or launchd).
 Do not run this with sudo.
@@ -207,6 +211,62 @@ install_binary() {
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT HUP
 
+# A 3MB release asset is big enough that a weak link gets the connection reset
+# mid-body, and curl's own --retry cannot help: it gives up on the partial
+# transfer and restarts from zero, so the same reset just happens again. Retry
+# in a shell loop and resume with -C - so each attempt keeps what arrived.
+# --speed-limit/--speed-time turn a stalled connection into a failed attempt
+# instead of an install that hangs forever.
+DOWNLOAD_ATTEMPTS="${TYD_DOWNLOAD_ATTEMPTS:-8}"
+
+file_size() {
+	[ -f "$1" ] || {
+		printf '0\n'
+		return
+	}
+	wc -c <"$1" 2>/dev/null | tr -d ' \t' || printf '0\n'
+}
+
+# $1 url, $2 destination. Returns non-zero when every attempt failed.
+download() {
+	url="$1"
+	dest="$2"
+	resume=0
+	case "$url" in
+	http://* | https://*) resume=1 ;;
+	esac
+
+	attempt=1
+	while [ "$attempt" -le "$DOWNLOAD_ATTEMPTS" ]; do
+		st=0
+		if [ "$resume" -eq 1 ]; then
+			curl -fsSL -C - \
+				--connect-timeout 15 \
+				--speed-limit 1024 --speed-time 30 \
+				-o "$dest" "$url" || st=$?
+		else
+			curl -fsSL --connect-timeout 15 -o "$dest" "$url" || st=$?
+		fi
+		if [ "$st" -eq 0 ]; then
+			return 0
+		fi
+		# 33: the server ignored our Range header, so resuming would append
+		# to a file it is sending in full. Start the next attempt over.
+		if [ "$st" -eq 33 ]; then
+			rm -f "$dest"
+		fi
+		have="$(file_size "$dest")"
+		if [ "$attempt" -lt "$DOWNLOAD_ATTEMPTS" ]; then
+			log "download interrupted (${have} bytes), retrying ($attempt/$DOWNLOAD_ATTEMPTS)"
+			sleep $((attempt * 2))
+		fi
+		attempt=$((attempt + 1))
+	done
+	have="$(file_size "$dest")"
+	log "gave up after $DOWNLOAD_ATTEMPTS attempts, ${have} bytes of $URL kept"
+	return 1
+}
+
 if [ "$SERVICE_ONLY" -eq 1 ]; then
 	TYD="${BINDIR}/tyd"
 	[ -x "$TYD" ] || die "no binary at $TYD"
@@ -218,12 +278,12 @@ else
 		RELEASE_URL="https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}-${ARCH}.tar.gz"
 	fi
 	URL="$RELEASE_URL"
-	if ! curl -fsSL --retry 3 -o "$ARCHIVE" "$URL"; then
-		die "download failed: $URL (GitHub Release asset tyd-${OS}-${ARCH}.tar.gz, or set TYD_RELEASE_URL, or build with make build)"
+	if ! download "$URL" "$ARCHIVE"; then
+		die "download failed: $URL ($(file_size "$ARCHIVE") bytes kept; GitHub Release asset tyd-${OS}-${ARCH}.tar.gz, or set TYD_RELEASE_URL, or build with make build)"
 	fi
 	tar -xzf "$ARCHIVE" -C "$TMP"
 	SRC="$TMP/tyd"
-	[ -f "$SRC" ] || die "archive missing tyd (expected a tyd-<os>-<arch>.tar.gz built by make dist)"
+	[ -f "$SRC" ] || die "archive missing tyd (expected a tyd-<os>-<arch>.tar.gz built with make dist)"
 	install_binary "$SRC" "${BINDIR}/tyd"
 	TYD="${BINDIR}/tyd"
 fi
