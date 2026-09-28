@@ -71,6 +71,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
 		{"status", "Show CP registration, peers, aliases, and connections"},
 		{"approval", "Show or set approval mode (full|pre|post)"},
+		{"audit", "Verify the audit log's hash chain"},
 		{"doctor", "Check state files and disk; --fix rebuilds peers.json"},
 		{"serve", "Deprecated alias for up"},
 	}, color)

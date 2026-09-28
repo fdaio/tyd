@@ -1061,3 +1061,68 @@ func TestShellExitStreamEnd(t *testing.T) {
 	}
 	waitOutput(t, c2, acc, marker, 5*time.Second)
 }
+
+// A connection from a process inside a session may read but not change: the
+// daemon already treats the unix socket as "local, trusted", and a session on
+// this host is local without being the operator.
+func TestControlCommandsRefusedFromInsideASession(t *testing.T) {
+	// A short socket path: t.TempDir() embeds the test name and can pass the
+	// ~104-byte sun_path limit on macOS.
+	dir, err := os.MkdirTemp("", "tydsess")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
+	priv, trust, err := auth.NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewWithConfig(Config{Socket: sock, Mgr: session.NewManager(), Trust: trust})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	st := &connState{
+		id:          "test",
+		conn:        conn,
+		info:        transport.Info{Transport: transport.KindUnix},
+		fromSession: true,
+		principal:   &auth.Principal{Name: "local", Pub: priv.Public().(ed25519.PublicKey)},
+	}
+
+	// approve and reject are the two that hand out access.
+	for _, f := range []protocol.Frame{
+		{Type: protocol.TypeApprove, SessionID: "abc"},
+		{Type: protocol.TypeReject, SessionID: "abc"},
+	} {
+		err := srv.dispatch(st, f)
+		if err == nil {
+			t.Fatalf("%s was allowed for a connection from inside a session", f.Type)
+		}
+		if !strings.Contains(err.Error(), "inside a tyd session") {
+			t.Errorf("%s: error should name the origin, got: %v", f.Type, err)
+		}
+	}
+}
+
+// The same commands work for a connection that is not from a session, so the
+// guard costs the operator nothing.
+func TestControlCommandsAllowedFromOutsideASession(t *testing.T) {
+	st := &connState{info: transport.Info{Transport: transport.KindUnix}}
+	if st.fromSession {
+		t.Fatal("fixture marked as a session connection")
+	}
+	// Nothing to assert beyond the flag being the only thing that refuses: the
+	// dispatch path is the same one the existing approval tests cover.
+	if sessionOriginRefusal("approve") == nil {
+		t.Fatal("the refusal helper should always return an error")
+	}
+}

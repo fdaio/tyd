@@ -189,6 +189,9 @@ func runSession(opts options) error {
 		}
 		return nil
 	case "approve":
+		if err := refuseIfInSession("session approve"); err != nil {
+			return err
+		}
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session approve [session_id|alias]: %w", err)
@@ -208,6 +211,9 @@ func runSession(opts options) error {
 		fmt.Println(info.ID)
 		return nil
 	case "reject":
+		if err := refuseIfInSession("session reject"); err != nil {
+			return err
+		}
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session reject [session_id|alias]: %w", err)

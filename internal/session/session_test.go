@@ -794,3 +794,40 @@ func TestSignalOnExitedSessionErrors(t *testing.T) {
 		t.Fatal("resize on an exited session should fail")
 	}
 }
+
+// A session's shell carries TYD_SESSION and TYD_PEER, and everything it starts
+// inherits them. That marker is what lets the tyd CLI recognise a control
+// command being run from inside the session.
+func TestSessionShellCarriesTheSessionMarker(t *testing.T) {
+	env := sessionEnv("abc123", CreateOpts{PeerID: "peer-1"})
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "TYD_SESSION=abc123") {
+		t.Errorf("session env has no session id:\n%s", joined)
+	}
+	if !strings.Contains(joined, "TYD_PEER=peer-1") {
+		t.Errorf("session env has no peer id:\n%s", joined)
+	}
+}
+
+// The daemon sets the marker; a caller cannot hand it a different session id and
+// have that stick.
+func TestSessionEnvOverridesACallerSuppliedMarker(t *testing.T) {
+	env := sessionEnv("real-id", CreateOpts{Env: []string{"TYD_SESSION=spoofed", "TERM=xterm"}})
+	joined := strings.Join(env, "\n")
+	if !strings.Contains(joined, "TYD_SESSION=real-id") {
+		t.Errorf("a caller-supplied session id survived:\n%s", joined)
+	}
+	if strings.Contains(joined, "TYD_SESSION=spoofed") {
+		t.Errorf("the spoofed marker is still present:\n%s", joined)
+	}
+	if !strings.Contains(joined, "TERM=xterm") {
+		t.Errorf("the caller's own environment was dropped:\n%s", joined)
+	}
+}
+
+func TestSessionEnvOmitsPeerWhenUnknown(t *testing.T) {
+	joined := strings.Join(sessionEnv("abc123", CreateOpts{}), "\n")
+	if strings.Contains(joined, "TYD_PEER=") {
+		t.Errorf("an empty peer id was exported:\n%s", joined)
+	}
+}

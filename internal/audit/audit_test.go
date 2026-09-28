@@ -30,14 +30,17 @@ func TestFileWritesJSONLines(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines=%d: %q", len(lines), b)
 	}
-	var first Event
+	var first chainRecord
 	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
 		t.Fatal(err)
 	}
-	if first.Kind != KindCreate || first.SessionID != "s1" || first.Principal != "amy" {
+	if first.Prev != chainStart || first.Hash == "" {
+		t.Fatalf("first record does not start the chain: %+v", first)
+	}
+	if first.Event.Kind != KindCreate || first.Event.SessionID != "s1" || first.Event.Principal != "amy" {
 		t.Fatalf("%+v", first)
 	}
-	if first.Time.IsZero() {
+	if first.Event.Time.IsZero() {
 		t.Fatal("missing timestamp")
 	}
 

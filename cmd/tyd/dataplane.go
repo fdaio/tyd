@@ -100,7 +100,12 @@ func runUp(opts options) error {
 	}
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
 	if approvalMode != controlpanel.ApprovalFull {
-		fmt.Fprintf(os.Stderr, "tyd approval mode %s\n", approvalMode)
+		if approvalMode == controlpanel.ApprovalFull {
+			fmt.Fprintln(os.Stderr, "tyd approval mode full: remote peers are NOT asked before attaching or watching.")
+			fmt.Fprintln(os.Stderr, "tyd   This is the default for a fresh install; use --approval pre to review each request.")
+		} else {
+			fmt.Fprintf(os.Stderr, "tyd approval mode %s\n", approvalMode)
+		}
 	}
 	if opts.auditLog != "" {
 		fmt.Fprintf(os.Stderr, "tyd audit log %s\n", opts.auditLog)

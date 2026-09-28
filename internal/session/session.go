@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/user"
 	"sort"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -341,6 +342,7 @@ func normalizeCreateOpts(opts *CreateOpts) {
 
 func startSession(id string, opts CreateOpts) (*Session, error) {
 	normalizeCreateOpts(&opts)
+	opts.Env = sessionEnv(id, opts)
 	cmd, ptmx, err := startPTY(opts)
 	if err != nil {
 		return nil, err
@@ -372,6 +374,46 @@ func startSession(id string, opts CreateOpts) (*Session, error) {
 	go s.waitLoop()
 	go s.readLoop()
 	return s, nil
+}
+
+// EnvSessionID and EnvPeerID are set on a session's shell and inherited by
+// everything it starts. They are what lets the tyd CLI recognise a control
+// command being run from inside a session: that shell shares the daemon's user
+// and home, so it could otherwise approve its own requests or turn approval off.
+// It is a marker, not a boundary -- see docs/security.md and internal/procs.
+const (
+	EnvSessionID = "TYD_SESSION"
+	EnvPeerID    = "TYD_PEER"
+)
+
+// sessionEnv builds the environment for a session shell: the daemon's own
+// environment, plus the markers. An explicit Opts.Env is respected except for
+// the markers, which are the daemon's to set.
+func sessionEnv(id string, opts CreateOpts) []string {
+	base := opts.Env
+	if len(base) == 0 {
+		base = append(os.Environ(), "TERM=xterm-256color")
+	}
+	out := make([]string, 0, len(base)+2)
+	replaced := false
+	for _, kv := range base {
+		switch {
+		case strings.HasPrefix(kv, EnvSessionID+"="):
+			out = append(out, EnvSessionID+"="+id)
+			replaced = true
+		case strings.HasPrefix(kv, EnvPeerID+"="):
+			// rewritten below only when there is a peer
+		default:
+			out = append(out, kv)
+		}
+	}
+	if !replaced {
+		out = append(out, EnvSessionID+"="+id)
+	}
+	if peer := strings.TrimSpace(opts.PeerID); peer != "" {
+		out = append(out, EnvPeerID+"="+peer)
+	}
+	return out
 }
 
 func startPTY(opts CreateOpts) (*exec.Cmd, *os.File, error) {

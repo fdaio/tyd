@@ -39,6 +39,10 @@ adds nothing: [docs/alternatives.md](docs/alternatives.md)
   relay can still observe.
 - **Control Plane**: stores daemon ids, public keys, and dial metadata. Session
   and TTY bytes never reach it.
+- **Local boundary**: a session runs as the same user as the daemon, so approval
+  modes and audit logs gate a *remote* peer, not code already running in a
+  session. What that means, and what to do about it, is in
+  [security.md](docs/security.md).
 - **Local by default**: the daemon listens only on `~/.tyd/tyd.sock` until you
   register; the QUIC data plane binds `0.0.0.0:0` (random port) when registered.
 - **Invites** are 10-minute, single-use tokens. Approval modes are `full`, `pre`,
