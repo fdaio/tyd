@@ -88,6 +88,22 @@ func (c *Client) Accept(token, publicKey, nickname string) (*controlpanel.Accept
 	return &out, nil
 }
 
+// AcceptProof is the acceptor's half of a pairing record. The Control Panel
+// relays it to the inviter and cannot forge one: the MAC is keyed by an invite
+// secret it never sees.
+type AcceptProof struct {
+	InviteID    string `json:"token"`
+	PublicKey   string `json:"public_key"`
+	AcceptorSig string `json:"acceptor_sig"`
+	AcceptorMAC string `json:"acceptor_mac"`
+	InviterPub  string `json:"inviter_pub"`
+}
+
+// SubmitAcceptProof hands the acceptor's half to the Control Panel.
+func (c *Client) SubmitAcceptProof(p AcceptProof) error {
+	return c.post("/v1/accept/proof", p, nil)
+}
+
 func (c *Client) ListPeers(daemonID, publicKey string) ([]controlpanel.Peer, error) {
 	u := c.BaseURL + "/v1/daemons/" + url.PathEscape(daemonID) + "/peers?public_key=" + url.QueryEscape(publicKey)
 	req, err := http.NewRequest(http.MethodGet, u, nil)

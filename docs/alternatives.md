@@ -96,6 +96,16 @@ ciphertext. A relay still sees connection metadata — addresses, timing, byte
 counts, daemon and peer ids — and [protocol.md](protocol.md#relay-path-security)
 sets out exactly what that is and is not.
 
+**What it cannot do.** It cannot grant a daemon trust in a new peer. Trust comes
+from `paired.json`, a local file written only by pairing and verified with a
+record both sides signed over a secret the Control Panel never sees; `tyd` shows
+a peer as trusted only when that record checks out. A peer the Control Panel
+starts listing, or an inviter key it substitutes during accept, is refused. It
+*can* withdraw trust — a peer it stops listing loses trust on the next sync —
+because that only ever removes access. A peer paired before pairing records
+existed is kept working but is marked `legacy` in `tyd peer show`: its trust
+still rests on the Control Panel, and only a fresh pairing fixes that.
+
 To remove the hosted service from the path, run your own Control Panel and pass
 `--platform` to both ends. The relay is separate, and `--relay` takes a
 comma-separated list so you can run more than one. See [connect.md](connect.md)

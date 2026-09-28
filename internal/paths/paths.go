@@ -29,6 +29,14 @@ func DefaultPeers() string {
 	return filepath.Join(DefaultDir(), "peers.json")
 }
 
+// Paired is the local pairing record. It is deliberately a separate file from
+// peers.json: peers.json is rebuilt from the Control Panel on every sync, so a
+// peer listed there is a peer the Control Panel asked for. This one is written
+// only by pairing and is the only source of trust.
+func Paired() string {
+	return filepath.Join(DefaultDir(), "paired.json")
+}
+
 func DefaultRecent() string {
 	return filepath.Join(DefaultDir(), "recent.json")
 }

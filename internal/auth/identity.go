@@ -68,6 +68,20 @@ func EncodePublic(pub ed25519.PublicKey) string {
 	return base64.StdEncoding.EncodeToString(pub)
 }
 
+// EncodeBytes renders binary material for transport in a JSON field.
+func EncodeBytes(b []byte) string {
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// DecodeBytes is the inverse of EncodeBytes.
+func DecodeBytes(s string) ([]byte, error) {
+	raw, err := base64.StdEncoding.DecodeString(trimSpace(s))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
+}
+
 func DecodePublic(s string) (ed25519.PublicKey, error) {
 	raw, err := base64.StdEncoding.DecodeString(trimSpace(s))
 	if err != nil {

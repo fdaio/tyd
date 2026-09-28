@@ -23,6 +23,7 @@ type options struct {
 	identity    string
 	trust       string
 	peers       string
+	paired      string
 	recent      string
 	aliases     string
 	sessions    string
@@ -142,6 +143,13 @@ func parseArgs(args []string) (options, error) {
 			opts.trust = args[i]
 		case strings.HasPrefix(a, "--trust="):
 			opts.trust = strings.TrimPrefix(a, "--trust=")
+		case a == "--paired":
+			if i+1 < len(args) {
+				opts.paired = args[i]
+				i++
+			}
+		case strings.HasPrefix(a, "--paired="):
+			opts.paired = strings.TrimPrefix(a, "--paired=")
 		case a == "--peers":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
