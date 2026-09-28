@@ -32,7 +32,7 @@ curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN 
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent --platform https://cp.example.com
 ```
 
-Human TTY: the script asks server vs client interactively; a server install asks whether to mint an invite now. Agent / no TTY: defaults to server and prints the client bootstrap line.
+Human TTY: the script asks server vs client interactively; a server install asks whether to mint an invite now, and the client command is printed once, on stderr. Agent / no TTY: defaults to server and prints the client bootstrap line on stdout, which is the only thing written there.
 
 Environment overrides: `TYD_PLATFORM` (Control Panel URL), `TYD_BINDIR`, `TYD_RELEASE_URL`, `TYD_INSTALL_URL`. Re-running the script upgrades in place (temp file + `mv`, so a running daemon is not blocked by `ETXTBSY`); an already-running daemon is restarted onto the new binary.
 
@@ -126,7 +126,8 @@ Lifecycle notes an agent must know:
 
 ```bash
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
-# stdout is the client bootstrap line; stderr has progress. Capture stdout:
+# stdout is the client bootstrap line; stderr has progress. Capture stdout
+# (in a TTY, stdout stays empty unless --agent is passed):
 BOOTSTRAP=$(curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent 2>/dev/null)
 echo "$BOOTSTRAP"
 # then paste that curl ... --client --accept TOKEN line on the peer

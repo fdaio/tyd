@@ -13,8 +13,10 @@ The script is served by the Control Panel. The binary comes from the latest
 GitHub Release (`tyd-<os>-<arch>.tar.gz`).
 
 - **Human, TTY:** choose server or client. After a server install you can mint an
-  invite and copy one client command.
-- **Automated / no TTY:** treated as a server. Prints one client bootstrap line.
+  invite and copy one client command. It is printed once, on stderr, so the two
+  output streams cannot interleave it into the daemon log.
+- **Automated / no TTY:** treated as a server. Prints one client bootstrap line on
+  stdout and nothing else, for the caller to capture.
 
 ```bash
 # Server, non-interactive: install, register, print the client command

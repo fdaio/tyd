@@ -313,12 +313,21 @@ print_client_bootstrap() {
 		extra=" --platform ${PLATFORM_URL}"
 	fi
 	cmd="curl -fsSL ${INSTALL_URL} | sh -s -- --client${extra} --accept ${tok}"
+	# stdout is the machine contract: the bare command line, nothing else, so
+	# `BOOTSTRAP=$(curl ... | sh -s -- --agent 2>/dev/null)` still works. A
+	# human in a TTY must not get it twice, because both streams reach the
+	# terminal and interleave unpredictably.
+	if [ "$AGENT" -eq 1 ] || ! have_tty; then
+		printf '%s\n' "$cmd"
+	fi
+	if ! have_tty; then
+		return
+	fi
 	log ""
 	log "On the client machine, run:"
 	log ""
 	log "  $cmd"
 	log ""
-	printf '%s\n' "$cmd"
 }
 
 has_systemd_user() {
