@@ -163,7 +163,13 @@ step "start the daemon"
 # depends on a hosted service is a gate that fails for reasons no build
 # caused. With it off the client dials the endpoint the daemon published to
 # the Control Panel, which is the real data path and the end-to-end TLS on it.
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" --data-listen 127.0.0.1:0 --relay off up >"$WORK/up.out" 2>&1 &
+# Approval is post, not the default full: a peer-opened session sits PENDING
+# until a person approves it on the local socket, and a gate cannot stand in
+# for a person. Post still holds the property that matters -- the output is not
+# released until it is approved -- and it lets the build prove the session
+# actually comes up. Whether the default is right is a product question, not a
+# build question.
+"$TYD_BINDIR/tyd" --platform "$PLATFORM" --data-listen 127.0.0.1:0 --relay off --approval post up >"$WORK/up.out" 2>&1 &
 i=0
 while [ "$i" -lt 100 ]; do
 	[ -S "$HOME/.tyd/tyd.sock" ] && break
@@ -190,7 +196,7 @@ step "accept it from a second identity"
 # default path the accept command uses when nothing overrides it.
 SERVER_PAIRED="$HOME/.tyd/peers-paired.json"
 CLIENT="$WORK/client"
-mkdir -p "$CLIENT"
+mkdir -p "$CLIENT" "$CLIENT/home"
 "$TYD_BINDIR/tyd" \
 	--identity "$CLIENT/id_ed25519" \
 	--trust "$CLIENT/trusted.json" \
@@ -231,8 +237,12 @@ say "server and client both hold a pairing record"
 # the same command the accept printed. That is the whole path: the client dials
 # the server's published endpoint, the relay carries it, and the server spawns
 # the agent. Running it on the server instead would prove nothing about any of it.
+# The client gets its own HOME. Two daemons sharing one state directory
+# would share ~/.tyd/live, and both sides would then spawn into the same
+# session directory and tear each other down -- a real client is a different
+# machine with its own state.
 client_tyd() {
-	"$TYD_BINDIR/tyd" \
+	HOME="$CLIENT/home" "$TYD_BINDIR/tyd" \
 		--identity "$CLIENT/id_ed25519" \
 		--trust "$CLIENT/trusted.json" \
 		--peers "$CLIENT/peers.json" \
