@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"tyd/internal/auth"
 	"tyd/internal/relay"
 	"tyd/scripts"
 )
@@ -67,6 +68,17 @@ type Endpoint struct {
 	Transport  string    `json:"transport,omitempty"` // tls|quic; default tls for older clients
 	Candidates []string  `json:"candidates,omitempty"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	// Proof is the daemon's own signature over the record. The Control Panel
+	// stores and returns it unchanged: it can forward, withhold or expire a
+	// record, but not alter one, because a client checks the signature against
+	// the peer key it learned at pairing.
+	Proof *EndpointProof `json:"proof,omitempty"`
+}
+
+// EndpointProof is the signed endpoint record plus its signature.
+type EndpointProof struct {
+	Record auth.EndpointRecord `json:"record"`
+	Sig    string              `json:"sig"`
 }
 
 type PublishEndpointRequest struct {
@@ -76,14 +88,23 @@ type PublishEndpointRequest struct {
 	Transport  string   `json:"transport,omitempty"`
 	Candidates []string `json:"candidates,omitempty"`
 	TTLSeconds int      `json:"ttl_seconds,omitempty"`
+	// Proof is the daemon's signature over what it is publishing. Required:
+	// a record a client cannot check is a record a Control Panel could have
+	// written, so there is no point serving it.
+	Proof *EndpointProof `json:"proof,omitempty"`
 }
 
 type EndpointResponse struct {
+	DaemonID   string    `json:"daemon_id"`
+	PublicKey  string    `json:"public_key"`
 	Addr       string    `json:"addr"`
 	CertFP     string    `json:"cert_fp"`
 	Transport  string    `json:"transport,omitempty"`
 	Candidates []string  `json:"candidates,omitempty"`
 	ExpiresAt  time.Time `json:"expires_at"`
+	// Proof is the daemon's own signature. A client verifies it against the key
+	// it pinned at pairing and ignores every other field here if it fails.
+	Proof *EndpointProof `json:"proof,omitempty"`
 }
 
 type Daemon struct {
@@ -711,7 +732,42 @@ func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (
 	if tr == "" {
 		tr = "tls"
 	}
+	// The record has to be the daemon's own. Checking it here costs one
+	// verification and stops a mismatched record from being served at all;
+	// clients verify again against their own pinned key regardless.
+	if req.Proof == nil {
+		return nil, fmt.Errorf("endpoint proof required")
+	}
+	if req.Proof.Record.PublicKey != pub {
+		return nil, fmt.Errorf("endpoint proof names a different key")
+	}
+	sig, err := auth.DecodeBytes(req.Proof.Sig)
+	if err != nil {
+		return nil, fmt.Errorf("endpoint proof signature is unreadable")
+	}
+	recordPub, err := auth.DecodePublic(pub)
+	if err != nil {
+		return nil, ErrInvalidPublicKey
+	}
+	if err := req.Proof.Record.Verify(recordPub, sig); err != nil {
+		return nil, fmt.Errorf("endpoint proof does not verify: %w", err)
+	}
+	// The signed record is the truth, not the fields beside it.
+	if recordAddr := strings.TrimSpace(req.Proof.Record.Addr); recordAddr != addr {
+		return nil, fmt.Errorf("endpoint proof does not cover this address")
+	}
+	if recordFP := strings.ToLower(strings.TrimSpace(req.Proof.Record.CertFP)); recordFP != fp {
+		return nil, fmt.Errorf("endpoint proof does not cover this certificate fingerprint")
+	}
+
 	cands := uniqueNonEmpty(req.Candidates)
+	// The Control Panel may shorten a record's life, never extend it: the
+	// earlier of the two times wins, so serving a record past what the daemon
+	// signed for buys the daemon nothing and the Control Panel no reach.
+	expires := s.now().Add(ttl)
+	if signed := req.Proof.Record.ExpiresAt.UTC(); signed.Before(expires) {
+		expires = signed
+	}
 	ep := &Endpoint{
 		DaemonID:   d.ID,
 		PublicKey:  pub,
@@ -719,15 +775,19 @@ func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (
 		CertFP:     fp,
 		Transport:  tr,
 		Candidates: cands,
-		ExpiresAt:  s.now().Add(ttl),
+		ExpiresAt:  expires,
+		Proof:      req.Proof,
 	}
 	s.endpoints[d.ID] = ep
 	return &EndpointResponse{
+		DaemonID:   ep.DaemonID,
+		PublicKey:  ep.PublicKey,
 		Addr:       ep.Addr,
 		CertFP:     ep.CertFP,
 		Transport:  ep.Transport,
 		Candidates: append([]string(nil), ep.Candidates...),
 		ExpiresAt:  ep.ExpiresAt,
+		Proof:      ep.Proof,
 	}, nil
 }
 

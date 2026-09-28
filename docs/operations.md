@@ -262,6 +262,14 @@ stop it.
   the first run after an upgrade the existing peers are adopted once as `legacy`
   so nobody is cut off — `tyd peer show` marks those, and their trust still
   rests on the Control Panel until they are paired again.
+- **Published endpoints are signed, and the signed values are the ones dialled.**
+  A daemon signs the address, certificate fingerprint, candidate list, expiry and
+  sequence it publishes; a client verifies that signature against the pinned peer
+  key before connecting. The Control Panel can carry, withhold or expire a
+  record, and can shorten its life, but it cannot alter one, and a client that
+  receives a record with no usable signature falls back to the relay rather than
+  dialling it. The highest sequence already accepted per peer is kept in
+  `paired.json`, so a replayed-but-authentic record is refused across restarts.
 - **A damaged `peers.json` is set aside, not trusted.** On startup the file is
   renamed to `peers.json.corrupt.<timestamp>` and the registration and peer list
   are pulled back from the Control Panel using this daemon's identity. The daemon

@@ -2,6 +2,8 @@ package controlpanel
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"tyd/internal/auth"
 )
 
 func TestRegisterAllocateIDAndDefaultApproval(t *testing.T) {
@@ -161,7 +165,8 @@ func TestEndpointPublishFetchExpire(t *testing.T) {
 	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
 	s.SetNow(func() time.Time { return now })
 
-	reg, err := s.Register(RegisterRequest{PublicKey: "pk-ep"})
+	epPub, epPriv := testKeyPair(t)
+	reg, err := s.Register(RegisterRequest{PublicKey: auth.EncodePublic(epPub)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,12 +174,7 @@ func TestEndpointPublishFetchExpire(t *testing.T) {
 		t.Fatalf("want not found, got %v", err)
 	}
 
-	pub, err := s.PublishEndpoint(reg.ID, PublishEndpointRequest{
-		PublicKey:  "pk-ep",
-		Addr:       "127.0.0.1:61211",
-		CertFP:     "abcd",
-		TTLSeconds: 60,
-	})
+	pub, err := s.PublishEndpoint(reg.ID, signedEndpoint(t, reg.ID, epPub, epPriv, "127.0.0.1:61211", "abcd", now, 60, 1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,9 +187,7 @@ func TestEndpointPublishFetchExpire(t *testing.T) {
 	}
 
 	// Overwrite on republish.
-	if _, err := s.PublishEndpoint(reg.ID, PublishEndpointRequest{
-		PublicKey: "pk-ep", Addr: "127.0.0.1:9", CertFP: "ef01",
-	}); err != nil {
+	if _, err := s.PublishEndpoint(reg.ID, signedEndpoint(t, reg.ID, epPub, epPriv, "127.0.0.1:9", "ef01", now, 60, 2)); err != nil {
 		t.Fatal(err)
 	}
 	got, err = s.GetEndpoint(reg.ID)
@@ -214,7 +212,8 @@ func TestHTTPEndpoint(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
-	regBody, _ := json.Marshal(RegisterRequest{PublicKey: "http-ep"})
+	httpPub, httpPriv := testKeyPair(t)
+	regBody, _ := json.Marshal(RegisterRequest{PublicKey: auth.EncodePublic(httpPub)})
 	res, err := http.Post(ts.URL+"/v1/register", "application/json", bytes.NewReader(regBody))
 	if err != nil {
 		t.Fatal(err)
@@ -223,9 +222,7 @@ func TestHTTPEndpoint(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&reg)
 	_ = res.Body.Close()
 
-	body, _ := json.Marshal(PublishEndpointRequest{
-		PublicKey: "http-ep", Addr: "127.0.0.1:1", CertFP: "aa",
-	})
+	body, _ := json.Marshal(signedEndpoint(t, reg.ID, httpPub, httpPriv, "127.0.0.1:1", "aa", time.Now(), 60, 1))
 	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/daemons/"+reg.ID+"/endpoint", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	res2, err := http.DefaultClient.Do(req)
@@ -685,5 +682,35 @@ func TestRegisterWithoutModeKeepsExisting(t *testing.T) {
 	}
 	if fresh.ApprovalMode != DefaultApproval {
 		t.Fatalf("approval=%s want %s", fresh.ApprovalMode, DefaultApproval)
+	}
+}
+
+// testKeyPair is a throwaway identity for the endpoint tests.
+func testKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub, priv
+}
+
+// signedEndpoint builds a publish request the way a daemon does: the record is
+// signed with the daemon's own key, and the Control Panel refuses anything it
+// cannot check.
+func signedEndpoint(t *testing.T, daemonID string, pub ed25519.PublicKey, priv ed25519.PrivateKey, addr, certFP string, publishedAt time.Time, ttlSec int, seq uint64) PublishEndpointRequest {
+	t.Helper()
+	rec := auth.NewEndpointRecord(daemonID, auth.EncodePublic(pub), addr, certFP, "quic", nil, publishedAt, time.Duration(ttlSec)*time.Second, seq)
+	sig, err := rec.Sign(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return PublishEndpointRequest{
+		PublicKey:  auth.EncodePublic(pub),
+		Addr:       addr,
+		CertFP:     certFP,
+		Transport:  "quic",
+		TTLSeconds: ttlSec,
+		Proof:      &EndpointProof{Record: rec, Sig: auth.EncodeBytes(sig)},
 	}
 }

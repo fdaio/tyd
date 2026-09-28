@@ -3,7 +3,9 @@ package main
 import (
 	"crypto/ed25519"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"tyd/internal/auth"
 	"tyd/internal/catalog"
@@ -327,6 +329,94 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 	return ep, peerID, false, err
 }
 
+// verifyEndpointRecord checks a published endpoint against the peer key this
+// daemon pinned at pairing.
+//
+// The signature is what makes the Control Panel a courier rather than an author:
+// it can forward, withhold or expire a record, but the address and the
+// certificate fingerprint inside it are the daemon's own words. The expiry and
+// the sequence come from the signed record too, so a Control Panel cannot
+// extend a record's life or replay an old one.
+//
+// A peer with no pinned key -- paired before pairing records existed -- falls
+// back to the previous behaviour with a warning, because that trust still rests
+// on the Control Panel and a signature cannot fix it.
+func verifyEndpointRecord(opts options, ep *cpclient.Endpoint) (auth.EndpointRecord, error) {
+	peerPub := peerPublicKey(opts, ep.DaemonID)
+	if len(peerPub) == 0 {
+		peerPub = peerPublicKey(opts, "")
+	}
+	if len(peerPub) == 0 {
+		fmt.Fprintf(os.Stderr, "tyd: no pinned key for the peer publishing %s; its endpoint cannot be verified "+
+			"and its trust still rests on the Control Panel\n", ep.DaemonID)
+		return auth.EndpointRecord{}, nil
+	}
+	if ep.Proof == nil {
+		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s carries no signature", ep.DaemonID)
+	}
+	sig, err := auth.DecodeBytes(ep.Proof.Sig)
+	if err != nil {
+		return auth.EndpointRecord{}, fmt.Errorf("endpoint signature is unreadable: %w", err)
+	}
+	rec := ep.Proof.Record
+	if rec.DaemonID != "" && rec.DaemonID != ep.DaemonID {
+		return auth.EndpointRecord{}, fmt.Errorf("endpoint record is for %s, not %s", rec.DaemonID, ep.DaemonID)
+	}
+	if err := rec.Verify(peerPub, sig); err != nil {
+		return auth.EndpointRecord{}, err
+	}
+	if rec.Expired(time.Now()) {
+		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s expired at %s",
+			ep.DaemonID, rec.ExpiresAt.Format(time.RFC3339))
+	}
+	// Replay: a record the client has already moved past is not a new one,
+	// however well signed.
+	seen, err := seenEndpointSeq(opts, ep.DaemonID)
+	if err != nil {
+		return auth.EndpointRecord{}, err
+	}
+	if rec.Seq <= seen {
+		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s is a replay (sequence %d, already seen %d)",
+			ep.DaemonID, rec.Seq, seen)
+	}
+	if err := noteEndpointSeq(opts, ep.DaemonID, rec.Seq); err != nil {
+		return auth.EndpointRecord{}, err
+	}
+	return rec, nil
+}
+
+// seenEndpointSeq is the highest sequence already accepted for a peer. A client
+// that restarts still remembers, so an old record cannot be replayed into it.
+func seenEndpointSeq(opts options, peerID string) (uint64, error) {
+	f, err := peers.LoadPaired(pairedPath(opts))
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(peerID) == "" {
+		return 0, nil
+	}
+	p, err := f.Find(peerID)
+	if err != nil {
+		return 0, nil // never dialled this peer's endpoint before
+	}
+	return p.EndpointSeq, nil
+}
+
+func noteEndpointSeq(opts options, peerID string, seq uint64) error {
+	path := pairedPath(opts)
+	f, err := peers.LoadPaired(path)
+	if err != nil {
+		return err
+	}
+	p, err := f.Find(peerID)
+	if err != nil {
+		return nil
+	}
+	p.EndpointSeq = seq
+	f.Upsert(p)
+	return peers.SavePaired(path, f)
+}
+
 func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	peerID = strings.TrimSpace(peerID)
 	if peerID == "" {
@@ -345,11 +435,28 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
+	// Check the record against the key learned at pairing before dialling it.
+	// Everything the Control Panel said about where to dial came from it, so
+	// without this it could point us anywhere -- and the values actually dialled
+	// below come from the signed record, not from the copy beside it.
+	rec, err := verifyEndpointRecord(opts, ep)
+	if err != nil {
+		if len(relays) > 0 {
+			fmt.Fprintf(os.Stderr, "tyd: not dialling the published endpoint for %s: %v; falling back to the relay\n", peerID, err)
+			return relayEndpoint(opts, relays, peerID), nil
+		}
+		return client.Endpoint{}, err
+	}
+	if rec.Addr == "" {
+		// No pinned key, so nothing to check: fall back to what the Control
+		// Panel reported, which is the pre-signing behaviour.
+		rec.Addr, rec.CertFP, rec.Transport, rec.Candidates = ep.Addr, ep.CertFP, ep.Transport, ep.Candidates
+	}
 	kind := transport.KindTLS
-	if strings.EqualFold(ep.Transport, "quic") {
+	if strings.EqualFold(rec.Transport, "quic") {
 		kind = transport.KindQUIC
 	}
-	addrs := endpointDialOrder(ep)
+	addrs := endpointDialOrder(&cpclient.Endpoint{Addr: rec.Addr, Candidates: rec.Candidates})
 	if len(addrs) == 0 {
 		if len(relays) > 0 {
 			return relayEndpoint(opts, relays, peerID), nil
@@ -359,7 +466,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	return client.Endpoint{
 		Kind:       kind,
 		Address:    addrs[0],
-		CertFP:     ep.CertFP,
+		CertFP:     rec.CertFP,
 		Candidates: addrs[1:],
 		RelayURL:   firstOrEmpty(relays),
 		RelayURLs:  relays,

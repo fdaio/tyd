@@ -138,6 +138,14 @@ func TestDataPlanePeerSession(t *testing.T) {
 	}
 	fp := srv.TLSFingerprintFull()
 	cands := transport.ExpandCandidates(dp, "")
+	// Signed the way a daemon signs it, so the client that dials this endpoint
+	// can check it against the key it pinned at pairing.
+	record := auth.NewEndpointRecord(reg.ID, sPub, dp, fp, "quic", cands,
+		time.Now(), controlpanel.DefaultEndpointTTL, 1)
+	sig, err := record.Sign(sKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cp.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
 		PublicKey:  sPub,
 		Addr:       dp,
@@ -145,6 +153,10 @@ func TestDataPlanePeerSession(t *testing.T) {
 		Transport:  "quic",
 		Candidates: cands,
 		TTLSeconds: int(controlpanel.DefaultEndpointTTL / time.Second),
+		Proof: &controlpanel.EndpointProof{
+			Record: record,
+			Sig:    auth.EncodeBytes(sig),
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
