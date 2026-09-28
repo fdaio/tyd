@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -137,6 +138,19 @@ func (f *File) Find(idOrNick string) (*Peer, error) {
 		return &out, nil
 	}
 	return nil, fmt.Errorf("unknown peer %q", idOrNick)
+}
+
+// List returns the peers in display order, newest pairing first. peers.json is
+// an upsert array, so its order is the order pairings happened to be written,
+// which is neither newest-first nor oldest-first. Sort here so every caller
+// shows the same thing `tyd session list` does: sort.SliceStable on the
+// timestamp, newest first.
+func (f *File) List() []Peer {
+	out := append([]Peer(nil), f.Peers...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].PairedAt.After(out[j].PairedAt)
+	})
+	return out
 }
 
 // Outbound returns peers this side may dial (direction outbound).

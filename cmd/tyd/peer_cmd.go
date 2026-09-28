@@ -40,14 +40,15 @@ func runPeer(opts options) error {
 	}
 }
 
-func runPeerList(opts options) error {
-	doc, err := peers.Load(opts.peers)
-	if err != nil {
-		return err
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tALIAS\tDIRECTION\tPAIRED")
-	for _, p := range doc.Peers {
+type peerListRow struct {
+	ID, Alias, Direction, Paired string
+}
+
+func peerListRows(doc *peers.File) []peerListRow {
+	// doc.Peers is in write order; List puts the newest pairing on top so this
+	// reads like `tyd session list`.
+	var rows []peerListRow
+	for _, p := range doc.List() {
 		nick := p.Nickname
 		if nick == "" {
 			nick = "-"
@@ -60,9 +61,27 @@ func runPeerList(opts options) error {
 		if !p.PairedAt.IsZero() {
 			paired = p.PairedAt.UTC().Format(time.RFC3339)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", p.ID, nick, dir, paired)
+		rows = append(rows, peerListRow{ID: p.ID, Alias: nick, Direction: dir, Paired: paired})
 	}
-	return tw.Flush()
+	return rows
+}
+
+func writePeerList(w io.Writer, rows []peerListRow) {
+	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tALIAS\tDIRECTION\tPAIRED")
+	for _, r := range rows {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Alias, r.Direction, r.Paired)
+	}
+	_ = tw.Flush()
+}
+
+func runPeerList(opts options) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	writePeerList(os.Stdout, peerListRows(doc))
+	return nil
 }
 
 func runPeerShow(opts options, idOrNick string) error {
