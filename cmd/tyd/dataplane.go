@@ -403,7 +403,13 @@ func maintainRelayOne(opts options, state *peerstate.State, srv *server.Server, 
 		offerCancel = cancel
 		fmt.Fprintf(os.Stderr, "tyd relay offering %s via %s\n", id, url)
 		go func(daemonID string, ctx context.Context) {
-			_ = relay.Offer(ctx, url, daemonID, func(ticket string) {
+			_ = relay.Offer(ctx, url, daemonID, func(ticket, observed string) {
+				if observed != "" {
+					// Recorded, not dialled: the client may be behind a NAT
+					// whose mapping we cannot verify from here, so acting on
+					// this is the next step (Phase 4b), not this one.
+					fmt.Fprintf(os.Stderr, "tyd relay client observed at %s via %s\n", observed, url)
+				}
 				go func(ticket string) {
 					c, err := relay.Accept(context.Background(), url, ticket)
 					if err != nil {

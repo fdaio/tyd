@@ -32,6 +32,11 @@ type Endpoint struct {
 	RelayURLs      []string // ordered relay fallbacks; tried in turn after direct candidates fail
 	PeerID         string   // CP daemon id for relay dial
 	OnDial         func(addr string)
+	// OnObserved reports the peer address the relay observed for the server,
+	// e.g. "203.0.113.7:41234" -- post-NAT ground truth rather than the
+	// self-reported interface IPs in Candidates. Diagnostic only: the observed
+	// address is not dialled (Phase 4b).
+	OnObserved func(addr, relayURL string)
 	OnAttach       func()
 	OnReady        func()
 	OnLeave        func(msg string)
@@ -164,9 +169,17 @@ func (e Endpoint) relayFallbacks() []string {
 func dialViaRelay(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, dialAttemptTimeout+20*time.Second)
 	defer cancel()
-	raw, err := relay.Dial(attemptCtx, ep.RelayURL, ep.PeerID)
+	res, err := relay.DialDetailed(attemptCtx, ep.RelayURL, ep.PeerID)
 	if err != nil {
 		return nil, err
+	}
+	raw := res.Conn
+	if res.Observed != "" && ep.OnObserved != nil {
+		// The relay saw the server's post-NAT address. Logged only: whether a
+		// direct dial to it would actually connect is not something we can
+		// assume, and preferring it is the next step (Phase 4b). Measurement
+		// first, so a preference switch is not a connectivity regression.
+		ep.OnObserved(res.Observed, ep.RelayURL)
 	}
 	nc := transport.Wrap(raw, transport.Info{
 		Transport:  transport.KindRelay,

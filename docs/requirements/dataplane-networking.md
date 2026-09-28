@@ -69,20 +69,39 @@ spliced session flow through that one process, so killing it kills the session.
 Forwarding tickets between relays (a mesh) would not help either — it makes the
 *dial entry point* redundant, not the byte path.
 
-### 4b. Surviving live sessions (planned)
+### 4b. Surviving live sessions (in progress)
 
-Only moving the data path off the relay achieves that:
+Only moving the data path off the relay achieves that, in three steps.
 
-1. The relay cross-announces the addresses it *observes* for each side, so peers
-   can dial each other directly (a STUN-lite, and ground truth — unlike the
-   self-reported interface IPs published to the CP today).
-2. Clients prefer direct QUIC after that announcement; the splice stays as the
-   fallback for hard NATs. Dropping the fallback would *reduce* connectivity,
-   since published candidates are usually unreachable behind NAT.
-3. Client-side reconnect on transport loss: re-dial (direct or another relay) and
-   re-attach the same session id. The server already lets a new connection
-   re-attach a live session, and the PTY is untouched by a transport drop, so the
-   shell is never lost.
+**4b.1. Cross-announce observed addresses (done).** The relay tells each side the
+address it observed for the other: `Observed` rides on `TypeIncoming` (relay →
+server) and on `TypeOK` (relay → client). No new message type and no handshake
+reordering is possible or needed — after `TypeOK` the connection is a raw byte
+pipe, so the announcement has to travel on frames that already cross. The field
+is optional and additive, so a new daemon still talks to an old relay and vice
+versa.
+
+`RemoteAddr` on those connections is NAT ground truth: it is the post-NAT source
+the relay actually received. That is precisely what the self-reported interface
+IPs published to the Control Panel are not, and why hard-NAT peers need the
+splice at all.
+
+Both sides record the address and **do not dial it**. The point is measurement:
+until it is known whether an observed address would really connect, preferring
+direct is a guess. If most observed addresses turn out to be unreachable, a
+direct-first switch would be a connectivity regression, and the data says so
+before it ships. Clients and servers log the value (`--verbose` on the client).
+
+**4b.2. Direct-first with splice fallback (planned).** Prefer direct QUIC once an
+observed address is known, and fall back to the splice automatically and without
+user-visible error when the direct attempt fails. The fallback must stay:
+published candidates are usually unreachable behind NAT, so removing it would
+*reduce* connectivity.
+
+**4b.3. Reconnect and re-attach (planned).** On transport loss, re-dial (direct
+or another relay) and re-attach the same session id. The server already lets a
+new connection re-attach a live session, and the PTY is untouched by a transport
+drop, so the shell is never lost.
 
 ## Out of Phase 1 / this MVP
 

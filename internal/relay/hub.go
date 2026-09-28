@@ -119,8 +119,17 @@ func (h *Hub) handleDial(conn net.Conn, msg Msg) {
 		close(pd.finished)
 	}()
 
+	// Cross-announce the address each side sees for the other. RemoteAddr on
+	// these two conns is NAT ground truth: it is the post-NAT source the relay
+	// actually received, which no self-reported candidate list can match.
+	// Reported both ways, and never dialled here -- the relay stays a blind
+	// splice. Recording the address is all this step does (Phase 4b).
 	o.writeMu.Lock()
-	err := WriteMsg(o.control, Msg{Type: TypeIncoming, Ticket: ticket})
+	err := WriteMsg(o.control, Msg{
+		Type:     TypeIncoming,
+		Ticket:   ticket,
+		Observed: observedAddr(conn),
+	})
 	o.writeMu.Unlock()
 	if err != nil {
 		_ = WriteMsg(conn, Msg{Type: TypeError, Error: "peer unreachable"})
@@ -138,13 +147,38 @@ func (h *Hub) handleDial(conn net.Conn, msg Msg) {
 	}
 	defer accept.Close()
 
-	if err := WriteMsg(conn, Msg{Type: TypeOK, Ticket: ticket}); err != nil {
+	// The server's control conn is how the relay sees the server, so the
+	// client gets the server's observed address in its OK. Sent to the dialer
+	// only: the accept leg belongs to the same server and has no use for it.
+	dialOK := Msg{Type: TypeOK, Ticket: ticket, Observed: observedAddr(o.control)}
+	if err := WriteMsg(conn, dialOK); err != nil {
 		return
 	}
 	if err := WriteMsg(accept, Msg{Type: TypeOK, Ticket: ticket}); err != nil {
 		return
 	}
 	splice(conn, accept)
+}
+
+// observedAddr reports the peer address of c, or "" when it is unavailable.
+// A relay behind a proxy or a unix socket has no meaningful host:port, and an
+// empty Observed is the documented "no observation" signal -- never an error.
+func observedAddr(c net.Conn) string {
+	if c == nil {
+		return ""
+	}
+	addr := c.RemoteAddr()
+	if addr == nil {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return ""
+	}
+	if host == "" || port == "" {
+		return ""
+	}
+	return net.JoinHostPort(host, port)
 }
 
 func (h *Hub) handleAccept(conn net.Conn, msg Msg) {

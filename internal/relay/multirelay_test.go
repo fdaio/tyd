@@ -78,7 +78,7 @@ func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
-		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket string) {
+		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket, _ string) {
 			go func(ticket string) {
 				c, err := relay.Accept(context.Background(), relayURL, ticket)
 				if err != nil {
@@ -179,5 +179,55 @@ func TestClientRelayListWithNoLiveRelay(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tried:") {
 		t.Fatalf("want aggregated attempt list, got %v", err)
+	}
+}
+
+// TestClientReceivesObservedServerAddress covers the client side of the
+// cross-announcement: going through a relay surfaces the address the relay
+// observed for the server, and the client does not then dial it. The session
+// must still be created over the relay.
+func TestClientReceivesObservedServerAddress(t *testing.T) {
+	daemonID := "daemon-observed-client"
+	alive, key := startRelayOffer(t, daemonID)
+
+	var observed, obsRelay string
+	ep := client.Endpoint{
+		Kind:     transport.KindRelay,
+		RelayURL: alive,
+		PeerID:   daemonID,
+		OnObserved: func(addr, relayURL string) {
+			observed, obsRelay = addr, relayURL
+		},
+	}
+	if _, err := client.Create(ep, key, client.CreateOpts{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if observed == "" {
+		t.Fatal("client never received an observed server address")
+	}
+	if obsRelay != alive {
+		t.Fatalf("observed relay = %q, want %q", obsRelay, alive)
+	}
+	host, _, err := net.SplitHostPort(observed)
+	if err != nil {
+		t.Fatalf("observed %q is not host:port: %v", observed, err)
+	}
+	if host != "127.0.0.1" {
+		t.Fatalf("observed host = %q, want the relay's own view (127.0.0.1)", host)
+	}
+}
+
+// A client that does not set OnObserved must still connect: the callback is
+// optional, and dialling must not depend on it.
+func TestClientWithoutObservedCallbackStillConnects(t *testing.T) {
+	daemonID := "daemon-observed-optional"
+	alive, key := startRelayOffer(t, daemonID)
+	ep := client.Endpoint{
+		Kind:     transport.KindRelay,
+		RelayURL: alive,
+		PeerID:   daemonID,
+	}
+	if _, err := client.Create(ep, key, client.CreateOpts{}); err != nil {
+		t.Fatalf("create without OnObserved: %v", err)
 	}
 }

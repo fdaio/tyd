@@ -33,13 +33,19 @@ func dialRelay(ctx context.Context, relayURL string) (net.Conn, error) {
 
 // Offer keeps a control connection registered for daemonID and calls onTicket
 // for each incoming client. Blocks until ctx is cancelled or the control conn dies.
-func Offer(ctx context.Context, relayURL, daemonID string, onTicket func(ticket string)) error {
+// Offer keeps a rendezvous on the relay for daemonID. onTicket is called for
+// each client dialing in; observed is the relay's view of that client's
+// post-NAT address, or "" when the relay cannot determine one.
+//
+// The server never dials observed -- it is recorded for diagnostics and for the
+// direct-dial work in requirements/dataplane-networking.md (Phase 4b).
+func Offer(ctx context.Context, relayURL, daemonID string, onTicket func(ticket, observed string)) error {
 	if onTicket == nil {
 		return fmt.Errorf("onTicket required")
 	}
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		err := offerOnce(ctx, relayURL, daemonID, onTicket)
 		if ctx.Err() != nil {
@@ -61,7 +67,7 @@ func Offer(ctx context.Context, relayURL, daemonID string, onTicket func(ticket 
 	}
 }
 
-func offerOnce(ctx context.Context, relayURL, daemonID string, onTicket func(string)) error {
+func offerOnce(ctx context.Context, relayURL, daemonID string, onTicket func(ticket, observed string)) error {
 	conn, err := dialRelay(ctx, relayURL)
 	if err != nil {
 		return err
@@ -91,7 +97,7 @@ func offerOnce(ctx context.Context, relayURL, daemonID string, onTicket func(str
 			return err
 		}
 		if msg.Type == TypeIncoming && msg.Ticket != "" {
-			onTicket(msg.Ticket)
+			onTicket(msg.Ticket, msg.Observed)
 			continue
 		}
 		if msg.Type == TypeError {
@@ -132,10 +138,30 @@ func Accept(ctx context.Context, relayURL, ticket string) (net.Conn, error) {
 
 // Dial connects to peerID through the relay. The returned conn is ready for
 // tyd frames (challenge/auth/session).
+// DialResult is what Dial learned while placing a call through a relay.
+//
+// Observed is the relay's view of the server's post-NAT address, or "" when the
+// relay could not determine one. Like the client-side observation, it is
+// recorded rather than dialled in this step (Phase 4b).
+type DialResult struct {
+	Conn     net.Conn
+	Observed string
+}
+
 func Dial(ctx context.Context, relayURL, peerID string) (net.Conn, error) {
-	conn, err := dialRelay(ctx, relayURL)
+	res, err := DialDetailed(ctx, relayURL, peerID)
 	if err != nil {
 		return nil, err
+	}
+	return res.Conn, nil
+}
+
+// DialDetailed is Dial plus the observed peer address. Dial stays as the
+// simple form so existing callers are unaffected.
+func DialDetailed(ctx context.Context, relayURL, peerID string) (DialResult, error) {
+	conn, err := dialRelay(ctx, relayURL)
+	if err != nil {
+		return DialResult{}, err
 	}
 	ok := false
 	defer func() {
@@ -144,18 +170,18 @@ func Dial(ctx context.Context, relayURL, peerID string) (net.Conn, error) {
 		}
 	}()
 	if err := WriteMsg(conn, Msg{Type: TypeDial, PeerID: peerID}); err != nil {
-		return nil, err
+		return DialResult{}, err
 	}
 	ack, err := ReadMsg(conn)
 	if err != nil {
-		return nil, err
+		return DialResult{}, err
 	}
 	if ack.Type == TypeError {
-		return nil, fmt.Errorf("relay dial: %s", ack.Error)
+		return DialResult{}, fmt.Errorf("relay dial: %s", ack.Error)
 	}
 	if ack.Type != TypeOK {
-		return nil, fmt.Errorf("relay dial: unexpected %q", ack.Type)
+		return DialResult{}, fmt.Errorf("relay dial: unexpected %q", ack.Type)
 	}
 	ok = true
-	return conn, nil
+	return DialResult{Conn: conn, Observed: ack.Observed}, nil
 }

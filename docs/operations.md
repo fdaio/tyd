@@ -101,6 +101,21 @@ with that relay process, because its bytes flow through that process. Surviving
 *live* sessions is a separate design step, tracked in
 [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 
+A relay does report the address it observed for each side of a call — the
+post-NAT source it actually received, rather than a self-reported interface IP.
+It is recorded and logged, never dialled: sessions still run over the splice,
+unchanged. The client needs `--verbose` to show it:
+
+```
+debug1: Relay observed peer at 203.0.113.7:41234 via https://relay-1.example.
+```
+
+The server logs the client side on stderr:
+
+```
+tyd relay client observed at 198.51.100.9:51234 via https://relay-1.example
+```
+
 #### Running a relay fleet
 
 One relay per host, on separate failure domains. Two relays in containers on the

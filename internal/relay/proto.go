@@ -30,6 +30,18 @@ type Msg struct {
 	PeerID   string `json:"peer_id,omitempty"`
 	Ticket   string `json:"ticket,omitempty"`
 	Error    string `json:"error,omitempty"`
+
+	// Observed is the peer address the relay saw for the other side of this
+	// handshake, as a "host:port" string: NAT ground truth, unlike the
+	// self-reported interface IPs a server publishes to the Control Panel.
+	//
+	// It rides on the two frames that already cross in opposite directions
+	// (TypeIncoming to the server, TypeOK to the client) because the connection
+	// becomes a raw byte pipe after TypeOK -- no frame can follow it. Optional
+	// and additive: peers that predate this ignore it, and its absence is not
+	// an error. Recorded, not dialled; see requirements/dataplane-networking.md
+	// (Phase 4b).
+	Observed string `json:"observed,omitempty"`
 }
 
 func WriteMsg(w io.Writer, m Msg) error {
