@@ -159,7 +159,11 @@ step "start the daemon"
 # peer sync that makes an accepted peer visible is driven from there: with it off
 # the daemon syncs the peer list once at startup and never again, so a peer
 # accepted afterwards stays invisible until it is restarted.
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" --data-listen 127.0.0.1:0 up >"$WORK/up.out" 2>&1 &
+# The relay is off so nothing leaves the machine: a promotion gate that
+# depends on a hosted service is a gate that fails for reasons no build
+# caused. With it off the client dials the endpoint the daemon published to
+# the Control Panel, which is the real data path and the end-to-end TLS on it.
+"$TYD_BINDIR/tyd" --platform "$PLATFORM" --data-listen 127.0.0.1:0 --relay off up >"$WORK/up.out" 2>&1 &
 i=0
 while [ "$i" -lt 100 ]; do
 	[ -S "$HOME/.tyd/tyd.sock" ] && break
@@ -181,6 +185,10 @@ TOKEN=$(printf '%s\n' "$LINE" | awk '{for (i = 1; i < NF; i++) if ($i == "accept
 say "token carries $(printf '%s' "$TOKEN" | awk -F. '{print NF}') parts (invite id, secret, inviter hash)"
 
 step "accept it from a second identity"
+# The daemon's own pairing record sits next to its peers file under a derived
+# name, so the server half of the pairing is checked there rather than at the
+# default path the accept command uses when nothing overrides it.
+SERVER_PAIRED="$HOME/.tyd/peers-paired.json"
 CLIENT="$WORK/client"
 mkdir -p "$CLIENT"
 "$TYD_BINDIR/tyd" \
@@ -196,41 +204,60 @@ PEER=$(tr -d '\r' <"$WORK/accept.out" | tail -1)
 [ -n "$PEER" ] || die "accept printed no peer id"
 say "paired with $PEER"
 
-step "the server can see the pairing"
+step "the server learns the peer and records the pairing"
+# Neither half is immediate. The daemon refreshes its peer list on a 30s ticker,
+# and the server's own pairing record only appears on the tick after that, when it
+# adopts what the Control Panel now lists. Polling for less would fail builds that
+# are fine, which is the one way a promotion gate must not be wrong.
 i=0
-while [ "$i" -lt 60 ]; do
+while [ "$i" -lt 400 ]; do
 	# peer list prints one header line, then a row per peer.
 	COUNT=$("$TYD_BINDIR/tyd" peer list 2>/dev/null | tail -n +2 | grep -c . || true)
-	[ "${COUNT:-0}" -ge 1 ] && break
+	if [ "${COUNT:-0}" -ge 1 ] && [ -f "$SERVER_PAIRED" ] && [ -f "$CLIENT/paired.json" ]; then
+		break
+	fi
 	i=$((i + 1))
 	sleep 0.25
 done
-[ "${COUNT:-0}" -ge 1 ] || die "the server never saw the peer arrive (daemon log: $(tail -3 "$WORK/up.out" 2>/dev/null))"
-
-step "the pairing is recorded on both sides"
-[ -f "$HOME/.tyd/paired.json" ] || die "server wrote no pairing record"
+[ "${COUNT:-0}" -ge 1 ] ||
+	die "the server never saw the peer arrive (daemon log: $(tail -3 "$WORK/up.out" 2>/dev/null))"
+[ -f "$SERVER_PAIRED" ] || die "server wrote no pairing record at $SERVER_PAIRED"
 [ -f "$CLIENT/paired.json" ] || die "client wrote no pairing record"
 say "server and client both hold a pairing record"
 
 # ---- 4. a session -----------------------------------------------------------
 
-step "create a session and see it"
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" --data-listen 127.0.0.1:0 session create --detach >"$WORK/create.out" 2>"$WORK/create.err" ||
+# A session is opened from the client, against the server it just paired with --
+# the same command the accept printed. That is the whole path: the client dials
+# the server's published endpoint, the relay carries it, and the server spawns
+# the agent. Running it on the server instead would prove nothing about any of it.
+client_tyd() {
+	"$TYD_BINDIR/tyd" \
+		--identity "$CLIENT/id_ed25519" \
+		--trust "$CLIENT/trusted.json" \
+		--peers "$CLIENT/peers.json" \
+		--paired "$CLIENT/paired.json" \
+		--relay off \
+		--platform "$PLATFORM" "$@"
+}
+
+step "open a session from the client and see it"
+client_tyd session create --peer "$PEER" --detach >"$WORK/create.out" 2>"$WORK/create.err" ||
 	die "session create failed: $(cat "$WORK/create.err" 2>/dev/null)$(cat "$WORK/create.out" 2>/dev/null)"
 SID=$(tr -d '\r' <"$WORK/create.out" | tail -1)
 [ -n "$SID" ] || die "session create printed no id"
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" session list 2>/dev/null | grep -q "$SID" ||
+client_tyd session list 2>/dev/null | grep -q "$SID" ||
 	die "session $SID is not in session list"
 say "session $SID created and listed"
 
 step "peer list shows the alias"
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" peer alias "$PEER" smoke >/dev/null 2>&1 ||
+client_tyd peer alias "$PEER" smoke >/dev/null 2>&1 ||
 	die "peer alias failed"
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" session list 2>/dev/null | grep -q smoke ||
+client_tyd session list 2>/dev/null | grep -q smoke ||
 	die "session list does not show the peer nickname"
 
 step "clean up the session"
-"$TYD_BINDIR/tyd" --platform "$PLATFORM" session close "$SID" >/dev/null 2>&1 ||
+client_tyd session close "$SID" >/dev/null 2>&1 ||
 	die "session close failed"
 
 printf '\nsmoke: ok\n'
