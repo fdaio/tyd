@@ -119,7 +119,7 @@ address — tyd falls back to a **blind WebSocket relay** (default
 `https://app.getfda.dev/relay` on the CP origin). Direct first, rendezvous last.
 
 - No extra flag is needed once the Control Panel serves `/relay`.
-- Optional dedicated relay: compose service `relay` or `go run ./cmd/relay`, then
+- Optional dedicated relay: compose service `relay` or `make relay`, then
   point the server at it with `--relay URL`.
 - `--relay` also takes a comma-separated list. The server offers on each one
   independently and the client tries them in order, so a second relay keeps

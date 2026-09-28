@@ -72,7 +72,8 @@ tyd up --relay https://relay-1.example,https://relay-2.example   # several
 The relay is a blind WebSocket splice, so authentication and session frames stay
 end-to-end. The default is the Control Panel's own `/relay`
 (`https://app.getfda.dev/relay`); a dedicated process is optional
-(`go run ./cmd/relay` or the compose `relay` service). Phase status:
+(`make relay`, `go run ./cmd/relay`, or the compose `relay` service). Phase
+status:
 [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 
 ### More than one relay
@@ -99,6 +100,56 @@ Note what this does **not** buy: a session already spliced through a relay dies
 with that relay process, because its bytes flow through that process. Surviving
 *live* sessions is a separate design step, tracked in
 [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
+
+#### Running a relay fleet
+
+One relay per host, on separate failure domains. Two relays in containers on the
+same machine are not redundant — they die together.
+
+Build the binary (it ships inside the release tarball as `tyd-relay-<arch>`):
+
+```bash
+make relay                              # or: go build -o tyd-relay ./cmd/relay
+```
+
+Run it bound to loopback and let a TLS proxy face the internet. The relay serves
+plain HTTP and prints a warning to that effect; it also has no authentication at
+the WebSocket layer, so do not skip the usual edge hardening.
+
+```ini
+# /etc/systemd/system/tyd-relay.service
+[Unit]
+Description=tyd relay
+After=network.target
+
+[Service]
+ExecStart=/opt/tyd/tyd-relay -listen 127.0.0.1:9090
+Restart=always
+User=tyd
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```caddyfile
+relay-1.example {
+    reverse_proxy 127.0.0.1:9090
+}
+```
+
+`https://` URLs are upgraded to `wss://` automatically, so the client and the
+server need nothing but the list:
+
+```bash
+tyd up --relay https://relay-1.example,https://relay-2.example
+tyd --relay https://relay-1.example,https://relay-2.example session create --peer laptop
+```
+
+`curl -s https://relay-1.example/healthz` returns `ok`. A live server should log
+one `relay offering` line per relay.
 
 ## Docker Compose (Control Panel)
 
