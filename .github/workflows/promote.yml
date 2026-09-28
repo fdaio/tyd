@@ -26,8 +26,15 @@ permissions:
 
 jobs:
   check:
-    name: check
-    runs-on: ubuntu-latest
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the other's result, and both matter:
+      # the install path resolves a different archive per os+arch, so a build can
+      # be fine on Linux and broken on macOS.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -38,8 +45,24 @@ jobs:
 
       # The whole user path, from curl to a session that exists: install, pair
       # with a second identity on the same host, create a session, see it listed.
-      - name: Smoke test (linux)
-        run: sh scripts/smoke.sh "https://github.com/fdaio/tyd/releases/download/${{ github.event.inputs.version }}/tyd-linux-amd64.tar.gz"
+      # The archive is named for the runner, not assumed, because that name is
+      # exactly what install.sh would have to resolve.
+      - name: Smoke test
+        run: |
+          set -eu
+          case "$(uname -s)" in
+            Linux) asset_os=linux ;;
+            Darwin) asset_os=darwin ;;
+            *) echo "::error::unexpected os $(uname -s)"; exit 1 ;;
+          esac
+          case "$(uname -m)" in
+            x86_64|amd64) asset_arch=amd64 ;;
+            arm64|aarch64) asset_arch=arm64 ;;
+            *) echo "::error::unexpected arch $(uname -m)"; exit 1 ;;
+          esac
+          sh scripts/smoke.sh \
+            "https://github.com/fdaio/tyd/releases/download/${{ github.event.inputs.version }}/tyd-$asset_os-$asset_arch.tar.gz"
+
 
   promote:
     name: promote
