@@ -1,4 +1,5 @@
-.PHONY: build install test fmt clean dist dist-bins dist-relay-bins controlpanel relay docker-prep docker docker-source
+.PHONY: build install test fmt clean dist dist-bins dist-relay-bins controlpanel relay \
+	docker-prep docker docker-source relay-prep relay-image
 
 # GNU prefix. The binary lands in $(DESTDIR)$(PREFIX)/bin/tyd.
 # Default PREFIX matches scripts/install.sh, which installs to ~/.local/bin.
@@ -36,6 +37,11 @@ fmt:
 clean:
 	rm -rf tyd tyd-relay controlpanel dist bin
 
+# GOPROXY for the in-image `go mod download` (empty = toolchain default). Set it
+# only if this host cannot reach proxy.golang.org:
+#   make docker-source GOPROXY=https://your-proxy.example,direct
+GOPROXY ?=
+
 # Host arch for linux container binaries (override: DOCKER_GOARCH=arm64).
 DOCKER_GOARCH ?= $(shell go env GOARCH)
 # Parallelism for in-Docker source builds (1 keeps peak RAM low on 1C/1G).
@@ -55,10 +61,23 @@ docker: docker-prep
 	docker build -f Dockerfile.controlpanel.prebuilt -t tyd-controlpanel:local .
 	@echo "built tyd-controlpanel:local (prebuilt). Run: docker compose up -d"
 
+# Same prebuilt path for the relay: no Go toolchain and no module fetch inside
+# Docker, so it works on hosts that cannot reach proxy.golang.org. The binary
+# can also be lifted from a release tarball instead of compiled here.
+relay-prep:
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(DOCKER_GOARCH) go build -trimpath -ldflags "-s -w" \
+		-o bin/relay ./cmd/relay
+
+relay-image: relay-prep
+	docker build -f Dockerfile.relay.prebuilt -t tyd-relay:local .
+	@echo "built tyd-relay:local (prebuilt). Run: docker compose --profile standalone-relay up -d"
+
 # Explicit in-Docker compile (same as default compose Dockerfile).
 docker-source:
 	docker build -f Dockerfile.controlpanel \
-		--build-arg GOMAXPROCS=$(GOMAXPROCS) -t tyd-controlpanel:local .
+		--build-arg GOMAXPROCS=$(GOMAXPROCS) --build-arg GOPROXY=$(GOPROXY) \
+		-t tyd-controlpanel:local .
 
 # Twelve cross-compiled binaries (tyd + tyd-relay per os/arch), then one
 # tarball per OS. install.sh only lifts out $os/tyd-$arch, so the extra relay

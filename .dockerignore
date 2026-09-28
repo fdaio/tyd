@@ -4,6 +4,7 @@
 .github/
 dist/
 tyd
+tyd-relay
 controlpanel
 **/*_test.go
 docs/

@@ -1,0 +1,13 @@
+# Pack a prebuilt tyd-relay binary (no Go toolchain, no module fetch inside
+# Docker — works on hosts that cannot reach proxy.golang.org).
+#   make relay-prep && docker build -f Dockerfile.relay.prebuilt -t tyd-relay:local .
+#
+# bin/relay can also come straight out of a release tarball, so a 1C/1G VPS
+# never has to compile anything.
+
+FROM scratch
+COPY bin/relay /relay
+EXPOSE 9090
+USER 65532:65532
+ENTRYPOINT ["/relay"]
+CMD ["-listen", "0.0.0.0:9090"]

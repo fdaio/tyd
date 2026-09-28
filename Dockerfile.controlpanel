@@ -10,9 +10,17 @@
 #
 # 1C/1G: in-Docker compile needs RAM/swap; or run `make docker` on a fat host
 # and copy the tagged image / bin/controlpanel to the VPS.
+#
+# GOPROXY is passed through to the build so a host with a network-restricted or
+# flaky route to proxy.golang.org can point it somewhere else. Unset (the
+# default) keeps the toolchain default.
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+# Declared before `go mod download` so it applies to the fetch, not just the
+# compile. An empty value leaves the toolchain default.
+ARG GOPROXY=
+ENV GOPROXY=$GOPROXY
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
