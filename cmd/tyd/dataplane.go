@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -316,15 +318,55 @@ func publishDataEndpoint(opts options, state *peerstate.State, addr, certFP stri
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(platform)
-	ttlSec := int(controlpanel.DefaultEndpointTTL / time.Second)
+	ttl := controlpanel.DefaultEndpointTTL
+
+	// Sign what we are about to publish, so a Control Panel can carry the record
+	// but not rewrite it. The expiry and the sequence are ours: a client acts on
+	// the signed values, never on the ones the Control Panel reports alongside.
+	seq := endpointSeqFor(opts)
+	record := auth.NewEndpointRecord(reg.ID, pub, addr, certFP, "quic", candidates, time.Now(), ttl, seq)
+	sig, err := record.Sign(key)
+	if err != nil {
+		return fmt.Errorf("endpoint proof: %w", err)
+	}
 	return cli.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
 		PublicKey:  pub,
 		Addr:       addr,
 		CertFP:     certFP,
 		Transport:  "quic",
 		Candidates: candidates,
-		TTLSeconds: ttlSec,
+		TTLSeconds: int(ttl / time.Second),
+		Proof: &controlpanel.EndpointProof{
+			Record: record,
+			Sig:    auth.EncodeBytes(sig),
+		},
 	})
+}
+
+// endpointSeqFile keeps the publish sequence next to the pairing record. It only
+// has to survive a restart: a restarted daemon that reissued numbers a client
+// had already seen would look like a replay.
+func endpointSeqFile(opts options) string {
+	if strings.TrimSpace(opts.paired) != "" {
+		return opts.paired + ".endpoint-seq"
+	}
+	return filepath.Join(paths.DefaultDir(), "endpoint-seq")
+}
+
+func endpointSeqFor(opts options) uint64 {
+	path := endpointSeqFile(opts)
+	var last uint64
+	if b, err := os.ReadFile(path); err == nil {
+		last, _ = strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	}
+	next := auth.NextEndpointSeq(last, time.Now())
+	if err := os.WriteFile(path, []byte(strconv.FormatUint(next, 10)), 0o600); err != nil {
+		// A sequence that repeats would only matter if a client had already
+		// rejected it, so this is worth a word but not worth dropping the
+		// publish over.
+		fmt.Fprintf(os.Stderr, "tyd endpoint: could not persist the publish sequence: %v\n", err)
+	}
+	return next
 }
 
 func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, addr, certFP string, candidates []string, stop <-chan struct{}) {

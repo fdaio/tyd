@@ -88,6 +88,11 @@ func (c *Client) Accept(token, publicKey, nickname string) (*controlpanel.Accept
 	return &out, nil
 }
 
+// Endpoint is a published dial record. It is the Control Panel's copy, which is
+// why the signature travels with it: a client checks the record against the key
+// it pinned at pairing and ignores the fields it cannot verify.
+type Endpoint = controlpanel.EndpointResponse
+
 // AcceptProof is the acceptor's half of a pairing record. The Control Panel
 // relays it to the inviter and cannot forge one: the MAC is keyed by an invite
 // secret it never sees.

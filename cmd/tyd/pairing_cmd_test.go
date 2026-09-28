@@ -491,10 +491,25 @@ func TestAcceptAlreadyPairedNamesPeerAndHintsWhenLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	sKey, err := auth.LoadIdentity(sOpts.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sRec := auth.NewEndpointRecord(sDoc.Registration.ID, sDoc.Registration.PublicKey,
+		"127.0.0.1:1", "ab", "quic", nil, time.Now(), controlpanel.DefaultEndpointTTL, 1)
+	sSig, err := sRec.Sign(sKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cpclient.New(platform).PublishEndpointFull(sDoc.Registration.ID, controlpanel.PublishEndpointRequest{
 		PublicKey: sDoc.Registration.PublicKey,
 		Addr:      "127.0.0.1:1",
 		CertFP:    "ab",
+		Transport: "quic",
+		Proof: &controlpanel.EndpointProof{
+			Record: sRec,
+			Sig:    auth.EncodeBytes(sSig),
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
