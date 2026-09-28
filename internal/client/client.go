@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"errors"
@@ -23,20 +24,25 @@ import (
 )
 
 type Endpoint struct {
-	Kind           transport.Kind
-	Address        string
-	CertPath       string   // TLS pin via cert file (optional if CertFP set)
-	CertFP         string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
-	Candidates     []string // extra dial addresses tried after Address (peer data-plane)
-	RelayURL       string   // dual-NAT fallback after direct candidates fail (first of RelayURLs)
-	RelayURLs      []string // ordered relay fallbacks; tried in turn after direct candidates fail
-	PeerID         string   // CP daemon id for relay dial
-	OnDial         func(addr string)
+	Kind       transport.Kind
+	Address    string
+	CertPath   string   // TLS pin via cert file (optional if CertFP set)
+	CertFP     string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
+	Candidates []string // extra dial addresses tried after Address (peer data-plane)
+	RelayURL   string   // dual-NAT fallback after direct candidates fail (first of RelayURLs)
+	RelayURLs  []string // ordered relay fallbacks; tried in turn after direct candidates fail
+	PeerID     string   // CP daemon id for relay dial
+	// PeerPublic is the pinned Ed25519 public key of the peer on the other
+	// end. The relay path has no certificate fingerprint to pin (the Control
+	// Panel's peer record carries no daemon id), so the peer is authenticated
+	// by its channel-binding signature over the inner TLS session instead.
+	PeerPublic ed25519.PublicKey
+	OnDial     func(addr string)
 	// OnObserved reports the peer address the relay observed for the server,
 	// e.g. "203.0.113.7:41234" -- post-NAT ground truth rather than the
 	// self-reported interface IPs in Candidates. Diagnostic only: the observed
 	// address is not dialled (Phase 4b).
-	OnObserved func(addr, relayURL string)
+	OnObserved     func(addr, relayURL string)
 	OnAttach       func()
 	OnReady        func()
 	OnLeave        func(msg string)
@@ -181,22 +187,60 @@ func dialViaRelay(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Co
 		// first, so a preference switch is not a connectivity regression.
 		ep.OnObserved(res.Observed, ep.RelayURL)
 	}
-	nc := transport.Wrap(raw, transport.Info{
+	// The relay is a blind splice, so the session protocol used to cross it in
+	// cleartext. Wrap our own leg in TLS before anything else is written, then
+	// check that the server on the other end is the peer we paired with and not
+	// a relay that re-terminated TLS.
+	secure, binder, err := transport.ClientE2E(raw, transport.E2EClientConfig())
+	if err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	if err := verifyRelayBinding(secure, ep, binder); err != nil {
+		_ = secure.Close()
+		return nil, err
+	}
+
+	nc := transport.Wrap(secure, transport.Info{
 		Transport:  transport.KindRelay,
 		RemoteAddr: ep.PeerID + "@" + ep.RelayURL,
-		TLS:        strings.HasPrefix(strings.ToLower(ep.RelayURL), "https"),
+		TLS:        true,
 	})
 	c := &Conn{nc: nc, info: nc.Info()}
 	if dl, ok := attemptCtx.Deadline(); ok {
 		_ = c.SetDeadline(dl)
 	}
-	authErr := c.Authenticate(key)
+	authErr := c.AuthenticateBound(key, binder)
 	_ = c.SetDeadline(time.Time{})
 	if authErr != nil {
 		_ = c.Close()
 		return nil, authErr
 	}
 	return c, nil
+}
+
+// verifyRelayBinding checks the server's signature over this TLS session
+// against the peer public key learned at pairing time.
+func verifyRelayBinding(conn net.Conn, ep Endpoint, binder []byte) error {
+	if len(ep.PeerPublic) != ed25519.PublicKeySize {
+		return fmt.Errorf("relay e2e: no pinned key for peer %s; re-pair this peer", ep.PeerID)
+	}
+	_ = conn.SetDeadline(time.Now().Add(transport.E2EHandshakeTimeout))
+	f, err := protocol.ReadFrame(conn)
+	_ = conn.SetDeadline(time.Time{})
+	if err != nil {
+		return fmt.Errorf("relay e2e binding: %w", err)
+	}
+	if f.Type == protocol.TypeError {
+		return fmt.Errorf("relay e2e: %s", f.Error)
+	}
+	if f.Type != protocol.TypeBound {
+		return fmt.Errorf("relay e2e: expected a binding, got %q", f.Type)
+	}
+	if !bytes.Equal(f.PublicKey, ep.PeerPublic) {
+		return fmt.Errorf("relay e2e: peer key mismatch")
+	}
+	return transport.VerifyPeerBinding(ep.PeerPublic, nil, binder, f.Data)
 }
 
 func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
@@ -260,7 +304,18 @@ func DialUnix(socket string, key ed25519.PrivateKey) (*Conn, error) {
 
 func (c *Conn) Info() transport.Info { return c.info }
 
+// AuthenticateBound is Authenticate with the signature also covering a channel
+// binding. On the relay the binding is the inner TLS exporter, so the server
+// can tell this auth belongs to this connection.
+func (c *Conn) AuthenticateBound(key ed25519.PrivateKey, binder []byte) error {
+	return c.authenticate(key, binder)
+}
+
 func (c *Conn) Authenticate(key ed25519.PrivateKey) error {
+	return c.authenticate(key, nil)
+}
+
+func (c *Conn) authenticate(key ed25519.PrivateKey, binder []byte) error {
 	if len(key) != ed25519.PrivateKeySize {
 		return fmt.Errorf("invalid identity")
 	}
@@ -274,7 +329,7 @@ func (c *Conn) Authenticate(key ed25519.PrivateKey) error {
 	if chal.Type != protocol.TypeChallenge {
 		return fmt.Errorf("expected challenge, got %q", chal.Type)
 	}
-	if err := c.Send(auth.AuthFrame(key, chal.Data)); err != nil {
+	if err := c.Send(auth.AuthFrameBound(key, chal.Data, binder)); err != nil {
 		return err
 	}
 	resp, err := c.Recv()

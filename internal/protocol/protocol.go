@@ -12,18 +12,19 @@ const MaxFrame = 1 << 20
 type Type string
 
 const (
-	TypeCreate Type = "create"
-	TypeList   Type = "list"
-	TypeAttach Type = "attach"
-	TypeWatch  Type = "watch"
-	TypeDetach Type = "detach"
-	TypeWrite  Type = "write"
-	TypeResize Type = "resize"
-	TypeSignal Type = "signal"
+	TypeCreate  Type = "create"
+	TypeList    Type = "list"
+	TypeAttach  Type = "attach"
+	TypeWatch   Type = "watch"
+	TypeDetach  Type = "detach"
+	TypeWrite   Type = "write"
+	TypeResize  Type = "resize"
+	TypeSignal  Type = "signal"
 	TypeClose   Type = "close"
 	TypeApprove Type = "approve"
 	TypeReject  Type = "reject"
 	TypeAuth    Type = "auth"
+	TypeBound   Type = "bound" // server proves its identity over the relay TLS binding
 	TypeStatus  Type = "status"
 
 	TypeChallenge   Type = "challenge"

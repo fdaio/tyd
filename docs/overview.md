@@ -30,7 +30,7 @@ sessions behind a local decision is in scope instead — see
             │  Ed25519 challenge-response
             ▼
          ┌─────┐         WebSocket rendezvous (default CP /relay;
-         │ tyd │  up  ───▶  optional standalone tyd-relay; blind splice)
+         │ tyd │  up  ───▶  optional standalone tyd-relay; splices TLS)
          └──┬──┘
             │  re-adopts surviving agents on start
             ▼
@@ -82,9 +82,10 @@ WireGuard planned: [requirements/dataplane-networking.md](requirements/dataplane
 
 ## Security model
 
-1. **Transport confidentiality (TLS/QUIC path):** TLS 1.3 minimum; the client pins
-   the server certificate fingerprint. Plain TCP is not a peer data-plane mode, and
-   the relay is a blind WebSocket splice behind edge TLS.
+1. **Transport confidentiality:** TLS 1.3 minimum on both peer data-plane paths.
+   Directly, the client pins the server certificate fingerprint. Through the
+   relay, the two peers negotiate TLS 1.3 between themselves across the splice
+   and the relay copies ciphertext. Plain TCP is not a peer data-plane mode.
 2. **Identity:** Every connection must complete an Ed25519 challenge-response
    against `trusted.json`.
 3. **Authorization:** Global caps (`list`, `create`) vs session-bound caps

@@ -32,8 +32,11 @@ adds nothing: [docs/alternatives.md](docs/alternatives.md)
 - **Identity**: Ed25519 keys in `~/.tyd`; each connection runs a
   challenge-response against the peer's `trusted.json`. A new key needs an
   explicit pairing.
-- **Transport**: TLS 1.3 minimum with a pinned server certificate fingerprint, or
-  a blind WebSocket splice through the relay — the relay never sees session bytes.
+- **Transport**: TLS 1.3 minimum with a pinned server certificate fingerprint
+  (direct), or TLS 1.3 negotiated *through* the relay between the two peers
+  (dual-NAT fallback) — the relay relays ciphertext and never sees session bytes.
+  See [relay path security](docs/protocol.md#relay-path-security) for what a
+  relay can still observe.
 - **Control Plane**: stores daemon ids, public keys, and dial metadata. Session
   and TTY bytes never reach it.
 - **Local by default**: the daemon listens only on `~/.tyd/tyd.sock` until you

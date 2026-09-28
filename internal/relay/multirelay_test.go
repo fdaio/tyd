@@ -33,7 +33,10 @@ func deadRelayURL(t *testing.T) string {
 
 // startRelayOffer runs a relay and keeps an offer for daemonID on it, returning
 // the relay URL and the server identity key directory.
-func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey) {
+// startRelayOffer returns the relay URL, a client identity, and the server's
+// public key: the client pins that key to authenticate the relay's peer, since
+// the relay path has no certificate fingerprint to pin.
+func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
 	lnAddr, closeFn, err := relay.ListenAndServe("127.0.0.1:0")
 	if err != nil {
@@ -54,6 +57,10 @@ func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey)
 		t.Fatal(err)
 	}
 	key := priv
+	cert, err := transport.EnsureServerCert(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := auth.WriteIdentity(filepath.Join(dir, "id"), priv); err != nil {
 		t.Fatal(err)
 	}
@@ -80,16 +87,16 @@ func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey)
 	go func() {
 		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket, _ string) {
 			go func(ticket string) {
-				c, err := relay.Accept(context.Background(), relayURL, ticket)
+				c, binder, err := relay.AcceptE2E(context.Background(), relayURL, ticket, cert, priv)
 				if err != nil {
 					return
 				}
-				srv.ServeConn(transport.Wrap(c, transport.Info{Transport: transport.KindRelay}))
+				srv.ServeConn(transport.Wrap(c, transport.Info{Transport: transport.KindRelay, TLS: true}), binder)
 			}(ticket)
 		})
 	}()
 	waitOffer(t, relayURL, daemonID)
-	return relayURL, key
+	return relayURL, key, pub
 }
 
 // waitOffer blocks until the daemon offer is registered on the relay.
@@ -116,16 +123,17 @@ func waitOffer(t *testing.T, relayURL, daemonID string) {
 // created through the survivor.
 func TestClientFallsBackToSecondRelay(t *testing.T) {
 	daemonID := "daemon-multi-b"
-	alive, key := startRelayOffer(t, daemonID)
+	alive, key, pub := startRelayOffer(t, daemonID)
 	dead := deadRelayURL(t)
 
 	var tried []string
 	ep := client.Endpoint{
-		Kind:      transport.KindRelay,
-		RelayURL:  alive,
-		RelayURLs: []string{dead, alive},
-		PeerID:    daemonID,
-		OnDial:    func(a string) { tried = append(tried, a) },
+		Kind:       transport.KindRelay,
+		RelayURL:   alive,
+		RelayURLs:  []string{dead, alive},
+		PeerID:     daemonID,
+		PeerPublic: pub,
+		OnDial:     func(a string) { tried = append(tried, a) },
 	}
 	info, err := client.Create(ep, key, client.CreateOpts{})
 	if err != nil {
@@ -143,16 +151,17 @@ func TestClientFallsBackToSecondRelay(t *testing.T) {
 // serves the offer, later entries are not dialled.
 func TestClientStopsAtFirstLiveRelay(t *testing.T) {
 	daemonID := "daemon-multi-a"
-	first, key := startRelayOffer(t, daemonID)
-	second, _ := startRelayOffer(t, daemonID)
+	first, key, pub := startRelayOffer(t, daemonID)
+	second, _, _ := startRelayOffer(t, daemonID)
 
 	var tried []string
 	ep := client.Endpoint{
-		Kind:      transport.KindRelay,
-		RelayURL:  first,
-		RelayURLs: []string{first, second},
-		PeerID:    daemonID,
-		OnDial:    func(a string) { tried = append(tried, a) },
+		Kind:       transport.KindRelay,
+		RelayURL:   first,
+		RelayURLs:  []string{first, second},
+		PeerID:     daemonID,
+		PeerPublic: pub,
+		OnDial:     func(a string) { tried = append(tried, a) },
 	}
 	if _, err := client.Create(ep, key, client.CreateOpts{}); err != nil {
 		t.Fatalf("create via first relay: %v", err)
@@ -188,13 +197,14 @@ func TestClientRelayListWithNoLiveRelay(t *testing.T) {
 // must still be created over the relay.
 func TestClientReceivesObservedServerAddress(t *testing.T) {
 	daemonID := "daemon-observed-client"
-	alive, key := startRelayOffer(t, daemonID)
+	alive, key, pub := startRelayOffer(t, daemonID)
 
 	var observed, obsRelay string
 	ep := client.Endpoint{
-		Kind:     transport.KindRelay,
-		RelayURL: alive,
-		PeerID:   daemonID,
+		Kind:       transport.KindRelay,
+		RelayURL:   alive,
+		PeerID:     daemonID,
+		PeerPublic: pub,
 		OnObserved: func(addr, relayURL string) {
 			observed, obsRelay = addr, relayURL
 		},
@@ -221,11 +231,12 @@ func TestClientReceivesObservedServerAddress(t *testing.T) {
 // optional, and dialling must not depend on it.
 func TestClientWithoutObservedCallbackStillConnects(t *testing.T) {
 	daemonID := "daemon-observed-optional"
-	alive, key := startRelayOffer(t, daemonID)
+	alive, key, pub := startRelayOffer(t, daemonID)
 	ep := client.Endpoint{
-		Kind:     transport.KindRelay,
-		RelayURL: alive,
-		PeerID:   daemonID,
+		Kind:       transport.KindRelay,
+		RelayURL:   alive,
+		PeerID:     daemonID,
+		PeerPublic: pub,
 	}
 	if _, err := client.Create(ep, key, client.CreateOpts{}); err != nil {
 		t.Fatalf("create without OnObserved: %v", err)

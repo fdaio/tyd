@@ -175,7 +175,7 @@ tyd --help; tyd session help; tyd peer help   # authoritative
 ## What not to do
 
 - Do not run the install script with `sudo` — everything is per-user.
-- Do not put TTY bytes through the Control Panel — the relay is a blind WebSocket splice; session bytes are end-to-end.
+- Do not put TTY bytes through the Control Panel — the relay splices a WebSocket, and the two peers run TLS 1.3 inside it, so it carries ciphertext. It still sees connection metadata.
 - Do not treat `sessions.json` as server-side truth — it is client-local and advisory.
 - Do not use `tyd create` / `tyd list` — they are rejected; use `tyd session create` etc. (`tyd alias` still works but prints a deprecation note; prefer `tyd session alias`).
 
