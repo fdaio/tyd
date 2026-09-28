@@ -1,5 +1,5 @@
-.PHONY: build install test fmt clean dist dist-bins dist-relay-bins controlpanel relay \
-	docker-prep docker docker-source relay-prep relay-image
+.PHONY: build install test fmt clean dist dist-relay dist-bins dist-relay-bins \
+	controlpanel relay docker-prep docker docker-source relay-prep relay-image
 
 # GNU prefix. The binary lands in $(DESTDIR)$(PREFIX)/bin/tyd.
 # Default PREFIX matches scripts/install.sh, which installs to ~/.local/bin.
@@ -20,9 +20,9 @@ install: build
 controlpanel:
 	go build -o controlpanel ./cmd/controlpanel
 
-# Dedicated relay. Shipped in the release tarballs (see dist-relay-bins) so
-# `tyd up --relay` is deployable without a Go toolchain. List several URLs to
-# run a fleet; see docs/operations.md.
+# Dedicated relay. Published as its own archive per os+arch (make dist-relay),
+# never inside an install tarball, so `tyd up --relay` is deployable without a Go
+# toolchain. List several URLs to run a fleet; see docs/operations.md.
 relay:
 	go build -o tyd-relay ./cmd/relay
 
@@ -63,7 +63,7 @@ docker: docker-prep
 
 # Same prebuilt path for the relay: no Go toolchain and no module fetch inside
 # Docker, so it works on hosts that cannot reach proxy.golang.org. The binary
-# can also be lifted from a release tarball instead of compiled here.
+# can also be lifted from a tyd-relay-<os>-<arch>.tar.gz release asset.
 relay-prep:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(DOCKER_GOARCH) go build -trimpath -ldflags "-s -w" \
@@ -79,62 +79,86 @@ docker-source:
 		--build-arg GOMAXPROCS=$(GOMAXPROCS) --build-arg GOPROXY=$(GOPROXY) \
 		-t tyd-controlpanel:local .
 
-# Twelve cross-compiled binaries (tyd + tyd-relay per os/arch), then one
-# tarball per OS. install.sh only lifts out $os/tyd-$arch, so the extra relay
-# binary rides along without touching the installer.
+# One archive per os+arch, each holding only the tyd binary the installer on
+# that platform actually runs. install.sh downloads a single file, so a shared
+# per-OS tarball made every user pull the other architecture (and the relay)
+# for nothing: 12.4MB per install versus 3.7MB now. The os+arch is already in
+# the file name, so the archive itself holds a bare tyd.
+# The relay is a fleet component nobody installs through install.sh, so it is
+# packaged separately by `make dist-relay`.
 # Use `make -j$(nproc) dist` (or `make -j dist`) to compile in parallel.
-dist: dist-bins dist-relay-bins
+dist: dist-bins
 	@for os in linux darwin freebsd; do \
-		tar -C dist -czf dist/tyd-$$os.tar.gz $$os; \
+		for arch in amd64 arm64; do \
+			tar -C dist/$$os-$$arch -czf dist/tyd-$$os-$$arch.tar.gz tyd; \
+		done; \
 	done
 	@ls -lh dist/tyd-*.tar.gz
 
+# Dedicated relay, one archive per os+arch. Not part of an install; see
+# docs/operations.md for running a fleet.
+dist-relay: dist-relay-bins
+	@for os in linux darwin freebsd; do \
+		for arch in amd64 arm64; do \
+			tar -C dist/$$os-$$arch -czf dist/tyd-relay-$$os-$$arch.tar.gz tyd-relay; \
+		done; \
+	done
+	@ls -lh dist/tyd-relay-*.tar.gz
+
 dist-bins: \
-	dist/linux/tyd-amd64 dist/linux/tyd-arm64 \
-	dist/darwin/tyd-amd64 dist/darwin/tyd-arm64 \
-	dist/freebsd/tyd-amd64 dist/freebsd/tyd-arm64
+	dist/linux-amd64/tyd \
+	dist/linux-arm64/tyd \
+	dist/darwin-amd64/tyd \
+	dist/darwin-arm64/tyd \
+	dist/freebsd-amd64/tyd \
+	dist/freebsd-arm64/tyd
 
-# A dedicated relay is the documented way to run a fleet, so the binary is
-# published rather than left behind a Go toolchain.
 dist-relay-bins: \
-	dist/linux/tyd-relay-amd64 dist/linux/tyd-relay-arm64 \
-	dist/darwin/tyd-relay-amd64 dist/darwin/tyd-relay-arm64 \
-	dist/freebsd/tyd-relay-amd64 dist/freebsd/tyd-relay-arm64
+	dist/linux-amd64/tyd-relay \
+	dist/linux-arm64/tyd-relay \
+	dist/darwin-amd64/tyd-relay \
+	dist/darwin-arm64/tyd-relay \
+	dist/freebsd-amd64/tyd-relay \
+	dist/freebsd-arm64/tyd-relay
 
-dist/linux/tyd-amd64:
-	mkdir -p dist/linux
+dist/linux-amd64/tyd:
+	mkdir -p dist/linux-amd64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-dist/linux/tyd-arm64:
-	mkdir -p dist/linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-dist/darwin/tyd-amd64:
-	mkdir -p dist/darwin
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-dist/darwin/tyd-arm64:
-	mkdir -p dist/darwin
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-dist/freebsd/tyd-amd64:
-	mkdir -p dist/freebsd
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-dist/freebsd/tyd-arm64:
-	mkdir -p dist/freebsd
-	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
-
-dist/linux/tyd-relay-amd64:
-	mkdir -p dist/linux
+dist/linux-amd64/tyd-relay:
+	mkdir -p dist/linux-amd64
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay
-dist/linux/tyd-relay-arm64:
-	mkdir -p dist/linux
+
+dist/linux-arm64/tyd:
+	mkdir -p dist/linux-arm64
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
+dist/linux-arm64/tyd-relay:
+	mkdir -p dist/linux-arm64
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay
-dist/darwin/tyd-relay-amd64:
-	mkdir -p dist/darwin
+
+dist/darwin-amd64/tyd:
+	mkdir -p dist/darwin-amd64
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
+dist/darwin-amd64/tyd-relay:
+	mkdir -p dist/darwin-amd64
 	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay
-dist/darwin/tyd-relay-arm64:
-	mkdir -p dist/darwin
+
+dist/darwin-arm64/tyd:
+	mkdir -p dist/darwin-arm64
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
+dist/darwin-arm64/tyd-relay:
+	mkdir -p dist/darwin-arm64
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay
-dist/freebsd/tyd-relay-amd64:
-	mkdir -p dist/freebsd
+
+dist/freebsd-amd64/tyd:
+	mkdir -p dist/freebsd-amd64
+	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
+dist/freebsd-amd64/tyd-relay:
+	mkdir -p dist/freebsd-amd64
 	CGO_ENABLED=0 GOOS=freebsd GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay
-dist/freebsd/tyd-relay-arm64:
-	mkdir -p dist/freebsd
+
+dist/freebsd-arm64/tyd:
+	mkdir -p dist/freebsd-arm64
+	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/tyd
+dist/freebsd-arm64/tyd-relay:
+	mkdir -p dist/freebsd-arm64
 	CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o $@ ./cmd/relay

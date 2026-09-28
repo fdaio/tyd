@@ -86,16 +86,18 @@ jobs:
           cache: true
 
       - name: Package linux, darwin, and freebsd releases
-        # Parallel cross-compile; the hosted image is not assumed to have make.
+        # One archive per os+arch: install.sh pulls a single file, so a shared
+        # per-OS tarball made every install download the other architecture for
+        # nothing. Parallel cross-compile; the hosted image has no make.
         run: |
           set -eux
           rm -rf dist
-          mkdir -p dist/linux dist/darwin dist/freebsd
           build() {
             local os="$1" arch="$2"
             echo "==> $os/$arch"
+            mkdir -p "dist/$os-$arch"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
-              -o "dist/$os/tyd-$arch" ./cmd/tyd
+              -o "dist/$os-$arch/tyd" ./cmd/tyd
           }
           pids=
           for os in linux darwin freebsd; do
@@ -106,30 +108,18 @@ jobs:
           done
           for p in $pids; do wait "$p"; done
           for os in linux darwin freebsd; do
-            tar -C dist -czf "dist/tyd-$os.tar.gz" "$os"
+            for arch in amd64 arm64; do
+              tar -C "dist/$os-$arch" -czf "dist/tyd-$os-$arch.tar.gz" tyd
+            done
           done
           ls -lh dist
 
-      - name: Upload linux release
+      - name: Upload releases
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
-          name: tyd-linux
-          path: dist/tyd-linux.tar.gz
-
-      - name: Upload darwin release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: tyd-darwin
-          path: dist/tyd-darwin.tar.gz
-
-      - name: Upload freebsd release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@v4
-        with:
-          name: tyd-freebsd
-          path: dist/tyd-freebsd.tar.gz
+          name: tyd-releases
+          path: dist/tyd-*.tar.gz
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
