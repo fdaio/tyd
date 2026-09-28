@@ -10,6 +10,7 @@ import (
 	"tyd/internal/alias"
 	"tyd/internal/catalog"
 	"tyd/internal/client"
+	"tyd/internal/peers"
 	"tyd/internal/recent"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -232,9 +233,41 @@ func runSession(opts options) error {
 	}
 }
 
+// peerNames maps peer id to the nickname the operator gave it. A missing or
+// unreadable peers.json is not an error here: the list still renders, just with
+// raw ids.
+func peerNames(path string) map[string]string {
+	doc, err := peers.Load(path)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(doc.Peers))
+	for _, p := range doc.Peers {
+		if p.Nickname != "" {
+			out[p.ID] = p.Nickname
+		}
+	}
+	return out
+}
+
+// peerLabel prefers the nickname, because the raw id is what `peer list`
+// already shows in its own ID column. An unknown peer keeps its id rather than
+// becoming "-", so the column never loses the one thing you can paste into
+// `peer show`.
+func peerLabel(peerID string, names map[string]string) string {
+	if peerID == "" {
+		return "-"
+	}
+	if n := names[peerID]; n != "" {
+		return n
+	}
+	return peerID
+}
+
 func runSessionList(opts options) error {
 	cat := loadLocalCatalog(opts)
 	adoc, _ := alias.Load(opts.aliases)
+	names := peerNames(opts.peers)
 	items := cat.List()
 	rows := make([]sessionListRow, 0, len(items))
 	for _, it := range items {
@@ -242,10 +275,7 @@ func runSessionList(opts options) error {
 		if adoc != nil {
 			an = adoc.NameFor(it.ID)
 		}
-		peer := it.PeerID
-		if peer == "" {
-			peer = "-"
-		}
+		peer := peerLabel(it.PeerID, names)
 		rows = append(rows, sessionListRow{
 			ID: it.ID, Alias: an, Peer: peer,
 			State: it.State, Created: catalog.CreatedDisplay(it),

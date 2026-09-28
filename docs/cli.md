@@ -8,7 +8,7 @@ the binary. This page is the map plus the defaults.
 | Group | Command | Role |
 |-------|---------|------|
 | Sessions | `session create` | Create a session and attach (`--detach` prints the id only) |
-| | `session list` | List local sessions (alive first, newest first) |
+| | `session list` | List local sessions (alive first, newest first; PEER shows the peer's nickname when it has one) |
 | | `session attach` | Attach interactively (exclusive); id, alias, or recent |
 | | `<session>.<peer>` | Attach shortcut: `tyd jammy.laptop` is `tyd --peer laptop session attach jammy` |
 | | `session watch` | Follow output read-only; id, alias, or recent |
