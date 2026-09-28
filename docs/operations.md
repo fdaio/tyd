@@ -70,7 +70,10 @@ tyd up --relay https://relay-1.example,https://relay-2.example   # several
 ```
 
 The relay is a blind WebSocket splice, so authentication and session frames stay
-end-to-end. The default is the Control Panel's own `/relay`
+end-to-end. While a splice is up, the relay pings each WebSocket leg every 15s.
+Those frames stay out of the terminal byte stream and keep a quiet session from
+being cut by Cloudflare's idle timeout (about 100s). The default is the Control
+Panel's own `/relay`
 (`https://app.getfda.dev/relay`); a dedicated process is optional
 (`make relay`, `go run ./cmd/relay`, or the compose `relay` service). Phase
 status:

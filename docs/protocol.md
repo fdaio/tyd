@@ -119,3 +119,6 @@ TLS details:
 QUIC data-plane and relay fallback: [dataplane-networking.md](requirements/dataplane-networking.md).
 The relay is a **blind WebSocket splice** (default `https://app.getfda.dev/relay` on the CP);
 AuthN and session frames remain end-to-end — the hub does not interpret TTY bytes.
+While a splice is up, the relay pings each WebSocket leg every 15s. Those are
+WebSocket control frames, not bytes in the terminal stream, so a quiet session
+is not cut by Cloudflare's idle timeout (about 100s).

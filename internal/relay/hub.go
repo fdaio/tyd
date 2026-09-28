@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 type pendingDial struct {
@@ -202,7 +205,25 @@ func (h *Hub) handleAccept(conn net.Conn, msg Msg) {
 	}
 }
 
+// splicePingInterval is how often each spliced WebSocket leg is pinged.
+// Cloudflare closes an idle WebSocket at about 100s; on this relay path the
+// quiet splice died at ~125s. 15s stays under that even if one ping is late.
+// Tests may shorten it. Ping frames are WebSocket control frames and are not
+// written into the spliced byte stream.
+var splicePingInterval = 15 * time.Second
+
+const splicePingTimeout = 5 * time.Second
+
+// pingConn carries the WebSocket next to the net.Conn splice copies.
+// A plain net.Conn is not a pingConn, so it is copied and not pinged.
+type pingConn struct {
+	net.Conn
+	ws *websocket.Conn
+}
+
 func splice(a, b net.Conn) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
 		_, _ = io.Copy(dst, src)
@@ -212,8 +233,58 @@ func splice(a, b net.Conn) {
 	}
 	go cp(a, b)
 	go cp(b, a)
+	go pingLegs(ctx, a, b)
 	<-done
 	<-done
+}
+
+// pingLegs pings each WebSocket leg until ctx is cancelled or a ping fails.
+// A failed ping means that leg is gone; both sides are closed so io.Copy
+// unblocks. Cancelling ctx (splice finished) is not a failure.
+func pingLegs(ctx context.Context, a, b net.Conn) {
+	ticker := time.NewTicker(splicePingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := pingBoth(ctx, a, b); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				_ = a.Close()
+				_ = b.Close()
+				return
+			}
+		}
+	}
+}
+
+func pingBoth(ctx context.Context, a, b net.Conn) error {
+	errc := make(chan error, 2)
+	for _, c := range []net.Conn{a, b} {
+		go func(c net.Conn) {
+			errc <- pingLeg(ctx, c)
+		}(c)
+	}
+	var err error
+	for range 2 {
+		if e := <-errc; e != nil && err == nil {
+			err = e
+		}
+	}
+	return err
+}
+
+func pingLeg(ctx context.Context, c net.Conn) error {
+	pc, ok := c.(pingConn)
+	if !ok || pc.ws == nil {
+		return nil
+	}
+	pctx, cancel := context.WithTimeout(ctx, splicePingTimeout)
+	defer cancel()
+	return pc.ws.Ping(pctx)
 }
 
 func newTicket() string {
