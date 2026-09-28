@@ -16,6 +16,7 @@ import (
 	"tyd/internal/auth"
 	"tyd/internal/catalog"
 	"tyd/internal/client"
+	"tyd/internal/peers"
 	"tyd/internal/server"
 	"tyd/internal/session"
 )
@@ -307,5 +308,102 @@ func TestFinishStreamRecordsExited(t *testing.T) {
 	}
 	if _, ok := loadLocalCatalog(cli).Get("no-such-session"); ok {
 		t.Fatal("should not invent a catalog record")
+	}
+}
+
+// The PEER column used to print the raw peer id even when the operator had
+// named that peer, while the same command showed session aliases. Prefer the
+// nickname; never lose the id for a peer that has none.
+func TestPeerLabelPrefersNickname(t *testing.T) {
+	names := map[string]string{"d62c92f8452205d4": "osaka"}
+	tests := []struct {
+		id   string
+		want string
+	}{
+		{"d62c92f8452205d4", "osaka"},
+		{"92d09d9143b21eb8", "92d09d9143b21eb8"}, // unknown peer keeps its id
+		{"", "-"},
+	}
+	for _, tc := range tests {
+		if got := peerLabel(tc.id, names); got != tc.want {
+			t.Errorf("peerLabel(%q) = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+	// No peers.json at all: ids, not an error and not "-".
+	if got := peerLabel("abc", nil); got != "abc" {
+		t.Errorf("peerLabel with no names = %q, want the id", got)
+	}
+}
+
+func TestPeerNamesIgnoresUnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "peers.json")
+	if err := os.WriteFile(bad, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := peerNames(bad); len(got) != 0 {
+		t.Errorf("corrupt peers.json = %v, want no names", got)
+	}
+	if got := peerNames(filepath.Join(dir, "missing.json")); len(got) != 0 {
+		t.Errorf("missing peers.json = %v, want no names", got)
+	}
+}
+
+// End to end: a named peer shows up by nickname, an unnamed one by id, and a
+// missing peers.json leaves the list working.
+func TestSessionListShowsPeerNickname(t *testing.T) {
+	dir := t.TempDir()
+	sessions := filepath.Join(dir, "sessions.json")
+	peersPath := filepath.Join(dir, "peers.json")
+
+	const named, unnamed = "d62c92f8452205d4", "92d09d9143b21eb8"
+	if err := catalog.Save(sessions, &catalog.File{Sessions: []catalog.Record{
+		{ID: "aaaaaaaaaaaaaaa", PeerID: named, State: "DETACHED", CreatedAt: "2026-09-28T08:46:06Z"},
+		{ID: "bbbbbbbbbbbbbbb", PeerID: unnamed, State: "DETACHED", CreatedAt: "2026-09-27T05:15:13Z"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pdoc := &peers.File{Peers: []peers.Peer{
+		{ID: named, Nickname: "osaka", Direction: "outbound"},
+		{ID: unnamed, Direction: "outbound"},
+	}}
+	if err := peers.Save(peersPath, pdoc); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := run(options{
+			cmd: "session", rest: []string{"list"},
+			aliases: filepath.Join(dir, "aliases.json"), sessions: sessions,
+			recent: filepath.Join(dir, "recent.json"), peers: peersPath,
+			platform: "http://127.0.0.1:1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("header and 2 rows, got:\n%s", out)
+	}
+	if !strings.Contains(lines[1], "osaka") || strings.Contains(lines[1], named) {
+		t.Errorf("named peer row should show osaka, not %s: %q", named, lines[1])
+	}
+	if !strings.Contains(lines[2], unnamed) {
+		t.Errorf("unnamed peer row should keep its id: %q", lines[2])
+	}
+
+	// Without a peers.json the list still renders, showing ids.
+	out = captureStdout(t, func() {
+		if err := run(options{
+			cmd: "session", rest: []string{"list"},
+			aliases: filepath.Join(dir, "aliases.json"), sessions: sessions,
+			recent:   filepath.Join(dir, "recent.json"),
+			platform: "http://127.0.0.1:1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, named) {
+		t.Errorf("without peers.json the id should still show:\n%s", out)
 	}
 }

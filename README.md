@@ -120,8 +120,8 @@ a daemon; `session list` never dials and ignores `--peer`.
 
 ```
 $ tyd session list
-SESSION           ALIAS  PEER              STATE     CREATED
-8c97d14ce9389e0c  jammy  15cd9c1a653274e7  DETACHED  2026-09-28T02:37:14Z
+SESSION           ALIAS  PEER     STATE     CREATED
+8c97d14ce9389e0c  jammy  laptop  DETACHED  2026-09-28T02:37:14Z
 
 $ tyd peer list    # newest pairing first
 ID                ALIAS   DIRECTION  PAIRED
