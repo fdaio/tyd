@@ -17,7 +17,7 @@ the binary. This page is the map plus the defaults.
 | | `session close` | Close a session (kept as history) |
 | | `session alias` | Name a session: `<name>`, `<session_id> <name>`, `set`, `list`, `rm` |
 | Peers | `peer list` | List paired peers (id, alias, direction), newest pairing first |
-| | `peer show <id\|alias>` | Show peer detail, endpoint, and reachability |
+| | `peer show <id\|alias>` | Show peer detail, endpoint, reachability, and whether the pairing record verifies |
 | | `peer alias <id\|nick> <name>` | Set a peer nickname (`peer alias rm <id\|nick>` clears it) |
 | | `revoke` | Revoke a paired peer (either side) |
 | Pairing | `keygen` | Generate the Ed25519 identity (also created automatically) |

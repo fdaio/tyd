@@ -114,17 +114,21 @@ func runRegister(opts options) error {
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
 	}
+	tok, secret, err := newPairingToken(inv.Token, key)
+	if err != nil {
+		return err
+	}
 	printInviteResult(os.Stderr, os.Stdout, inviteResult{
 		Kind:      "registered",
 		URL:       reg.URL,
 		Approval:  reg.ApprovalMode,
 		Platform:  cli.BaseURL,
 		Relay:     relayURL(opts),
-		Token:     inv.Token,
+		Token:     tok,
 		TTL:       controlpanel.InviteTTL,
 		ExpiresAt: inv.ExpiresAt,
 	})
-	return waitForInviteAccept(opts, cli, reg.ID, pub, inv.Token, inv.ExpiresAt, baseline)
+	return waitForInviteAccept(opts, cli, key, reg.ID, pub, tok, secret, inv.Token, inv.ExpiresAt, baseline)
 }
 
 // parseIdleTimeout accepts a Go duration, or off/0/none for no reaping.
@@ -256,17 +260,24 @@ func runInvite(opts options) error {
 		_ = peers.Save(opts.peers, doc)
 		baseline = peerIDSet(remote)
 	}
+	// The Control Panel mints the invite id and nothing more. The other half of
+	// the token is generated here and never sent anywhere, so the Control Panel
+	// cannot use it to stand in for this host during accept.
+	tok, secret, err := newPairingToken(inv.Token, key)
+	if err != nil {
+		return err
+	}
 	printInviteResult(os.Stderr, os.Stdout, inviteResult{
 		Kind:      "invite",
 		URL:       url,
 		Approval:  doc.Registration.ApprovalMode,
 		Platform:  cli.BaseURL,
 		Relay:     relayURL(opts),
-		Token:     inv.Token,
+		Token:     tok,
 		TTL:       controlpanel.InviteTTL,
 		ExpiresAt: inv.ExpiresAt,
 	})
-	return waitForInviteAccept(opts, cli, doc.Registration.ID, pub, inv.Token, inv.ExpiresAt, baseline)
+	return waitForInviteAccept(opts, cli, key, doc.Registration.ID, pub, tok, secret, inv.Token, inv.ExpiresAt, baseline)
 }
 
 func peerIDSet(list []controlpanel.Peer) map[string]struct{} {
@@ -316,7 +327,7 @@ func rewriteInviteTTL(expiresAt time.Time, color bool, desc string, showRelay bo
 // waitForInviteAccept keeps the process alive until a peer accepts the invite,
 // the TTL expires, or the user cancels (Ctrl-C revokes the invite).
 // On a TTY, the "invite ttl" help row is refreshed in place.
-func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, token string, expiresAt time.Time, baseline map[string]struct{}) error {
+func waitForInviteAccept(opts options, cli *cpclient.Client, key ed25519.PrivateKey, daemonID, pub, token string, secret []byte, inviteID string, expiresAt time.Time, baseline map[string]struct{}) error {
 	if opts.noWait {
 		return nil
 	}
@@ -346,7 +357,7 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 		}
 		select {
 		case <-sig:
-			if err := cli.RevokeInvite(token, daemonID, pub); err != nil {
+			if err := cli.RevokeInvite(inviteID, daemonID, pub); err != nil {
 				return fmt.Errorf("invite cancelled (revoke failed: %v)", err)
 			}
 			return fmt.Errorf("invite revoked")
@@ -365,6 +376,13 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, daemonID, pub, toke
 				doc, err := peers.Load(opts.peers)
 				if err != nil {
 					return err
+				}
+				// A peer appearing on the Control Panel proves nothing: it is
+				// the Control Panel saying so. Only a pairing record this host
+				// can check against its own secret is a pairing.
+				if err := acceptPairedPeer(opts, key, p, secret, inviteID); err != nil {
+					fmt.Fprintf(os.Stderr, "refused %s: %v\n", p.ID, err)
+					continue
 				}
 				doc.MergePeers(cpPeersToLocal(remote))
 				if err := peers.Save(opts.peers, doc); err != nil {
@@ -450,9 +468,18 @@ func runAccept(opts options) error {
 	if len(opts.rest) != 1 {
 		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
 	}
-	token := parseInviteToken(opts.rest[0])
-	if token == "" {
+	// Accept takes either the bare token or the whole pasted line, which is
+	// what the inviter printed and what the install script hands over.
+	raw := parseInviteToken(opts.rest[0])
+	if raw == "" {
 		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
+	}
+	// The token is <invite-id>.<secret>.<inviter-hash>. Only the id goes to the
+	// Control Panel; the secret half is what makes the pairing verifiable by
+	// this daemon instead of by the Control Panel.
+	tok, err := auth.ParseInviteToken(raw)
+	if err != nil {
+		return fmt.Errorf("accept: %w (ask the host that invited you for a fresh token)", err)
 	}
 	key, err := ensureIdentity(opts)
 	if err != nil {
@@ -460,10 +487,43 @@ func runAccept(opts options) error {
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(opts.platform)
-	acc, err := cli.Accept(token, pub, opts.as)
+	acc, err := cli.Accept(tok.InviteID, pub, opts.as)
 	if err != nil {
 		return err
 	}
+
+	// The Control Panel just told us who the inviter is. Check it against the
+	// hash the inviter put in the token the operator carried over: a Control
+	// Panel that substituted its own key is caught here and nowhere else.
+	inviter, err := auth.DecodePublic(acc.PeerPublicKey)
+	if err != nil {
+		return fmt.Errorf("accept: Control Panel returned an unusable inviter key: %w", err)
+	}
+	if !tok.MatchesInviter(inviter) {
+		return fmt.Errorf("accept: the inviter key from the Control Panel does not match the invite token; " +
+			"the Control Panel may be substituting it -- stop and pair over a channel you trust")
+	}
+
+	// Record the pairing locally, and hand the inviter the half it needs to
+	// check the same thing from its side.
+	acceptor := key.Public().(ed25519.PublicKey)
+	proof := auth.NewPairingProof(tok.InviteID, inviter, acceptor)
+	if err := proof.SignAcceptor(key, tok.Secret); err != nil {
+		return fmt.Errorf("accept: pairing record: %w", err)
+	}
+	if err := cli.SubmitAcceptProof(cpclient.AcceptProof{
+		InviteID:    tok.InviteID,
+		PublicKey:   pub,
+		AcceptorSig: auth.EncodeBytes(proof.AcceptorSig),
+		AcceptorMAC: auth.EncodeBytes(proof.AcceptorMAC),
+		InviterPub:  acc.PeerPublicKey,
+	}); err != nil {
+		// The pairing itself succeeded; the inviter will refuse to trust us
+		// until it can check the proof, so say so rather than failing silently.
+		return fmt.Errorf("accept: paired on the Control Panel but the pairing record was rejected (%v); "+
+			"this host will not be trusted until the pairing is redone", err)
+	}
+
 	doc, err := peers.Load(opts.peers)
 	if err != nil {
 		return err
@@ -490,8 +550,115 @@ func runAccept(opts options) error {
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
 	}
+	if err := recordPairing(opts, peers.PairedPeer{
+		ID:        acc.PeerID,
+		PublicKey: acc.PeerPublicKey,
+		Nickname:  acc.PeerNickname,
+		Direction: "outbound",
+		PairedAt:  time.Now().UTC(),
+		Proof:     proof,
+	}); err != nil {
+		return err
+	}
 	printAcceptResult(os.Stderr, os.Stdout, acc, peerHasLiveEndpoint(cli, acc.PeerID))
 	return nil
+}
+
+// newPairingToken turns the Control Panel's invite id into the token the
+// operator carries to the other machine, and returns the secret so the inviter
+// can check the acceptor's half afterwards.
+func newPairingToken(inviteID string, key ed25519.PrivateKey) (string, []byte, error) {
+	secret, err := auth.NewInviteSecret()
+	if err != nil {
+		return "", nil, err
+	}
+	tok, err := auth.FormatInviteToken(inviteID, secret, key.Public().(ed25519.PublicKey))
+	if err != nil {
+		return "", nil, err
+	}
+	return tok.String(), secret, nil
+}
+
+// pairedPathFor keeps the pairing record beside peers.json, so pointing --peers
+// at a test directory does not write trust records into the real ~/.tyd.
+func pairedPathFor(peersPath string) string {
+	if strings.TrimSpace(peersPath) == "" {
+		return paths.Paired()
+	}
+	return strings.TrimSuffix(peersPath, ".json") + "-paired.json"
+}
+
+// acceptPairedPeer checks a new peer against the secret this host minted and,
+// only then, records the pairing. A peer the Control Panel lists without a
+// checkable record is refused: that is the shape a Control Panel uses to
+// introduce a key it holds.
+func acceptPairedPeer(opts options, key ed25519.PrivateKey, p controlpanel.Peer, secret []byte, inviteID string) error {
+	if p.Proof == nil {
+		return fmt.Errorf("no pairing record; the Control Panel listed this peer but the other host did not prove it holds the invite secret -- upgrade it and pair again")
+	}
+	acceptorPub, err := auth.DecodePublic(p.PublicKey)
+	if err != nil {
+		return fmt.Errorf("unusable peer key: %w", err)
+	}
+	inviterPub, err := auth.DecodePublic(p.Proof.InviterPub)
+	if err != nil {
+		return fmt.Errorf("pairing record names an unusable inviter key: %w", err)
+	}
+	// The record must name this host as the inviter, or it is a record lifted
+	// from some other pairing.
+	if !inviterPub.Equal(key.Public().(ed25519.PublicKey)) {
+		return fmt.Errorf("pairing record is for a different inviter")
+	}
+	sig, err := auth.DecodeBytes(p.Proof.AcceptorSig)
+	if err != nil {
+		return fmt.Errorf("pairing record signature is unreadable: %w", err)
+	}
+	mac, err := auth.DecodeBytes(p.Proof.AcceptorMAC)
+	if err != nil {
+		return fmt.Errorf("pairing record mac is unreadable: %w", err)
+	}
+	proof := &auth.PairingProof{
+		Version:     auth.PairingProofVersion,
+		InviteID:    inviteID,
+		Inviter:     inviterPub,
+		Acceptor:    acceptorPub,
+		AcceptorSig: sig,
+		AcceptorMAC: mac,
+		PairedAt:    p.PairedAt,
+	}
+	if err := proof.VerifyAcceptor(secret); err != nil {
+		return fmt.Errorf("%w; the Control Panel may be substituting this peer", err)
+	}
+	if err := proof.Countersign(key); err != nil {
+		return err
+	}
+	if !proof.Verified() {
+		return fmt.Errorf("pairing record did not verify after countersigning")
+	}
+	return recordPairing(opts, peers.PairedPeer{
+		ID:        p.ID,
+		PublicKey: p.PublicKey,
+		Nickname:  p.Nickname,
+		Direction: "inbound",
+		PairedAt:  p.PairedAt,
+		Proof:     proof,
+	})
+}
+
+// recordPairing writes the local trust record. This file, not peers.json, is
+// what the daemon trusts from: peers.json is rebuilt from the Control Panel on
+// every sync, so anything in it is a peer the Control Panel asked for.
+func recordPairing(opts options, p peers.PairedPeer) error {
+	path := opts.paired
+	if path == "" {
+		path = pairedPathFor(opts.peers)
+	}
+	f, err := peers.LoadPaired(path)
+	if err != nil {
+		return err
+	}
+	f.Upsert(p)
+	return peers.SavePaired(path, f)
 }
 
 func peerHasLiveEndpoint(cli *cpclient.Client, peerID string) bool {

@@ -470,18 +470,57 @@ func maintainRelayOne(opts options, state *peerstate.State, srv *server.Server, 
 	}
 }
 
-func injectPeerTrust(trust *auth.Store, doc *peers.File) {
-	if trust == nil || doc == nil {
+// injectPeerTrust rebuilds the trust set from paired.json, the local record,
+// never from peers.json -- which is rebuilt from whatever the Control Panel
+// returns. A peer the Control Panel starts listing therefore gains nothing: it
+// has to bring a pairing record this host can check against the secret it
+// minted at invite time. The Control Panel can still withdraw a peer, because
+// that only ever removes access.
+func injectPeerTrust(opts options, trust *auth.Store, doc *peers.File) {
+	if trust == nil {
 		return
 	}
-	var keep []ed25519.PublicKey
+	paired, err := peers.LoadPaired(pairedPath(opts))
+	if err != nil {
+		// Without the local record there is nothing to trust, and silently
+		// falling back to the Control Panel's view is the bug this replaces.
+		fmt.Fprintf(os.Stderr, "tyd trust: pairing record unreadable (%v); no peer is trusted", err)
+		trust.DropUnlistedPeers(nil)
+		return
+	}
+
+	// Prune first: a peer the Control Panel no longer lists loses trust even
+	// if its record is still on disk, so revoke keeps working.
+	listed := make(map[string]bool, len(doc.Peers))
 	for _, p := range doc.Peers {
+		listed[p.ID] = true
+	}
+	if dropped := paired.KeepVerified(listed); dropped > 0 {
+		if err := peers.SavePaired(pairedPath(opts), paired); err != nil {
+			fmt.Fprintf(os.Stderr, "tyd trust: could not record revocations: %v\n", err)
+		}
+	}
+
+	var keep []ed25519.PublicKey
+	var legacy int
+	for _, p := range paired.Peers {
+		// Only inbound peers are granted session access, as before. An outbound
+		// entry is the server this daemon dials; trusting it here would let it
+		// dial back in, which is not something pairing should hand out.
 		if p.Direction != "inbound" && p.Direction != "" {
 			continue
 		}
-		pub, err := auth.DecodePublic(p.PublicKey)
+		pub, err := p.Key()
 		if err != nil {
 			continue
+		}
+		if !p.Verified() && !p.Legacy() {
+			// A record that does not verify is not a weaker case, it is a
+			// broken one. Trusting it would be the same mistake.
+			continue
+		}
+		if p.Legacy() {
+			legacy++
 		}
 		name := p.Nickname
 		if name == "" {
@@ -491,12 +530,53 @@ func injectPeerTrust(trust *auth.Store, doc *peers.File) {
 		keep = append(keep, pub)
 	}
 	trust.DropUnlistedPeers(keep)
+	if legacy > 0 {
+		fmt.Fprintf(os.Stderr, "tyd trust: %d peer(s) paired before pairing records; their trust still rests on the Control Panel\n", legacy)
+	}
+}
+
+// pairedPath is the local pairing record, which lives next to peers.json so a
+// redirected --peers keeps the two together.
+func pairedPath(opts options) string {
+	if strings.TrimSpace(opts.paired) != "" {
+		return opts.paired
+	}
+	return pairedPathFor(opts.peers)
+}
+
+// seedPaired adopts the peers a daemon already had, once, so an upgrade does
+// not cut anyone off. After this runs the file is the only source of trust.
+func seedPaired(opts options) error {
+	path := pairedPath(opts)
+	paired, err := peers.LoadPaired(path)
+	if err != nil {
+		return err
+	}
+	if len(paired.Peers) > 0 {
+		return nil
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	added := paired.SeedLegacy(doc)
+	if added == 0 {
+		return nil
+	}
+	if err := peers.SavePaired(path, paired); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "tyd trust: adopted %d existing peer(s) as legacy; their trust still rests on the Control Panel\n", added)
+	return nil
 }
 
 func syncPeersAndTrust(opts options, state *peerstate.State, trust *auth.Store) error {
+	if err := seedPaired(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "tyd trust: could not read the local pairing record: %v\n", err)
+	}
 	err := syncPeersFromCP(opts, state)
 
-	injectPeerTrust(trust, state.Snapshot())
+	injectPeerTrust(opts, trust, state.Snapshot())
 	return err
 }
 

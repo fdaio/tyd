@@ -39,6 +39,7 @@ var (
 	ErrInvalidPublicKey = errors.New("invalid public key")
 	ErrUnauthorized     = errors.New("unauthorized")
 	ErrAlreadyPaired    = errors.New("already paired")
+	ErrInviteNotFound   = errors.New("invite not found")
 	ErrNotPaired        = errors.New("not paired")
 	maxJSONBody         = int64(1 << 20)
 )
@@ -99,6 +100,19 @@ type Peer struct {
 	Nickname  string    `json:"nickname,omitempty"`
 	PairedAt  time.Time `json:"paired_at"`
 	Direction string    `json:"direction"` // "inbound" on server, "outbound" on client
+	// Proof is the acceptor's half of the pairing record, relayed verbatim from
+	// the accept call. Present on the inviter's copy of the peer only. The
+	// inviter verifies it and keeps the result locally; the Control Panel
+	// neither can nor needs to.
+	Proof *AcceptorProof `json:"proof,omitempty"`
+}
+
+// AcceptorProof is the acceptor's signed half plus the MAC that proves it saw
+// the invite secret.
+type AcceptorProof struct {
+	AcceptorSig string `json:"acceptor_sig"`
+	AcceptorMAC string `json:"acceptor_mac"`
+	InviterPub  string `json:"inviter_pub"`
 }
 
 type Invite struct {
@@ -136,15 +150,33 @@ type CreateInviteRequest struct {
 }
 
 type CreateInviteResponse struct {
+	// Token is the invite id and nothing else. The inviter mints the other half
+	// of the pairing token locally and prints it beside this, so the Control
+	// Panel never holds a value that lets it stand in for either side.
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
 	DaemonID  string    `json:"daemon_id"`
 }
 
 type AcceptRequest struct {
+	// Token is the invite id from CreateInvite. The secret half of the pairing
+	// token is never sent here.
 	Token     string `json:"token"`
 	PublicKey string `json:"public_key"`
 	Nickname  string `json:"nickname,omitempty"` // how acceptor labels the inviter
+}
+
+// AcceptProofRequest carries the acceptor's half of the pairing record. The
+// Control Panel relays it to the inviter untouched; it cannot forge one,
+// because the MAC is keyed by the invite secret it never saw.
+type AcceptProofRequest struct {
+	Token       string `json:"token"` // invite id
+	PublicKey   string `json:"public_key"`
+	AcceptorSig string `json:"acceptor_sig"`
+	AcceptorMAC string `json:"acceptor_mac"`
+	// InviterPub is the inviter key the record is bound to. Recorded so the
+	// inviter can check the record names it, and so a swapped key is visible.
+	InviterPub string `json:"inviter_pub"`
 }
 
 type AcceptResponse struct {
@@ -524,6 +556,45 @@ func (s *Service) GetDaemon(id string) (*Daemon, error) {
 	return &out, nil
 }
 
+// SubmitAcceptProof relays the acceptor's half of a pairing record to the
+// inviter. The Control Panel stores it and hands it back on the inviter's next
+// peer sync; it does not interpret it and could not forge one.
+func (s *Service) SubmitAcceptProof(req AcceptProofRequest) error {
+	tok := strings.TrimSpace(req.Token)
+	pub := strings.TrimSpace(req.PublicKey)
+	if tok == "" || pub == "" {
+		return ErrInvalidPublicKey
+	}
+	if strings.TrimSpace(req.AcceptorSig) == "" || strings.TrimSpace(req.AcceptorMAC) == "" {
+		return fmt.Errorf("incomplete pairing proof")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneInvitesLocked()
+
+	inv, ok := s.invites[tok]
+	if !ok {
+		return ErrInviteNotFound
+	}
+	server, ok := s.daemons[inv.DaemonID]
+	if !ok {
+		return ErrNotFound
+	}
+	i := peerIndexByKey(server.Peers, pub)
+	if i < 0 {
+		// The accept call has not landed yet, or the peer was revoked between
+		// the two calls. Either way there is nothing to attach the proof to.
+		return ErrNotFound
+	}
+	server.Peers[i].Proof = &AcceptorProof{
+		AcceptorSig: strings.TrimSpace(req.AcceptorSig),
+		AcceptorMAC: strings.TrimSpace(req.AcceptorMAC),
+		InviterPub:  strings.TrimSpace(req.InviterPub),
+	}
+	return nil
+}
+
 func (s *Service) ListPeers(daemonID, publicKey string) ([]Peer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -537,10 +608,15 @@ func (s *Service) ListPeers(daemonID, publicKey string) ([]Peer, error) {
 	return append([]Peer(nil), d.Peers...), nil
 }
 
+// pruneInvitesLocked expires invites. A used one is kept until it would have
+// expired anyway, because the acceptor submits its half of the pairing record
+// in a second call, right after accept; dropping the invite at that point would
+// leave the inviter unable to verify the peer it just paired with. Single use is
+// still enforced, by the Used flag.
 func (s *Service) pruneInvitesLocked() {
 	now := s.now()
 	for tok, inv := range s.invites {
-		if inv.Used || !now.Before(inv.ExpiresAt) {
+		if !now.Before(inv.ExpiresAt) {
 			delete(s.invites, tok)
 		}
 	}
@@ -723,6 +799,18 @@ func peerIndex(peers []Peer, id string) int {
 	return -1
 }
 
+// peerIndexByKey finds a peer by public key. The acceptor identifies itself by
+// key at accept time but is stored under the daemon id it was assigned, so a
+// later submission carrying the key has to be matched on the key.
+func peerIndexByKey(peers []Peer, publicKey string) int {
+	for i, p := range peers {
+		if p.PublicKey == publicKey {
+			return i
+		}
+	}
+	return -1
+}
+
 func randomHex(n int) (string, error) {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
@@ -754,6 +842,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("/v1/invites/revoke", s.handleRevokeInvite)
 	mux.HandleFunc("/v1/invites", s.handleCreateInvite)
 	mux.HandleFunc("/v1/accept", s.handleAccept)
+	mux.HandleFunc("/v1/accept/proof", s.handleAcceptProof)
 	mux.HandleFunc("/v1/daemons/", s.handleDaemon)
 	return mux
 }
@@ -845,6 +934,23 @@ func (s *Service) handleAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Service) handleAcceptProof(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req AcceptProofRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := s.SubmitAcceptProof(req); err != nil {
+		writeServiceErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Service) handleDaemon(w http.ResponseWriter, r *http.Request) {
@@ -953,6 +1059,8 @@ func writeServiceErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrInviteExpired):
 		writeErr(w, http.StatusGone, err.Error())
+	case errors.Is(err, ErrInviteNotFound):
+		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrInviteUsed), errors.Is(err, ErrAlreadyPaired), errors.Is(err, ErrNotPaired):
 		writeErr(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrUnauthorized):

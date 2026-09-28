@@ -254,6 +254,14 @@ stop it.
   maintenance loop works from memory, retries the write each tick, and says so
   once when the file becomes writable again. Paired peers keep their access while
   the disk is full.
+- **`paired.json` is the trust record, and it is local.** `peers.json` is
+  rebuilt from the Control Panel on every sync, so a peer listed there is a peer
+  the Control Panel asked for. Trust comes from `paired.json` instead, written
+  only by pairing and checked against a secret the Control Panel never sees. A
+  peer it starts listing gains nothing; a peer it stops listing loses trust. On
+  the first run after an upgrade the existing peers are adopted once as `legacy`
+  so nobody is cut off — `tyd peer show` marks those, and their trust still
+  rests on the Control Panel until they are paired again.
 - **A damaged `peers.json` is set aside, not trusted.** On startup the file is
   renamed to `peers.json.corrupt.<timestamp>` and the registration and peer list
   are pulled back from the Control Panel using this daemon's identity. The daemon

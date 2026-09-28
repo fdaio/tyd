@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
 	"tyd/internal/paths"
@@ -150,6 +152,7 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		identity: filepath.Join(serverDir, "id_ed25519"),
 		trust:    filepath.Join(serverDir, "trusted.json"),
 		peers:    filepath.Join(serverDir, "peers.json"),
+		paired:   filepath.Join(serverDir, "paired.json"),
 		platform: platform,
 		approval: "full",
 		noWait:   true,
@@ -176,6 +179,7 @@ func TestEnsureIdentityOnRegisterAccept(t *testing.T) {
 		identity: filepath.Join(clientDir, "id_ed25519"),
 		trust:    filepath.Join(clientDir, "trusted.json"),
 		peers:    filepath.Join(clientDir, "peers.json"),
+		paired:   filepath.Join(clientDir, "paired.json"),
 		platform: platform,
 		as:       "box",
 		cmd:      "accept",
@@ -243,6 +247,7 @@ func TestRegisterWaitsForAccept(t *testing.T) {
 		identity: filepath.Join(serverDir, "id_ed25519"),
 		trust:    filepath.Join(serverDir, "trusted.json"),
 		peers:    filepath.Join(serverDir, "peers.json"),
+		paired:   filepath.Join(serverDir, "paired.json"),
 		platform: platform,
 		approval: "full",
 		cmd:      "register",
@@ -291,6 +296,7 @@ func TestRegisterWaitsForAccept(t *testing.T) {
 		identity: filepath.Join(clientDir, "id_ed25519"),
 		trust:    filepath.Join(clientDir, "trusted.json"),
 		peers:    filepath.Join(clientDir, "peers.json"),
+		paired:   filepath.Join(clientDir, "paired.json"),
 		platform: platform,
 		as:       "laptop",
 		cmd:      "accept",
@@ -320,7 +326,11 @@ func TestRegisterWaitsForAccept(t *testing.T) {
 
 func TestWaitForInviteExpired(t *testing.T) {
 	cli := cpclient.New("http://127.0.0.1:1")
-	err := waitForInviteAccept(options{}, cli, "d", "pk", "tok", time.Now().Add(-time.Second), nil)
+	_, secret, err := newPairingToken("inv", testKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = waitForInviteAccept(options{}, cli, testKey(t), "d", "pk", "tok", secret, "inv", time.Now().Add(-time.Second), nil)
 	if err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("want expired, got %v", err)
 	}
@@ -437,6 +447,7 @@ func TestAcceptAlreadyPairedNamesPeerAndHintsWhenLive(t *testing.T) {
 		identity: filepath.Join(serverDir, "id_ed25519"),
 		trust:    filepath.Join(serverDir, "trusted.json"),
 		peers:    filepath.Join(serverDir, "peers.json"),
+		paired:   filepath.Join(serverDir, "paired.json"),
 		platform: platform,
 		approval: "full",
 		noWait:   true,
@@ -451,6 +462,7 @@ func TestAcceptAlreadyPairedNamesPeerAndHintsWhenLive(t *testing.T) {
 		identity: filepath.Join(clientDir, "id_ed25519"),
 		trust:    filepath.Join(clientDir, "trusted.json"),
 		peers:    filepath.Join(clientDir, "peers.json"),
+		paired:   filepath.Join(clientDir, "paired.json"),
 		platform: platform,
 		as:       "laptop",
 		cmd:      "accept",
@@ -516,4 +528,14 @@ func TestAcceptAlreadyPairedNamesPeerAndHintsWhenLive(t *testing.T) {
 	if len(cDoc.Peers) != 1 || cDoc.Peers[0].Nickname != "laptop" {
 		t.Fatalf("client peers %+v", cDoc.Peers)
 	}
+}
+
+// testKey is a throwaway identity for the pairing tests.
+func testKey(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	_, priv, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
 }

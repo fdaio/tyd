@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"tyd/internal/safefile"
@@ -96,6 +97,15 @@ func (s *Store) DropUnlistedPeers(keep []ed25519.PublicKey) {
 		delete(s.principals, k)
 		delete(s.peerKeys, k)
 	}
+}
+
+// Has reports whether the store holds this public key, and therefore whether a
+// connection presenting it would be authenticated.
+func (s *Store) Has(encodedPub string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.principals[strings.TrimSpace(encodedPub)]
+	return ok
 }
 
 func (s *Store) Grant(pub ed25519.PublicKey, sessionID string, caps ...Cap) error {
