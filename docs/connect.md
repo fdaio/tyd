@@ -121,6 +121,11 @@ address — tyd falls back to a **blind WebSocket relay** (default
 - No extra flag is needed once the Control Panel serves `/relay`.
 - Optional dedicated relay: compose service `relay` or `go run ./cmd/relay`, then
   point the server at it with `--relay URL`.
+- `--relay` also takes a comma-separated list. The server offers on each one
+  independently and the client tries them in order, so a second relay keeps
+  dual-NAT working when the first is down: `--relay https://relay-1.example,https://relay-2.example`.
+  Clients need the same list; a session already spliced through a relay does not
+  survive that relay going away ([operations.md](operations.md#more-than-one-relay)).
 - The server offers its daemon id on the relay automatically during `tyd up`;
   `--relay off` disables both offering and fallback.
 

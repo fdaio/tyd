@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -356,16 +357,32 @@ func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, 
 	}
 }
 
-// maintainRelay keeps an outbound offer on the rendezvous relay keyed by the
-// current daemon id. Registration can appear or change after up starts
-// (tyd register / --force); we reload peers.json and re-offer so clients do
-// not see "peer offline" for a live daemon.
+// maintainRelay keeps an outbound offer on every configured rendezvous relay,
+// keyed by the current daemon id. Registration can appear or change after up
+// starts (tyd register / --force); we reload peers.json and re-offer so clients
+// do not see "peer offline" for a live daemon.
+//
+// Each relay is maintained independently: one endpoint being unreachable does
+// not disturb the others, so a server stays dialable through any survivor. The
+// relays share no state -- an offer lives in the one process it registered with,
+// and a ticket is only ever claimed on that same process.
 func maintainRelay(opts options, state *peerstate.State, srv *server.Server, stop <-chan struct{}) {
-	url := relayURL(opts)
-	if url == "" || url == "off" {
+	urls := relayURLs(opts)
+	if len(urls) == 0 {
 		return
 	}
+	var wg sync.WaitGroup
+	for _, url := range urls {
+		wg.Add(1)
+		go func(url string) {
+			defer wg.Done()
+			maintainRelayOne(opts, state, srv, stop, url)
+		}(url)
+	}
+	wg.Wait()
+}
 
+func maintainRelayOne(opts options, state *peerstate.State, srv *server.Server, stop <-chan struct{}, url string) {
 	var (
 		offerCancel context.CancelFunc
 		offeringID  string

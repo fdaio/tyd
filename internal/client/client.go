@@ -28,7 +28,8 @@ type Endpoint struct {
 	CertPath       string   // TLS pin via cert file (optional if CertFP set)
 	CertFP         string   // TLS pin via SHA-256 fingerprint hex (optional if CertPath set)
 	Candidates     []string // extra dial addresses tried after Address (peer data-plane)
-	RelayURL       string   // dual-NAT fallback after direct candidates fail
+	RelayURL       string   // dual-NAT fallback after direct candidates fail (first of RelayURLs)
+	RelayURLs      []string // ordered relay fallbacks; tried in turn after direct candidates fail
 	PeerID         string   // CP daemon id for relay dial
 	OnDial         func(addr string)
 	OnAttach       func()
@@ -82,7 +83,8 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		seen[a] = struct{}{}
 		addrs = append(addrs, a)
 	}
-	if len(addrs) == 0 && (strings.TrimSpace(ep.RelayURL) == "" || strings.TrimSpace(ep.RelayURL) == "off" || strings.TrimSpace(ep.PeerID) == "") {
+	relays := ep.relayFallbacks()
+	if len(addrs) == 0 && (len(relays) == 0 || strings.TrimSpace(ep.PeerID) == "") {
 		return nil, fmt.Errorf("dial: empty address")
 	}
 
@@ -98,6 +100,7 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		try.Address = addr
 		try.Candidates = nil
 		try.RelayURL = "" // direct only in this loop
+		try.RelayURLs = nil
 		c, err := dialOnce(ctx, try, key)
 		if err == nil {
 			return c, nil
@@ -108,23 +111,54 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		errs = append(errs, err.Error())
 	}
 
-	relayURL := strings.TrimSpace(ep.RelayURL)
 	peerID := strings.TrimSpace(ep.PeerID)
-	if relayURL != "" && relayURL != "off" && peerID != "" {
-		if ep.OnDial != nil {
-			ep.OnDial("relay " + relayURL)
+	if len(relays) > 0 && peerID != "" {
+		for _, relayURL := range relays {
+			if err := ctx.Err(); err != nil {
+				return nil, errInterrupted
+			}
+			if ep.OnDial != nil {
+				ep.OnDial("relay " + relayURL)
+			}
+			try := ep
+			try.RelayURL = relayURL
+			try.RelayURLs = nil
+			c, err := dialViaRelay(ctx, try, key)
+			if err == nil {
+				return c, nil
+			}
+			if ctx.Err() != nil || errors.Is(err, errInterrupted) {
+				return nil, errInterrupted
+			}
+			errs = append(errs, err.Error())
 		}
-		c, err := dialViaRelay(ctx, ep, key)
-		if err == nil {
-			return c, nil
-		}
-		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
-			return nil, errInterrupted
-		}
-		errs = append(errs, err.Error())
 	}
 
 	return nil, fmt.Errorf("direct dial failed; tried: %s", strings.Join(errs, "; "))
+}
+
+// relayFallbacks returns the ordered relay endpoints to try after direct
+// candidates fail. RelayURLs wins when set; otherwise a single RelayURL is used
+// so existing single-URL callers keep working.
+func (e Endpoint) relayFallbacks() []string {
+	out := make([]string, 0, len(e.RelayURLs)+1)
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		u := strings.TrimSpace(raw)
+		if u == "" || u == "off" {
+			return
+		}
+		if _, ok := seen[u]; ok {
+			return
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	for _, u := range e.RelayURLs {
+		add(u)
+	}
+	add(e.RelayURL)
+	return out
 }
 
 func dialViaRelay(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {

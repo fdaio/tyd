@@ -19,7 +19,8 @@ your own instance to keep pairing metadata inside your network.
 
 - Sessions outlive the client **and** the daemon — reconnect to the same shell from
   another device, or after a `tyd up` restart.
-- Pairs by token, not by account. Control Panel and relay are both self-hostable.
+- Pairs by token, not by account. Control Panel and relay are both self-hostable,
+  and `--relay` takes a list so you are not tied to one rendezvous.
 - One binary for both ends. No SSH/VPN stack to configure; it layers on whatever
   network you already trust (LAN, WireGuard, Tailscale).
 

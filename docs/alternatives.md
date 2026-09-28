@@ -90,10 +90,11 @@ It never sees session or TTY bytes; the data plane is direct QUIC or a blind
 WebSocket splice through the relay.
 
 To remove the hosted service from the path, run your own Control Panel and pass
-`--platform` to both ends. See [connect.md](connect.md) and the compose recipe in
-[operations.md](operations.md). If you are willing to run a VPN with ACLs instead,
-WireGuard or Tailscale may be the better first layer and tyd the session layer on
-top.
+`--platform` to both ends. The relay is separate, and `--relay` takes a
+comma-separated list so you can run more than one. See [connect.md](connect.md)
+and the compose recipe in [operations.md](operations.md). If you are willing to
+run a VPN with ACLs instead, WireGuard or Tailscale may be the better first layer
+and tyd the session layer on top.
 
 ## What tyd does not do
 

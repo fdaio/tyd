@@ -66,12 +66,38 @@ tyd up --data-listen off                      # no peer data plane
 tyd up --advertise example.com                # put this host first in candidates
 tyd up --relay off                            # no rendezvous offer or fallback
 tyd up --relay http://127.0.0.1:8080/relay    # local Control Panel relay
+tyd up --relay https://relay-1.example,https://relay-2.example   # several
 ```
 
 The relay is a blind WebSocket splice, so authentication and session frames stay
 end-to-end. The default is the Control Panel's own `/relay`
 (`https://app.getfda.dev/relay`); a dedicated process is optional
 (`go run ./cmd/relay` or the compose `relay` service). Phase status:
+[requirements/dataplane-networking.md](requirements/dataplane-networking.md).
+
+### More than one relay
+
+`--relay` takes a comma-separated list. `tyd up` offers on every entry
+concurrently and independently, so one unreachable relay does not disturb the
+others, and clients walk the same list in order when they fall back.
+
+The relays share no state: an offer lives in the process it registered with, and
+a ticket is only ever claimed on that same process. There is no clustering, no
+load balancer, and no shared database — which is also why you cannot put several
+replicas behind a round-robin proxy. Give each relay its own hostname and list
+them all.
+
+```bash
+tyd up --relay https://relay-1.example,https://relay-2.example
+tyd status | rg relay                                     # shows the list
+```
+
+Clients need the same list. A client that only knows one relay can still reach a
+server that offers on several; the reverse does not hold.
+
+Note what this does **not** buy: a session already spliced through a relay dies
+with that relay process, because its bytes flow through that process. Surviving
+*live* sessions is a separate design step, tracked in
 [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 
 ## Docker Compose (Control Panel)

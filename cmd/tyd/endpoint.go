@@ -32,7 +32,7 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 			Address: opts.socket,
 		}, "", nil
 	}
-	rurl := relayURL(opts)
+	relays := relayURLs(opts)
 	platform, err := platformFor(opts)
 	if err != nil {
 		return client.Endpoint{}, "", err
@@ -40,12 +40,12 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	cli := cpclient.New(platform)
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
-		if rurl != "" && rurl != "off" {
-
+		if len(relays) > 0 {
 			return client.Endpoint{
-				Kind:     transport.KindRelay,
-				RelayURL: rurl,
-				PeerID:   peerID,
+				Kind:      transport.KindRelay,
+				RelayURL:  relays[0],
+				RelayURLs: relays,
+				PeerID:    peerID,
 			}, peerID, nil
 		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
@@ -56,11 +56,12 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	}
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
-		if rurl != "" && rurl != "off" {
+		if len(relays) > 0 {
 			return client.Endpoint{
-				Kind:     transport.KindRelay,
-				RelayURL: rurl,
-				PeerID:   peerID,
+				Kind:      transport.KindRelay,
+				RelayURL:  relays[0],
+				RelayURLs: relays,
+				PeerID:    peerID,
 			}, peerID, nil
 		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
@@ -70,17 +71,50 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 		Address:    addrs[0],
 		CertFP:     ep.CertFP,
 		Candidates: addrs[1:],
-		RelayURL:   rurl,
+		RelayURL:   firstOrEmpty(relays),
+		RelayURLs:  relays,
 		PeerID:     peerID,
 	}, peerID, nil
 }
 
-func relayURL(opts options) string {
-	v := strings.TrimSpace(opts.relay)
-	if v == "" {
-		return paths.DefaultRelay()
+func firstOrEmpty(v []string) string {
+	if len(v) == 0 {
+		return ""
 	}
-	return v
+	return v[0]
+}
+
+// relayURLs parses --relay into an ordered, de-duplicated list of endpoints.
+// The flag accepts a comma-separated list so more than one rendezvous can be
+// offered on and fallen back to; "off" (or an empty list) disables the relay.
+func relayURLs(opts options) []string {
+	raw := strings.TrimSpace(opts.relay)
+	if raw == "" {
+		raw = strings.TrimSpace(paths.DefaultRelay())
+	}
+	out := make([]string, 0, 1)
+	seen := map[string]struct{}{}
+	for _, part := range strings.Split(raw, ",") {
+		u := strings.TrimSpace(part)
+		if u == "" || u == "off" {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	return out
+}
+
+// relayURL renders the relay list for display, or "off" when disabled.
+func relayURL(opts options) string {
+	relays := relayURLs(opts)
+	if len(relays) == 0 {
+		return "off"
+	}
+	return strings.Join(relays, ",")
 }
 
 func endpointDialOrder(ep *controlpanel.EndpointResponse) []string {
@@ -235,7 +269,9 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 	cat := loadLocalCatalog(opts)
 	if rec, ok := cat.Get(sessionID); ok {
 		if ep, ok := endpointFromRecord(rec); ok {
-			ep.RelayURL = relayURL(opts)
+			relays := relayURLs(opts)
+			ep.RelayURL = firstOrEmpty(relays)
+			ep.RelayURLs = relays
 			if ep.PeerID == "" {
 				ep.PeerID = rec.PeerID
 			}
@@ -254,7 +290,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	if peerID == "" {
 		return client.Endpoint{}, fmt.Errorf("empty peer id")
 	}
-	rurl := relayURL(opts)
+	relays := relayURLs(opts)
 	platform, err := platformFor(opts)
 	if err != nil {
 		return client.Endpoint{}, err
@@ -262,8 +298,8 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	cli := cpclient.New(platform)
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
-		if rurl != "" && rurl != "off" {
-			return client.Endpoint{Kind: transport.KindRelay, RelayURL: rurl, PeerID: peerID}, nil
+		if len(relays) > 0 {
+			return client.Endpoint{Kind: transport.KindRelay, RelayURL: relays[0], RelayURLs: relays, PeerID: peerID}, nil
 		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
@@ -273,8 +309,8 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	}
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
-		if rurl != "" && rurl != "off" {
-			return client.Endpoint{Kind: transport.KindRelay, RelayURL: rurl, PeerID: peerID}, nil
+		if len(relays) > 0 {
+			return client.Endpoint{Kind: transport.KindRelay, RelayURL: relays[0], RelayURLs: relays, PeerID: peerID}, nil
 		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
 	}
@@ -283,7 +319,8 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		Address:    addrs[0],
 		CertFP:     ep.CertFP,
 		Candidates: addrs[1:],
-		RelayURL:   rurl,
+		RelayURL:   firstOrEmpty(relays),
+		RelayURLs:  relays,
 		PeerID:     peerID,
 	}, nil
 }

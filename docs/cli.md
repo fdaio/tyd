@@ -48,7 +48,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--advertise HOST` | Host to prefer in published candidates | interface IPs |
 | `--addr HOST:PORT` | TLS client endpoint (overrides `--socket` for that command) | — |
 | `--peer ID\|NICK` | Target a paired peer for session dial commands | recent, else single outbound |
-| `--relay URL\|off` | Dual-NAT rendezvous | `https://app.getfda.dev/relay` |
+| `--relay URL[,URL…]\|off` | Dual-NAT rendezvous; offer on and fall back to each in turn | `https://app.getfda.dev/relay` |
 | `--tls-cert PATH` | Server certificate / client pin | `~/.tyd/server.crt` |
 | `--tls-key PATH` | Server key | `~/.tyd/server.key` |
 
