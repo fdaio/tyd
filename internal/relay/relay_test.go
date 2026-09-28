@@ -100,7 +100,7 @@ func TestRelaySplicesSessionCreate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() {
-		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket string) {
+		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket, _ string) {
 			go func(ticket string) {
 				c, err := relay.Accept(context.Background(), relayURL, ticket)
 				if err != nil {

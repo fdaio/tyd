@@ -192,6 +192,7 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 	ep.OnDial = func(addr string) {
 		st.Log(dialDebugMsg(kind, addr))
 	}
+	ep.OnObserved = observedLogger(st.Log)
 	ep.OnAttach = func() {
 		st.Log("Connection established.")
 		st.Log("Attaching session over " + kind + ".")
@@ -223,6 +224,7 @@ func bindWatchProgress(ep *client.Endpoint, st *connectStatus) {
 	ep.OnDial = func(addr string) {
 		st.Log(dialDebugMsg(kind, addr))
 	}
+	ep.OnObserved = observedLogger(st.Log)
 	ep.OnAttach = func() {
 		st.Log("Connection established.")
 		st.Log("Starting watch over " + kind + ".")

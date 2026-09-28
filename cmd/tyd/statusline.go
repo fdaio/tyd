@@ -74,6 +74,23 @@ func (s *connectStatus) Leave(msg string) {
 	fmt.Fprint(s.w, "\r\n")
 }
 
+// observedLogger reports the address a relay observed for the peer. It is
+// logged, never dialled: the session continues over the relay exactly as before,
+// and whether a direct dial to this address would connect is not assumed
+// (Phase 4b). Seeing it is the point -- it is the difference between the peer's
+// real post-NAT address and the self-reported interface IP that is usually
+// unreachable from the other side of a NAT.
+func observedLogger(log func(string)) func(addr, relayURL string) {
+	return func(addr, relayURL string) {
+		relayURL = strings.TrimSpace(relayURL)
+		if relayURL == "" {
+			log(fmt.Sprintf("Relay observed peer at %s.", addr))
+			return
+		}
+		log(fmt.Sprintf("Relay observed peer at %s via %s.", addr, relayURL))
+	}
+}
+
 func dialDebugMsg(kind, addr string) string {
 	kind = strings.TrimSpace(kind)
 	addr = strings.TrimSpace(addr)
