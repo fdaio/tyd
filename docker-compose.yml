@@ -31,6 +31,10 @@ services:
       dockerfile: Dockerfile.controlpanel
       # In-Docker Go compile. Classic Compose without buildx is fine.
       # Fast path: `make docker` (Dockerfile.controlpanel.prebuilt).
+      # GOPROXY passthrough for hosts with no route to proxy.golang.org:
+      #   GOPROXY=https://your-proxy.example,direct docker compose up -d --build
+      args:
+        GOPROXY: "${GOPROXY:-}"
     image: tyd-controlpanel:local
     ports:
       - "${TYD_CP_PORT:-8080}:8080"
@@ -51,6 +55,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.relay
+      # GOPROXY passthrough for hosts with no route to proxy.golang.org; unset
+      # keeps the toolchain default:
+      #   GOPROXY=https://your-proxy.example,direct docker compose up -d relay --build
+      args:
+        GOPROXY: "${GOPROXY:-}"
     image: tyd-relay:local
     ports:
       - "${TYD_RELAY_PORT:-9090}:9090"

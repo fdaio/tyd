@@ -151,6 +151,41 @@ tyd --relay https://relay-1.example,https://relay-2.example session create --pee
 `curl -s https://relay-1.example/healthz` returns `ok`. A live server should log
 one `relay offering` line per relay.
 
+To run the relay in a container instead, use the compose profile:
+
+```bash
+docker compose --profile standalone-relay up -d --build
+```
+
+#### If the image build cannot reach the Go module proxy
+
+`go mod download` inside the build talks to `proxy.golang.org`. A host with a
+flaky or blocked route to it fails partway through the build like this:
+
+```
+18.90 go: github.com/coder/websocket@v1.8.15: Get
+  "https://proxy.golang.org/...": net/http: TLS handshake timeout
+```
+
+This is a network problem, not a tyd problem. First just retry — a single
+handshake timeout is often transient. If it persists, either point the build at
+a proxy this host can reach (`GOPROXY` is passed through; unset keeps the
+toolchain default):
+
+```bash
+GOPROXY=https://your-proxy.example,direct docker compose --profile standalone-relay up -d --build
+make docker-source GOPROXY=https://your-proxy.example,direct   # Control Panel
+```
+
+or skip the module fetch altogether. `make relay-image` compiles on the host and
+packs the result, so nothing is downloaded inside Docker:
+
+```bash
+make relay-image   # or: docker build -f Dockerfile.relay.prebuilt -t tyd-relay:local .
+```
+
+That is also the fast path on a 1C/1G VPS where an in-Docker compile is slow.
+
 ## Docker Compose (Control Panel)
 
 ```bash
