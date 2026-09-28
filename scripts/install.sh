@@ -10,6 +10,8 @@ set -eu
 INSTALL_URL="${TYD_INSTALL_URL:-}"
 PLATFORM_URL="${TYD_PLATFORM:-}"
 RELEASE_URL="${TYD_RELEASE_URL:-}"
+CHANNEL="stable"
+NO_DAEMON=0
 ROLE=""
 ACCEPT_TOKEN=""
 AGENT=0
@@ -26,6 +28,8 @@ Usage:
   curl -fsSL ... | sh -s -- --client --accept TOKEN
 
 Options:
+  --channel CHANNEL   stable (default, a promoted release) or edge (newest build)
+  --no-daemon         Install the binary only; do not start, restart or stop a daemon
   --server            Install as server (this machine holds sessions)
   --client            Install as client (no daemon)
   --service           Start the user daemon for an already installed binary
@@ -45,8 +49,14 @@ Installs for the current user only (~/.local/bin, systemd --user or launchd).
 Do not run this with sudo.
 
 Binaries are fetched from GitHub Releases:
-  https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>-<arch>.tar.gz
-Override with TYD_RELEASE_URL. --platform only changes the Control Panel.
+  stable  https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>-<arch>.tar.gz
+  edge    the newest build, promoted or not, by tag
+
+A build off main is a prerelease and only becomes stable after the release
+workflow's smoke test passes (see docs/operations.md). Default installs get
+stable; --channel edge is for testing a build before it is promoted.
+Override the whole URL with TYD_RELEASE_URL. --platform only changes the
+Control Panel.
 EOF
 }
 
@@ -78,6 +88,10 @@ while [ $# -gt 0 ]; do
 		SERVICE_ONLY=1
 		ROLE=server
 		;;
+	--no-daemon)
+		NO_DAEMON=1
+		ROLE=server
+		;;
 	--agent)
 		AGENT=1
 		[ -n "$ROLE" ] || ROLE=server
@@ -96,6 +110,14 @@ while [ $# -gt 0 ]; do
 		[ $# -ge 2 ] || die "--platform needs a URL"
 		PLATFORM_URL="$2"
 		shift
+		;;
+	--channel)
+		[ $# -ge 2 ] || die "--channel needs stable or edge"
+		CHANNEL="$2"
+		shift
+		;;
+	--channel=*)
+		CHANNEL="${1#--channel=}"
 		;;
 	-h | --help)
 		usage
@@ -227,6 +249,56 @@ file_size() {
 	wc -c <"$1" 2>/dev/null | tr -d ' \t' || printf '0\n'
 }
 
+# Where a channel's archive lives.
+#
+# stable is /releases/latest/download/, which GitHub resolves to the newest
+# release that is neither a draft nor a prerelease -- so a build off main cannot
+# become what new installs get until it has been promoted (see
+# .github/workflows/promote.yml).
+#
+# edge has no such alias, so the tag has to be looked up. If the lookup cannot be
+# trusted -- no network, or the unauthenticated API rate limit -- the install
+# stops and says so. Falling back to stable would be the worst answer: someone
+# who asked for a specific build would silently get a different one.
+#
+# $1 channel, $2 os, $3 arch -> url on stdout
+REPO_URL="${TYD_REPO_URL:-https://github.com/fdaio/tyd}"
+REPO_API="${TYD_REPO_API:-https://api.github.com/repos/fdaio/tyd}"
+release_asset_url() {
+	channel="$1"
+	os="$2"
+	arch="$3"
+	name="tyd-${os}-${arch}.tar.gz"
+	case "$channel" in
+	stable)
+		printf '%s/releases/latest/download/%s\n' "$REPO_URL" "$name"
+		return 0
+		;;
+	edge) ;;
+	*)
+		die "--channel must be stable or edge, got: $channel"
+		;;
+	esac
+
+	tag="$(newest_release_tag)" || return 1
+	printf '%s/releases/download/%s/%s\n' "$REPO_URL" "$tag" "$name"
+}
+
+# The newest release of any kind, prereleases included. Deliberately minimal
+# rather than clever: one field, extracted without needing jq on the host.
+newest_release_tag() {
+	body=""
+	body="$(curl -fsSL --connect-timeout 15 --max-time 30 \
+		-H 'Accept: application/vnd.github+json' \
+		"${REPO_API}/releases?per_page=1" 2>/dev/null || true)"
+	tag="$(printf '%s\n' "$body" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+	if [ -z "$tag" ]; then
+		die "could not find the newest release (is the API reachable, or rate limited?).
+  Ask for it by URL instead: TYD_RELEASE_URL=$REPO_URL/releases/download/<tag>/tyd-${OS}-${ARCH}.tar.gz"
+	fi
+	printf '%s\n' "$tag"
+}
+
 # $1 url, $2 destination. Returns non-zero when every attempt failed.
 download() {
 	url="$1"
@@ -272,10 +344,10 @@ if [ "$SERVICE_ONLY" -eq 1 ]; then
 	[ -x "$TYD" ] || die "no binary at $TYD"
 	log "Using installed binary $TYD"
 else
-	log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd"
+	log "Installing tyd (${OS}/${ARCH}) to ${BINDIR}/tyd (channel ${CHANNEL})"
 	ARCHIVE="$TMP/tyd.tgz"
 	if [ -z "$RELEASE_URL" ]; then
-		RELEASE_URL="https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}-${ARCH}.tar.gz"
+		RELEASE_URL="$(release_asset_url "$CHANNEL" "$OS" "$ARCH")"
 	fi
 	URL="$RELEASE_URL"
 	if ! download "$URL" "$ARCHIVE"; then
@@ -289,6 +361,17 @@ else
 fi
 
 [ -x "$TYD" ] || die "binary not executable: $TYD"
+
+if [ "$NO_DAEMON" -eq 1 ]; then
+	# The per-user service (launchd, systemd --user) is not scoped by HOME: it
+	# runs with the invoking account's environment whatever HOME says, so a caller
+	# that needs a different state directory -- a container, a test, a second
+	# install -- cannot use it. Staging the binary and stopping here is the only
+	# way to keep the install inside the environment the caller set up.
+	log "Installed $TYD (--no-daemon: no daemon was started)"
+	printf '%s\n' "$TYD"
+	exit 0
+fi
 
 extract_token() {
 	line="$(printf '%s\n' "$1" | tr -d '\r' | grep -E 'accept ' | tail -n 1 || true)"

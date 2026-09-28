@@ -112,3 +112,27 @@ func TestParseAuditAndIdleFlags(t *testing.T) {
 		t.Fatalf("idle timeout and audit log must default off: %+v", def)
 	}
 }
+
+// --paired is how a caller points tyd at a pairing record other than the default
+// one, which the smoke test needs and a second install on a machine needs. It
+// has to survive the argument parser, not just the struct: a case that assigned
+// the flag name to itself looked fine until something used it.
+func TestPairedFlagParsesItsValue(t *testing.T) {
+	opts, err := parseArgs([]string{"--paired", "/tmp/paired.json", "accept", "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.paired != "/tmp/paired.json" {
+		t.Errorf("paired = %q, want the path after the flag", opts.paired)
+	}
+	opts, err = parseArgs([]string{"--paired=/tmp/p2.json", "status"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.paired != "/tmp/p2.json" {
+		t.Errorf("paired = %q from the --flag=value form", opts.paired)
+	}
+	if _, err := parseArgs([]string{"--paired"}); err == nil {
+		t.Error("--paired with no value was accepted")
+	}
+}

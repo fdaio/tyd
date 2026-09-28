@@ -569,9 +569,17 @@ func TestInstallScriptHTTP(t *testing.T) {
 		t.Fatal("expected production install URL in script")
 	}
 	// The archive name carries os+arch: one download per platform instead of a
-	// per-OS tarball holding every architecture and the relay.
-	if !bytes.Contains(body, []byte("https://github.com/fdaio/tyd/releases/latest/download/tyd-${OS}-${ARCH}.tar.gz")) {
-		t.Fatal("expected the per-os+arch GitHub Release download path in script")
+	// per-OS tarball holding every architecture and the relay. The URL itself is
+	// assembled by a helper, so check the pieces it is built from.
+	for _, want := range []string{
+		"tyd-${os}-${arch}.tar.gz",
+		"releases/latest/download/",
+		"/releases/download/%s/",
+		"--channel",
+	} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Errorf("served install.sh is missing %q", want)
+		}
 	}
 	if bytes.Contains(body, []byte("/releases/tyd-")) {
 		t.Fatal("install script must not download binaries from the Control Panel /releases/")

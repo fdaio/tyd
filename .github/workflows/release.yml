@@ -1,6 +1,12 @@
 # Daily release. Version is <YYYY.MM.DD>-<short sha> in Asia/Shanghai.
 # 15:00 UTC is 23:00 in Shanghai, so the date matches that calendar day.
 # No new commit since the last daily tag: the plan job succeeds and the rest skip.
+#
+# What a daily build produces is a prerelease, not what installs fetch. Every
+# merge to main would otherwise become, minutes later, the version every new
+# install gets -- and this daemon survives logout, starts at boot and hands out
+# remote shells, so a bad build is not a bad CLI. Promotion is deliberate:
+# see .github/workflows/promote.yml.
 name: Release
 
 on:
@@ -154,6 +160,11 @@ jobs:
           name: tyd-${{ needs.plan.outputs.version }}
           path: artifacts
 
+      # A build off main is a prerelease. GitHub's "latest release" excludes
+      # prereleases, and install.sh downloads from that, so a merge does not
+      # become what new installs get: .github/workflows/promote.yml runs the smoke
+      # test and promotes a build once it is verified. `tyd --channel edge` is how
+      # to ask for the newest build before then.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.plan.outputs.version }}
@@ -161,4 +172,5 @@ jobs:
           name: ${{ needs.plan.outputs.version }}
           body_path: release-notes.md
           files: artifacts/*.tar.gz
-          make_latest: true
+          prerelease: true
+          make_latest: false
