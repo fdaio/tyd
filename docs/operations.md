@@ -76,8 +76,13 @@ tyd up --relay http://127.0.0.1:8080/relay    # local Control Panel relay
 tyd up --relay https://relay-1.example,https://relay-2.example   # several
 ```
 
-The relay is a blind WebSocket splice, so authentication and session frames stay
-end-to-end. While a splice is up, the relay pings each WebSocket leg every 15s.
+The relay is a blind WebSocket splice, and the two peers negotiate TLS 1.3
+inside it, so what the relay carries is ciphertext. Each side proves its
+Ed25519 identity over the TLS exporter, which is also what stops a relay from
+re-terminating TLS to impersonate a peer. See
+[protocol.md](protocol.md#relay-path-security) for the full boundary, including
+the metadata a relay can still observe. While a splice is up, the relay pings
+each WebSocket leg every 15s.
 Those frames stay out of the terminal byte stream and keep a quiet session from
 being cut by Cloudflare's idle timeout (about 100s). The default is the Control
 Panel's own `/relay`

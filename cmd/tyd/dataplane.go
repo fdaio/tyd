@@ -357,6 +357,26 @@ func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, 
 	}
 }
 
+// acceptRelayE2E puts end-to-end TLS on a freshly spliced relay leg.
+//
+// The relay is a blind splice, so the application protocol used to run over it
+// in cleartext: the relay and Cloudflare in front of it could read every
+// keystroke and inject bytes into the shell. Both peers now wrap their own leg
+// in TLS, and the server proves its identity by signing the TLS exporter with
+// the daemon's Ed25519 key, so the client is not talking to a relay that
+// re-terminated TLS in the middle.
+func acceptRelayE2E(opts options, relayURL, ticket string) (net.Conn, []byte, error) {
+	cert, err := transport.EnsureServerCert(opts.cert, opts.key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("relay e2e certificate: %w", err)
+	}
+	key, err := auth.LoadIdentity(opts.identity)
+	if err != nil {
+		return nil, nil, fmt.Errorf("relay e2e identity: %w", err)
+	}
+	return relay.AcceptE2E(context.Background(), relayURL, ticket, cert, key)
+}
+
 // maintainRelay keeps an outbound offer on every configured rendezvous relay,
 // keyed by the current daemon id. Registration can appear or change after up
 // starts (tyd register / --force); we reload peers.json and re-offer so clients
@@ -411,15 +431,16 @@ func maintainRelayOne(opts options, state *peerstate.State, srv *server.Server, 
 					fmt.Fprintf(os.Stderr, "tyd relay client observed at %s via %s\n", observed, url)
 				}
 				go func(ticket string) {
-					c, err := relay.Accept(context.Background(), url, ticket)
+					secure, binder, err := acceptRelayE2E(opts, url, ticket)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "tyd relay accept: %v\n", err)
+						fmt.Fprintf(os.Stderr, "tyd relay accept %s: %v\n", ticket[:8], err)
 						return
 					}
-					srv.ServeConn(transport.Wrap(c, transport.Info{
+					srv.ServeConn(transport.Wrap(secure, transport.Info{
 						Transport:  transport.KindRelay,
 						RemoteAddr: "relay:" + ticket[:8],
-					}))
+						TLS:        true,
+					}), binder)
 				}(ticket)
 			})
 		}(id, ctx)

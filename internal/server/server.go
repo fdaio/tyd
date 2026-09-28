@@ -406,14 +406,14 @@ func (s *Server) accept(ln net.Listener) {
 		if err != nil {
 			return
 		}
-		go s.handle(c)
+		go s.handle(c, nil)
 	}
 }
 
 // ServeConn runs the tyd session protocol on an already-accepted connection
 // (e.g. a relay splice). It blocks until the connection ends.
-func (s *Server) ServeConn(conn net.Conn) {
-	s.handle(conn)
+func (s *Server) ServeConn(conn net.Conn, binder []byte) {
+	s.handle(conn, binder)
 }
 
 func (s *Server) Close() error {
@@ -437,9 +437,13 @@ type connState struct {
 	watcher   *session.Watcher
 	sid       string
 	principal *auth.Principal
-	info      transport.Info
-	state     string
-	started   time.Time
+	// binder is the relay path's inner-TLS channel binding. The auth response
+	// must cover it, or a relay could authenticate one connection on the
+	// client's behalf using a response taken from another.
+	binder  []byte
+	info    transport.Info
+	state   string
+	started time.Time
 }
 
 func (c *connState) send(f protocol.Frame) error {
@@ -448,7 +452,7 @@ func (c *connState) send(f protocol.Frame) error {
 	return protocol.WriteFrame(c.conn, f)
 }
 
-func (s *Server) handle(conn net.Conn) {
+func (s *Server) handle(conn net.Conn, binder []byte) {
 	info := transport.Info{Transport: transport.KindUnix}
 	if tc, ok := conn.(transport.Conn); ok {
 		info = tc.Info()
@@ -459,6 +463,7 @@ func (s *Server) handle(conn net.Conn) {
 	st := &connState{
 		id:      newConnID(),
 		conn:    conn,
+		binder:  binder,
 		info:    info,
 		state:   "handshaking",
 		started: time.Now().UTC(),
@@ -520,7 +525,7 @@ func (s *Server) handshake(st *connState) error {
 	if f.Type != protocol.TypeAuth {
 		return fmt.Errorf("authentication required")
 	}
-	p, err := s.cfg.Trust.Authenticate(nonce, f.PublicKey, f.Data)
+	p, err := s.cfg.Trust.AuthenticateBound(nonce, st.binder, f.PublicKey, f.Data)
 	if err != nil {
 		return err
 	}

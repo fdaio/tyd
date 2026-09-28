@@ -85,6 +85,10 @@ func TestRelaySplicesSessionCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cert, err := transport.EnsureServerCert(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	mgr := session.NewManager()
 	srv := server.NewWithConfig(server.Config{
 		Socket: filepath.Join(dir, "tyd.sock"),
@@ -102,12 +106,14 @@ func TestRelaySplicesSessionCreate(t *testing.T) {
 	go func() {
 		_ = relay.Offer(ctx, relayURL, daemonID, func(ticket, _ string) {
 			go func(ticket string) {
-				c, err := relay.Accept(context.Background(), relayURL, ticket)
+				c, binder, err := relay.AcceptE2E(context.Background(), relayURL, ticket, cert, priv)
 				if err != nil {
-					t.Errorf("accept: %v", err)
+					// A readiness probe dials and hangs up, so a failed
+					// handshake here is expected, not a test failure.
+					t.Logf("accept: %v", err)
 					return
 				}
-				srv.ServeConn(transport.Wrap(c, transport.Info{Transport: transport.KindRelay}))
+				srv.ServeConn(transport.Wrap(c, transport.Info{Transport: transport.KindRelay, TLS: true}), binder)
 			}(ticket)
 		})
 	}()
@@ -140,9 +146,10 @@ func TestRelaySplicesSessionCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	ep := client.Endpoint{
-		Kind:     transport.KindRelay,
-		RelayURL: relayURL,
-		PeerID:   daemonID,
+		Kind:       transport.KindRelay,
+		RelayURL:   relayURL,
+		PeerID:     daemonID,
+		PeerPublic: pub,
 	}
 	info, err := client.Create(ep, key, client.CreateOpts{})
 	if err != nil {

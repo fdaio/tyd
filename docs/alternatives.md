@@ -83,11 +83,18 @@ Pairing requires a Control Panel. The default is fdaio's hosted one at
 - your published endpoint: address, certificate fingerprint, transport, and the
   QUIC candidate list (these expire).
 
+A relay you use sees, on top: both peers' IP addresses, when they connected,
+byte counts and timing, and the daemon id, peer id and ticket it uses to match
+the two sides. It does not see session content.
+
 It stores **nothing about your sessions** — no session id, no alias, no command
 history, no terminal output. The session catalog is client-local and advisory.
 
-It never sees session or TTY bytes; the data plane is direct QUIC or a blind
-WebSocket splice through the relay.
+It never sees session or TTY bytes; the data plane is direct QUIC, or TLS 1.3
+negotiated between the two peers across the relay's splice, which relays
+ciphertext. A relay still sees connection metadata — addresses, timing, byte
+counts, daemon and peer ids — and [protocol.md](protocol.md#relay-path-security)
+sets out exactly what that is and is not.
 
 To remove the hosted service from the path, run your own Control Panel and pass
 `--platform` to both ends. The relay is separate, and `--relay` takes a

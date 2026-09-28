@@ -117,8 +117,10 @@ row remains as history.
 Pairing metadata stays on the Control Panel; TTY bytes are never stored there.
 After pairing, the client tries the server's published **QUIC** candidates first.
 If every direct dial fails — typical when both sides are behind NAT with no public
-address — tyd falls back to a **blind WebSocket relay** (default
-`https://app.getfda.dev/relay` on the CP origin). Direct first, rendezvous last.
+address — tyd falls back to a **relay** (default `https://app.getfda.dev/relay`
+on the CP origin). The relay splices the two WebSockets and the peers run TLS
+1.3 inside that splice, so it carries ciphertext; it can still see addresses,
+timing, byte counts and the ids it matches on. Direct first, rendezvous last.
 
 - No extra flag is needed once the Control Panel serves `/relay`.
 - Optional dedicated relay: compose service `relay` or `make relay`, then

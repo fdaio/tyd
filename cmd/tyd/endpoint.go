@@ -1,9 +1,11 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"fmt"
 	"strings"
 
+	"tyd/internal/auth"
 	"tyd/internal/catalog"
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
@@ -248,6 +250,43 @@ func bindWatchProgress(ep *client.Endpoint, st *connectStatus) {
 	}
 }
 
+// relayEndpoint builds the dual-NAT fallback endpoint for a peer.
+func relayEndpoint(opts options, relays []string, peerID string) client.Endpoint {
+	return client.Endpoint{
+		Kind:       transport.KindRelay,
+		RelayURL:   firstOrEmpty(relays),
+		RelayURLs:  relays,
+		PeerID:     peerID,
+		PeerPublic: peerPublicKey(opts, peerID),
+	}
+}
+
+// peerPublicKey is the pinned Ed25519 public key of a paired peer.
+//
+// The relay path has no certificate fingerprint to pin: the Control Panel's
+// peer record carries no daemon id, and a relay-only daemon never publishes an
+// endpoint. The peer's identity comes from pairing and is already the anchor
+// for every other peer, so the inner TLS session is bound to it instead.
+func peerPublicKey(opts options, idOrNick string) ed25519.PublicKey {
+	idOrNick = strings.TrimSpace(idOrNick)
+	if idOrNick == "" {
+		return nil
+	}
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return nil
+	}
+	p, err := doc.Find(idOrNick)
+	if err != nil {
+		return nil
+	}
+	pub, err := auth.DecodePublic(p.PublicKey)
+	if err != nil {
+		return nil
+	}
+	return pub
+}
+
 func endpointFromRecord(rec catalog.Record) (client.Endpoint, bool) {
 	if rec.Addr == "" {
 		return client.Endpoint{}, false
@@ -277,6 +316,7 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 			if ep.PeerID == "" {
 				ep.PeerID = rec.PeerID
 			}
+			ep.PeerPublic = peerPublicKey(opts, rec.PeerID)
 			return ep, rec.PeerID, true, nil
 		}
 		if rec.PeerID != "" && opts.peer == "" {
@@ -301,7 +341,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
 		if len(relays) > 0 {
-			return client.Endpoint{Kind: transport.KindRelay, RelayURL: relays[0], RelayURLs: relays, PeerID: peerID}, nil
+			return relayEndpoint(opts, relays, peerID), nil
 		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
@@ -312,7 +352,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
 		if len(relays) > 0 {
-			return client.Endpoint{Kind: transport.KindRelay, RelayURL: relays[0], RelayURLs: relays, PeerID: peerID}, nil
+			return relayEndpoint(opts, relays, peerID), nil
 		}
 		return client.Endpoint{}, fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
 	}
