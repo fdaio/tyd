@@ -59,6 +59,6 @@ func (h *Hub) Handler() http.Handler {
 			return
 		}
 		conn := websocket.NetConn(r.Context(), ws, websocket.MessageBinary)
-		h.Handle(conn)
+		h.Handle(pingConn{Conn: conn, ws: ws})
 	})
 }
