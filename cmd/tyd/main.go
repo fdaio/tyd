@@ -42,17 +42,35 @@ func run(opts options) error {
 	case "keygen":
 		return runKeygen(opts)
 	case "up":
+		if err := refuseIfInSession("up"); err != nil {
+			return err
+		}
 		return runUp(opts)
 	case "serve":
 		fmt.Fprintln(os.Stderr, "note: 'tyd serve' is deprecated; prefer 'tyd up'")
+		if err := refuseIfInSession("serve"); err != nil {
+			return err
+		}
 		return runUp(opts)
 	case "register":
+		if err := refuseIfInSession("register"); err != nil {
+			return err
+		}
 		return runRegister(opts)
 	case "invite":
+		if err := refuseIfInSession("invite"); err != nil {
+			return err
+		}
 		return runInvite(opts)
 	case "accept":
+		if err := refuseIfInSession("accept"); err != nil {
+			return err
+		}
 		return runAccept(opts)
 	case "revoke":
+		if err := refuseIfInSession("revoke"); err != nil {
+			return err
+		}
 		return runRevoke(opts)
 	case "status":
 		return runStatus(opts)
@@ -63,7 +81,12 @@ func run(opts options) error {
 		return runSession(opts)
 	case "peer":
 		return runPeer(opts)
+	case "audit":
+		return runAuditVerify(opts)
 	case "approval":
+		if err := refuseIfInSession("approval"); err != nil {
+			return err
+		}
 		return runApproval(opts)
 	case "doctor":
 		return runDoctor(opts)

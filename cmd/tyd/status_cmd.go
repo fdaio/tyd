@@ -6,6 +6,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"tyd/internal/controlpanel"
 
 	"tyd/internal/alias"
 	"tyd/internal/client"
@@ -48,6 +49,9 @@ func runStatus(opts options) error {
 		fmt.Printf("  registered: %s\n", url)
 		fmt.Printf("  id:         %s\n", reg.ID)
 		fmt.Printf("  approval:   %s\n", reg.ApprovalMode)
+		if reg.ApprovalMode == controlpanel.ApprovalFull {
+			fmt.Println("              (full: remote peers attach and watch without being asked)")
+		}
 		epAddr, epFP, epErr := cpclient.New(platform).GetEndpoint(reg.ID)
 		if epErr != nil {
 			fmt.Printf("  endpoint:   (none / expired)\n")

@@ -15,6 +15,7 @@ import (
 	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
+	"tyd/internal/procs"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -211,6 +212,19 @@ func (s *Server) PendingApprovals() []PendingApproval {
 	for key, req := range s.pending {
 		if now.Sub(req.at) > s.cfg.ApprovalTTL {
 			delete(s.pending, key)
+			// A request that times out is a denial, and the record of it belongs
+			// in the log: otherwise a peer can wait out the TTL and then attach
+			// with nothing in the audit trail about the attempt.
+			e := audit.Event{
+				Time:       now.UTC(),
+				Kind:       audit.KindApprovalExpired,
+				SessionID:  req.sessionID,
+				Principal:  req.principal,
+				Transport:  req.transport,
+				RemoteAddr: req.remoteAddr,
+				Reason:     "no decision before the approval timeout",
+			}
+			s.audit(e)
 			continue
 		}
 		out = append(out, PendingApproval{
@@ -275,6 +289,15 @@ func (s *Server) decidePending(sessionID string, approve bool) int {
 		}
 		delete(s.pending, key)
 		if now.Sub(req.at) > s.cfg.ApprovalTTL {
+			s.audit(audit.Event{
+				Time:       now.UTC(),
+				Kind:       audit.KindApprovalExpired,
+				SessionID:  sessionID,
+				Principal:  req.principal,
+				Transport:  req.transport,
+				RemoteAddr: req.remoteAddr,
+				Reason:     "no decision before the approval timeout",
+			})
 			continue
 		}
 		if approve {
@@ -406,14 +429,14 @@ func (s *Server) accept(ln net.Listener) {
 		if err != nil {
 			return
 		}
-		go s.handle(c, nil)
+		go s.handle(c, nil, connFromSession(c))
 	}
 }
 
 // ServeConn runs the tyd session protocol on an already-accepted connection
 // (e.g. a relay splice). It blocks until the connection ends.
 func (s *Server) ServeConn(conn net.Conn, binder []byte) {
-	s.handle(conn, binder)
+	s.handle(conn, binder, false)
 }
 
 func (s *Server) Close() error {
@@ -437,6 +460,9 @@ type connState struct {
 	watcher   *session.Watcher
 	sid       string
 	principal *auth.Principal
+	// fromSession marks a connection whose peer process is inside a tyd session
+	// on this host. Such a connection may read but not change anything.
+	fromSession bool
 	// binder is the relay path's inner-TLS channel binding. The auth response
 	// must cover it, or a relay could authenticate one connection on the
 	// client's behalf using a response taken from another.
@@ -452,7 +478,7 @@ func (c *connState) send(f protocol.Frame) error {
 	return protocol.WriteFrame(c.conn, f)
 }
 
-func (s *Server) handle(conn net.Conn, binder []byte) {
+func (s *Server) handle(conn net.Conn, binder []byte, fromSession bool) {
 	info := transport.Info{Transport: transport.KindUnix}
 	if tc, ok := conn.(transport.Conn); ok {
 		info = tc.Info()
@@ -461,12 +487,13 @@ func (s *Server) handle(conn net.Conn, binder []byte) {
 		info.RemoteAddr = conn.RemoteAddr().String()
 	}
 	st := &connState{
-		id:      newConnID(),
-		conn:    conn,
-		binder:  binder,
-		info:    info,
-		state:   "handshaking",
-		started: time.Now().UTC(),
+		id:          newConnID(),
+		conn:        conn,
+		binder:      binder,
+		fromSession: fromSession,
+		info:        info,
+		state:       "handshaking",
+		started:     time.Now().UTC(),
 	}
 	s.mu.Lock()
 	s.conns[st.id] = st
@@ -502,6 +529,51 @@ func (s *Server) handle(conn net.Conn, binder []byte) {
 			_ = st.send(protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		}
 	}
+}
+
+// sessionOriginRefusal explains why a control command was refused. The wording
+// matters: the caller is usually an agent, and "not allowed" without a reason
+// invites a retry loop.
+func sessionOriginRefusal(what string) error {
+	return fmt.Errorf("%s is refused for a process inside a tyd session: this session shares the "+
+		"daemon's user and home, so it could approve its own request or turn approval off. "+
+		"Approve it from a terminal outside the session. This is a speed bump, not a boundary; "+
+		"see docs/security.md", what)
+}
+
+// connFromSession reports whether a freshly accepted local connection came from
+// a process inside a tyd session on this host, so the dispatch layer can refuse
+// control commands from it.
+//
+// This is the check the environment marker cannot be: a process that clears
+// TYD_SESSION still has a pid, and on Linux the kernel reports the peer of a unix
+// socket without anyone having to trust the other side. Where the platform
+// cannot answer (macOS: peer credentials report the user, not the pid) this
+// returns false and only the CLI-side guard applies.
+func connFromSession(conn net.Conn) bool {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return false
+	}
+	raw, err := uc.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var (
+		pid    int
+		hasPid bool
+	)
+	if err := raw.Control(func(fd uintptr) { pid, hasPid = peerPID(fd) }); err != nil {
+		return false
+	}
+	if !hasPid || pid <= 0 {
+		return false
+	}
+	inSession, err := procs.DescendantOfSession(pid)
+	if err != nil {
+		return false
+	}
+	return inSession
 }
 
 func newConnID() string {
@@ -629,6 +701,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
 
 	case protocol.TypeApprove:
+		if st.fromSession {
+			return sessionOriginRefusal("approve")
+		}
 		if st.info.Transport != transport.KindUnix {
 			return fmt.Errorf("approve only allowed on unix")
 		}
@@ -666,6 +741,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
 
 	case protocol.TypeReject:
+		if st.fromSession {
+			return sessionOriginRefusal("reject")
+		}
 		if st.info.Transport != transport.KindUnix {
 			return fmt.Errorf("reject only allowed on unix")
 		}

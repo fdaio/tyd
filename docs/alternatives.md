@@ -73,6 +73,11 @@ short-lived. That is most people's case, and it is a fine choice.
 
 ## The Control Panel caveat
 
+For what tyd does and does not protect against on the machine itself — in
+particular code running inside a session — see [security.md](security.md).
+
+## The Control Panel caveat
+
 This is the part the comparison tables usually skip.
 
 Pairing requires a Control Panel. The default is fdaio's hosted one at

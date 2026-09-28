@@ -5,7 +5,6 @@
 package audit
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +26,10 @@ const (
 	KindClose         Kind = "close"
 	KindIdleClose     Kind = "idle_close"
 	KindDenied        Kind = "denied"
+	// KindApprovalExpired is a request that timed out with nobody deciding.
+	// It is a denial, and it is recorded so that waiting out the TTL leaves a
+	// trace rather than nothing.
+	KindApprovalExpired Kind = "approval_expired"
 )
 
 type Event struct {
@@ -60,7 +63,11 @@ func (discard) Log(Event) {}
 // Discard drops every event.
 func Discard() Sink { return discard{} }
 
-// File appends JSON Lines to a file created 0600.
+// File appends chained JSON Lines to a file created 0600.
+//
+// Each record carries the hash of the one before it, so an edit in the middle
+// is detectable by Verify. That is all it is: the file is in the daemon user's
+// own home, so the processes it records can delete it outright. See chain.go.
 //
 // A write that fails (a full disk, most likely) is reported once and then
 // ignored: losing an audit record must not take the sessions down with it.
@@ -70,6 +77,7 @@ type File struct {
 	path   string
 	warn   io.Writer
 	broken bool
+	prev   string
 }
 
 func OpenFile(path string) (*File, error) {
@@ -80,7 +88,13 @@ func OpenFile(path string) (*File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &File{f: f, path: path, warn: os.Stderr}, nil
+	// Follow whatever is already in the file, so a daemon restart continues the
+	// chain instead of starting a second one.
+	prev, err := lastHash(path)
+	if err != nil {
+		prev = chainStart
+	}
+	return &File{f: f, path: path, warn: os.Stderr, prev: prev}, nil
 }
 
 // SetWarnWriter redirects the "audit log write failed" notices (tests).
@@ -97,12 +111,17 @@ func (a *File) Log(e Event) {
 		e.Time = time.Now()
 	}
 	e.Time = e.Time.UTC()
-	b, err := json.Marshal(e)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	hash, err := chain(a.prev, e)
 	if err != nil {
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	b, err := chainRecord{Event: e, Prev: a.prev, Hash: hash}.encode()
+	if err != nil {
+		return
+	}
 	if _, err := a.f.Write(append(b, '\n')); err != nil {
 		if !a.broken {
 			a.broken = true
@@ -114,6 +133,7 @@ func (a *File) Log(e Event) {
 		a.broken = false
 		a.warnf("tyd audit log writable again\n")
 	}
+	a.prev = hash
 }
 
 func (a *File) warnf(format string, args ...any) {
