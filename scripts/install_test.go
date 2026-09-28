@@ -1,11 +1,15 @@
 package scripts_test
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -285,5 +289,205 @@ func TestInstallRejectsArchiveWithoutBareTyd(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "archive missing tyd") {
 		t.Fatalf("expected an archive layout error, got:\n%s", out)
+	}
+}
+
+// releaseArchive builds a tarball holding a stub tyd, as `make dist` does.
+func releaseArchive(t *testing.T) (path string, size int) {
+	t.Helper()
+	dir := t.TempDir()
+	stage := filepath.Join(dir, "stage", "tyd")
+	if err := os.MkdirAll(filepath.Dir(stage), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stage, []byte("#!/bin/sh\necho fake tyd\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "tyd.tar.gz")
+	if o, err := exec.Command("tar", "-C", filepath.Dir(stage), "-czf", out, "tyd").CombinedOutput(); err != nil {
+		t.Fatalf("tar: %v\n%s", err, o)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, len(b)
+}
+
+// cutAfter aborts the response after n bytes, the way a throttled link gets
+// reset mid-transfer. http.ErrAbortHandler drops the connection without a
+// graceful close, so curl sees a partial body and a non-zero exit.
+func cutAfter(w http.ResponseWriter, body []byte, n int) {
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	if f, ok := w.(http.Flusher); ok {
+		_, _ = w.Write(body[:n])
+		f.Flush()
+	}
+	panic(http.ErrAbortHandler)
+}
+
+// A reset download must not fail the install: the loop resumes with -C - and
+// keeps the bytes that already arrived.
+func TestInstallResumesAResetDownload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	archive, size := releaseArchive(t)
+	body, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const chunk = 512
+
+	var mu sync.Mutex
+	cuts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		start := 0
+		if rng := r.Header.Get("Range"); strings.HasPrefix(rng, "bytes=") {
+			n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(rng, "bytes="), "-"))
+			if err == nil {
+				start = n
+			}
+		}
+		rest := body[start:]
+		w.Header().Set("Accept-Ranges", "bytes")
+		if start > 0 {
+			w.Header().Set("Content-Length", strconv.Itoa(len(rest)))
+			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			w.Header().Set("Content-Length", strconv.Itoa(len(rest)))
+			w.WriteHeader(http.StatusOK)
+		}
+		// Reset the first two attempts partway through, then serve the rest.
+		if cuts < 2 {
+			cuts++
+			cutAfter(w, rest, chunk)
+			return
+		}
+		_, _ = w.Write(rest)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	bindir := filepath.Join(home, "bin")
+	cmd := exec.Command("sh", installScriptPath(t), "--client", "--accept", "not-a-real-token")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"TYD_BINDIR="+bindir,
+		"TYD_RELEASE_URL="+srv.URL+"/tyd.tar.gz",
+	)
+	out, _ := cmd.CombinedOutput()
+
+	mu.Lock()
+	gotCuts := cuts
+	mu.Unlock()
+	if gotCuts != 2 {
+		t.Fatalf("server cut %d times, want 2\n%s", gotCuts, out)
+	}
+	if !strings.Contains(string(out), "download interrupted") {
+		t.Fatalf("install should report the interruption and retry:\n%s", out)
+	}
+	got, err := os.ReadFile(filepath.Join(bindir, "tyd"))
+	if err != nil {
+		t.Fatalf("tyd not installed after a resumed download: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(got), "fake tyd") {
+		t.Fatalf("installed the wrong file: %q", got)
+	}
+	if size == 0 {
+		t.Fatal("empty archive fixture")
+	}
+}
+
+// Some mirrors answer a Range request with the whole body. Appending to that
+// would corrupt the file, so the loop drops the partial and starts over.
+func TestInstallRestartsWhenServerIgnoresRange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	archive, _ := releaseArchive(t)
+	body, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const chunk = 400
+
+	var mu sync.Mutex
+	cuts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Header.Get("Range") != "" {
+			// No 206, no Accept-Ranges: curl reports 33.
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.WriteHeader(http.StatusOK)
+			if cuts < 2 {
+				cuts++
+				cutAfter(w, body, chunk)
+				return
+			}
+			_, _ = w.Write(body)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	bindir := filepath.Join(home, "bin")
+	cmd := exec.Command("sh", installScriptPath(t), "--client", "--accept", "not-a-real-token")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"TYD_BINDIR="+bindir,
+		"TYD_RELEASE_URL="+srv.URL+"/tyd.tar.gz",
+	)
+	out, _ := cmd.CombinedOutput()
+
+	got, err := os.ReadFile(filepath.Join(bindir, "tyd"))
+	if err != nil {
+		t.Fatalf("tyd not installed when the server ignores Range: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(got), "fake tyd") {
+		t.Fatalf("installed the wrong file: %q", got)
+	}
+}
+
+// A server that never completes the transfer must fail with the byte count, so
+// the message distinguishes a network problem from a bad URL.
+func TestInstallReportsBytesKeptWhenDownloadNeverCompletes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1048576")
+		w.WriteHeader(http.StatusOK)
+		cutAfter(w, make([]byte, 0), 16)
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	cmd := exec.Command("sh", installScriptPath(t), "--client", "--accept", "not-a-real-token")
+	cmd.Env = append(os.Environ(),
+		"HOME="+home,
+		"TYD_BINDIR="+filepath.Join(home, "bin"),
+		// Point at a server that always cuts: the loop must give up, not hang.
+		"TYD_RELEASE_URL="+srv.URL+"/tyd.tar.gz",
+		"TYD_DOWNLOAD_ATTEMPTS=2",
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected failure, got:\n%s", out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "download failed") {
+		t.Fatalf("expected a download failure:\n%s", text)
+	}
+	if !strings.Contains(text, "bytes kept") {
+		t.Fatalf("failure should report the bytes kept:\n%s", text)
 	}
 }
