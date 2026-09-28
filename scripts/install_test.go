@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -489,5 +490,106 @@ func TestInstallReportsBytesKeptWhenDownloadNeverCompletes(t *testing.T) {
 	}
 	if !strings.Contains(text, "bytes kept") {
 		t.Fatalf("failure should report the bytes kept:\n%s", text)
+	}
+}
+
+// bootstrapHarness runs print_client_bootstrap on its own, with have_tty
+// forced either way, so the stdout/stderr split can be checked without a
+// daemon and a Control Panel behind it.
+func bootstrapHarness(t *testing.T, agent, tty string) (stdout, stderr string) {
+	t.Helper()
+	src, err := os.ReadFile(installScriptPath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fn strings.Builder
+	in := false
+	for _, line := range strings.Split(string(src), "\n") {
+		if strings.HasPrefix(line, "print_client_bootstrap() {") {
+			in = true
+		}
+		if in {
+			fn.WriteString(line + "\n")
+			if line == "}" {
+				break
+			}
+		}
+	}
+	if fn.Len() == 0 {
+		t.Fatal("print_client_bootstrap not found in install.sh")
+	}
+
+	script := `AGENT=` + agent + `
+TTY_RC=` + tty + `
+INSTALL_URL=https://app.getfda.dev/install.sh
+PLATFORM_URL=https://app.getfda.dev
+log() { printf '%s\n' "$*" >&2; }
+have_tty() { [ "$TTY_RC" -eq 0 ]; }
+` + fn.String() + `
+print_client_bootstrap deadbeefcafe
+`
+	cmd := exec.Command("sh", "-c", script)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("harness: %v\nstdout: %s\nstderr: %s", err, out.String(), errb.String())
+	}
+	return out.String(), errb.String()
+}
+
+const wantCmd = "curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --platform https://app.getfda.dev --accept deadbeefcafe"
+
+func TestInstallScriptPrintsBootstrapOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	tests := []struct {
+		name string
+		// agent selects the machine contract, tty is what have_tty reports.
+		agent string
+		tty   string
+		// stdout carries the bare command line for agents to capture.
+		wantStdout bool
+		// stderr carries the block a human reads.
+		wantBlock bool
+		// Copies the reader sees. A TTY agent gets both: it captures stdout
+		// while the person at the terminal reads the block.
+		wantTotal int
+	}{
+		{name: "tty human", agent: "0", tty: "0", wantStdout: false, wantBlock: true, wantTotal: 1},
+		{name: "tty agent", agent: "1", tty: "0", wantStdout: true, wantBlock: true, wantTotal: 2},
+		{name: "no tty agent", agent: "1", tty: "1", wantStdout: true, wantBlock: false, wantTotal: 1},
+		{name: "no tty", agent: "0", tty: "1", wantStdout: true, wantBlock: false, wantTotal: 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr := bootstrapHarness(t, tc.agent, tc.tty)
+
+			has := strings.TrimSpace(stdout) != ""
+			if has != tc.wantStdout {
+				t.Errorf("stdout present=%v, want %v (stdout=%q)", has, tc.wantStdout, stdout)
+			}
+			if tc.wantStdout && strings.TrimSpace(stdout) != wantCmd {
+				t.Errorf("stdout = %q, want the bare command", strings.TrimSpace(stdout))
+			}
+			if !tc.wantStdout && strings.Contains(stdout, "curl") {
+				t.Errorf("a TTY run must keep stdout clean, got %q", stdout)
+			}
+
+			block := strings.Contains(stderr, "On the client machine, run:")
+			if block != tc.wantBlock {
+				t.Errorf("stderr block=%v, want %v (stderr=%q)", block, tc.wantBlock, stderr)
+			}
+			if !tc.wantBlock && strings.Contains(stderr, "curl") {
+				t.Errorf("a piped run must not repeat the command on stderr, got %q", stderr)
+			}
+
+			total := strings.Count(stdout, wantCmd) + strings.Count(stderr, wantCmd)
+			if total != tc.wantTotal {
+				t.Errorf("command shown %d times, want %d\nstdout: %s\nstderr: %s",
+					total, tc.wantTotal, stdout, stderr)
+			}
+		})
 	}
 }
