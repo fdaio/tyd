@@ -152,3 +152,55 @@ func TestSaveFailureKeepsPreviousFile(t *testing.T) {
 		t.Fatalf("peers = %+v", got.Peers)
 	}
 }
+
+// peer list must read the same way session list does: newest first. The file
+// order is the order pairings were written, which is neither.
+func TestListOrdersNewestPairingFirst(t *testing.T) {
+	base := time.Date(2026, 9, 28, 8, 45, 0, 0, time.UTC)
+	f := &File{Peers: []Peer{
+		{ID: "oldest", PairedAt: base.Add(-72 * time.Hour)},
+		{ID: "newest", PairedAt: base},
+		{ID: "middle", PairedAt: base.Add(-24 * time.Hour)},
+		{ID: "unpaired", PairedAt: time.Time{}},
+	}}
+
+	var got []string
+	for _, p := range f.List() {
+		got = append(got, p.ID)
+	}
+	want := []string{"newest", "middle", "oldest", "unpaired"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+
+	// Equal timestamps keep file order, matching session list's SliceStable.
+	same := base
+	tie := &File{Peers: []Peer{
+		{ID: "first", PairedAt: same},
+		{ID: "second", PairedAt: same},
+	}}
+	if tie.List()[0].ID != "first" {
+		t.Errorf("equal PairedAt should keep file order, got %s first", tie.List()[0].ID)
+	}
+}
+
+// List must not reorder the file itself: peers.json order is what other code
+// reads, and rewriting it on every listing would churn the file.
+func TestListDoesNotMutateFile(t *testing.T) {
+	f := &File{Peers: []Peer{
+		{ID: "a", PairedAt: time.Unix(1, 0)},
+		{ID: "b", PairedAt: time.Unix(2, 0)},
+	}}
+	_ = f.List()
+	if f.Peers[0].ID != "a" {
+		t.Fatalf("List reordered the file: %s first", f.Peers[0].ID)
+	}
+	// And the returned slice must be a copy.
+	out := f.List()
+	out[0].ID = "mutated"
+	if f.Peers[0].ID == "mutated" {
+		t.Fatal("List returned the live slice, not a copy")
+	}
+}

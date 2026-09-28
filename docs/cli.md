@@ -16,7 +16,7 @@ the binary. This page is the map plus the defaults.
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
 | | `session alias` | Name a session: `<name>`, `<session_id> <name>`, `set`, `list`, `rm` |
-| Peers | `peer list` | List paired peers (id, alias, direction) |
+| Peers | `peer list` | List paired peers (id, alias, direction), newest pairing first |
 | | `peer show <id\|alias>` | Show peer detail, endpoint, and reachability |
 | | `peer alias <id\|nick> <name>` | Set a peer nickname (`peer alias rm <id\|nick>` clears it) |
 | | `revoke` | Revoke a paired peer (either side) |
