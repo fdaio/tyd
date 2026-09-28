@@ -102,14 +102,25 @@ func TestInstallScriptDownloadsOneArchiveForThisPlatform(t *testing.T) {
 	}
 	body := string(b)
 
-	const want = "releases/latest/download/tyd-${OS}-${ARCH}.tar.gz"
-	if !strings.Contains(body, want) {
-		t.Errorf("install.sh should download %s", want)
+	// The archive name is per platform and per architecture. stable resolves
+	// through /releases/latest/download/, which GitHub maps to the newest release
+	// that is neither a draft nor a prerelease; edge resolves a tag of its own,
+	// because a prerelease has no such alias.
+	for _, want := range []string{
+		`name="tyd-${os}-${arch}.tar.gz"`,
+		"releases/latest/download/",
+		"/releases/download/%s/",
+		"release_asset_url",
+		"--channel",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("install.sh should contain %q", want)
+		}
 	}
-	// The old fat archive is gone; its URL would still resolve to every
-	// architecture, which is the download this change removes.
-	if strings.Contains(body, "download/tyd-${OS}.tar.gz") {
-		t.Error("install.sh must not download the per-OS archive any more")
+	// A per-OS archive is what this replaced: one file carried every
+	// architecture and the relay, so every install paid for both.
+	if strings.Contains(body, "tyd-${OS}.tar.gz") {
+		t.Error("install.sh must not ask for the per-OS archive any more")
 	}
 	if strings.Contains(body, "tyd-relay") {
 		t.Error("install.sh must not ship or install the relay")

@@ -144,10 +144,11 @@ func parseArgs(args []string) (options, error) {
 		case strings.HasPrefix(a, "--trust="):
 			opts.trust = strings.TrimPrefix(a, "--trust=")
 		case a == "--paired":
-			if i+1 < len(args) {
-				opts.paired = args[i]
-				i++
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
 			}
+			i++
+			opts.paired = args[i]
 		case strings.HasPrefix(a, "--paired="):
 			opts.paired = strings.TrimPrefix(a, "--paired=")
 		case a == "--peers":

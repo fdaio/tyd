@@ -1,0 +1,96 @@
+# Promote a build to what installs fetch.
+#
+# A daily build off main is a prerelease, and install.sh downloads from
+# /releases/latest/download/ -- which GitHub resolves to the newest release that
+# is neither a draft nor a prerelease. So a merge does not reach users until
+# somebody decides it should.
+#
+# That matters more here than for an ordinary CLI: this daemon starts at boot,
+# survives logout, and hands out remote shells, so a bad build is not a bad
+# command. Promotion is the gate, and the smoke test is what it checks.
+#
+# Manual on purpose. Promotion is a judgement about a build, and the person who
+# makes it is the one who has to be willing to install it.
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag to promote, e.g. 2026.09.28-3acf683'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide the other's result, and both matter:
+      # the install path resolves a different archive per os+arch, so a build can
+      # be fine on Linux and broken on macOS.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The whole user path, from curl to a session that exists: install, pair
+      # with a second identity on the same host, create a session, see it listed.
+      # The archive is named for the runner, not assumed, because that name is
+      # exactly what install.sh would have to resolve.
+      - name: Smoke test
+        run: |
+          set -eu
+          case "$(uname -s)" in
+            Linux) asset_os=linux ;;
+            Darwin) asset_os=darwin ;;
+            *) echo "::error::unexpected os $(uname -s)"; exit 1 ;;
+          esac
+          case "$(uname -m)" in
+            x86_64|amd64) asset_arch=amd64 ;;
+            arm64|aarch64) asset_arch=arm64 ;;
+            *) echo "::error::unexpected arch $(uname -m)"; exit 1 ;;
+          esac
+          sh scripts/smoke.sh \
+            "https://github.com/fdaio/tyd/releases/download/${{ github.event.inputs.version }}/tyd-$asset_os-$asset_arch.tar.gz"
+
+
+  promote:
+    name: promote
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      # The tag has to exist and be a prerelease, or this run would promote
+      # something that was never built or is already stable.
+      - name: Check the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -eu
+          rel=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION")
+          is_pre=$(printf '%s' "$rel" | jq -r '.prerelease')
+          draft=$(printf '%s' "$rel" | jq -r '.draft')
+          [ "$draft" = "false" ] || { echo "::error::$VERSION is a draft"; exit 1; }
+          [ "$is_pre" = "true" ] || { echo "$VERSION is already promoted; nothing to do"; exit 0; }
+          printf 'promoting %s (commit %s)\n' "$VERSION" \
+            "$(printf '%s' "$rel" | jq -r '.target_commitish')"
+
+      - name: Promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          set -eu
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --prerelease=false --latest --tag "$VERSION"
+          echo "promoted $VERSION"
