@@ -483,11 +483,13 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 
 // Read pulls one page of sequenced session output. It does not take the
 // exclusive attach slot. The reply is raw PTY bytes; cursor_next pages.
-func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor uint64) (protocol.Frame, error) {
+// Pass epoch 0 on the first pull, then the epoch from the last read_result.
+func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64) (protocol.Frame, error) {
 	resp, err := rpc(ep, key, protocol.Frame{
 		Type:      protocol.TypeRead,
 		SessionID: sessionID,
 		Cursor:    cursor,
+		Epoch:     epoch,
 	})
 	if err != nil {
 		return protocol.Frame{}, err

@@ -97,6 +97,11 @@ to `--audit-log`. Live-agents keep a separate per-session output log under
 `~/.tyd/live/<id>/` for sequenced `read` (mode `0600`, deleted on close). That
 file is not the audit chain and is not hash-chained.
 
+A principal that holds `attach` on the session can call `read` and retrieve
+up to that on-disk window (default 64MB), not only the 64KB ring that
+`attach` / `watch` replay. Treat that as the same "can see the terminal"
+right, with a larger history.
+
 In `post` mode the audit log covers control events only. **It does not record
 what ran in the session.** The output log does hold terminal bytes for `read`;
 treat the session dir as sensitive, the same way you treat the PTY itself.

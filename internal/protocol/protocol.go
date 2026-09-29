@@ -63,10 +63,12 @@ type Frame struct {
 	Connections []ConnInfo    `json:"connections,omitempty"`
 	ExitCode    int           `json:"exit_code,omitempty"`
 
-	Cursor     uint64 `json:"cursor,omitempty"`
-	CursorNext uint64 `json:"cursor_next,omitempty"`
-	Dropped    uint64 `json:"dropped,omitempty"`
-	AtEnd      bool   `json:"at_end,omitempty"`
+	Cursor      uint64 `json:"cursor,omitempty"`
+	CursorNext  uint64 `json:"cursor_next,omitempty"`
+	Dropped     uint64 `json:"dropped,omitempty"`
+	AtEnd       bool   `json:"at_end,omitempty"`
+	Epoch       uint64 `json:"epoch,omitempty"`
+	CursorAhead bool   `json:"cursor_ahead,omitempty"`
 }
 
 type ConnInfo struct {

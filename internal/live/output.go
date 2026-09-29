@@ -26,14 +26,19 @@ const (
 	outputFlushEvery = 100 * time.Millisecond
 	outputSegPrefix  = "output."
 	outputErrFile    = "output.err"
+	outputSeqFile    = "output.seq"
+	outputEpochFile  = "output.epoch"
+	outputCleanFile  = "output.clean"
 )
 
 // ReadResult is one non-blocking pull from the sequenced output log.
 type ReadResult struct {
-	Data       []byte
-	CursorNext uint64
-	Dropped    uint64
-	AtEnd      bool
+	Data        []byte
+	CursorNext  uint64
+	Dropped     uint64
+	AtEnd       bool
+	Epoch       uint64
+	CursorAhead bool // stale cursor or epoch; adopt CursorNext and Epoch
 }
 
 type outputSeg struct {
@@ -42,12 +47,25 @@ type outputSeg struct {
 	path  string
 }
 
+type readSnap struct {
+	earliest  uint64
+	nextSeq   uint64
+	diskEnd   uint64
+	tailStart uint64
+	epoch     uint64
+	pending   []byte
+	tail      []byte
+	segs      []outputSeg
+	degraded  bool
+}
+
 // outputLog assigns a monotonic byte seq and writes segments on disk.
 //
-// Seq starts at 0 for the session and continues across agent restarts by
-// reading the files already in the session dir. The PTY path never waits
-// on a disk write: Append copies into memory and a loop flushes later.
-// A write error sets degraded; later output stays in the tail only.
+// Seq starts at 0 for the session. A flush records the in-memory next seq
+// so a crash does not reuse offsets the client already saw. An unclean
+// restart also bumps epoch; a read with a stale epoch returns cursor_ahead
+// instead of the new bytes at those offsets. The PTY path never waits on a
+// disk write.
 type outputLog struct {
 	dir      string
 	maxBytes int64
@@ -66,6 +84,8 @@ type outputLog struct {
 	totalSize int64
 	degraded  bool
 	closed    bool
+	epoch     uint64
+	skipFlush bool
 
 	wake      chan struct{}
 	done      chan struct{}
@@ -117,6 +137,22 @@ func parseOutputSegName(name string) (uint64, bool) {
 	return n, true
 }
 
+func readUintFile(path string) (uint64, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func writeUintFile(path string, n uint64) error {
+	return os.WriteFile(path, []byte(strconv.FormatUint(n, 10)+"\n"), 0o600)
+}
+
 func openOutputLog(dir string, maxBytes int64) *outputLog {
 	if maxBytes <= 0 {
 		maxBytes = DefaultOutputLogMax
@@ -129,15 +165,17 @@ func openOutputLog(dir string, maxBytes int64) *outputLog {
 		done:     make(chan struct{}),
 		writeAll: func(f *os.File, p []byte) (int, error) { return f.Write(p) },
 	}
-	l.load()
+	l.restoreFiles()
+	l.applyUncleanEpoch()
+	l.attachCurrentSeg()
 	l.wg.Add(1)
 	go l.writer()
 	return l
 }
 
-func (l *outputLog) load() {
+func (l *outputLog) restoreFiles() {
 	ents, err := os.ReadDir(l.dir)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return
 	}
 	var segs []outputSeg
@@ -159,28 +197,65 @@ func (l *outputLog) load() {
 			path:  filepath.Join(l.dir, e.Name()),
 		})
 	}
-	if len(segs) == 0 {
+	if len(segs) > 0 {
+		sort.Slice(segs, func(i, j int) bool { return segs[i].start < segs[j].start })
+		l.segs = segs
+		l.earliest = segs[0].start
+		last := segs[len(segs)-1]
+		l.diskEnd = last.start + uint64(last.size)
+		l.nextSeq = l.diskEnd
+		var total int64
+		for _, s := range segs {
+			total += s.size
+		}
+		l.totalSize = total
+	}
+	if n, ok := readUintFile(filepath.Join(l.dir, outputSeqFile)); ok && n > l.nextSeq {
+		l.nextSeq = n
+	}
+	l.tailStart = l.nextSeq
+	if n, ok := readUintFile(filepath.Join(l.dir, outputEpochFile)); ok && n > 0 {
+		l.epoch = n
+	}
+}
+
+func (l *outputLog) attachCurrentSeg() {
+	if len(l.segs) == 0 {
 		return
 	}
-	sort.Slice(segs, func(i, j int) bool { return segs[i].start < segs[j].start })
-	l.segs = segs
-	l.earliest = segs[0].start
-	last := segs[len(segs)-1]
-	l.diskEnd = last.start + uint64(last.size)
-	l.nextSeq = l.diskEnd
-	l.tailStart = l.nextSeq
-	var total int64
-	for _, s := range segs {
-		total += s.size
+	last := l.segs[len(l.segs)-1]
+	end := last.start + uint64(last.size)
+	// A crash can leave nextSeq past the last file. Do not append into that
+	// file; the next flush opens a segment at nextSeq and leaves the hole.
+	if end != l.nextSeq || last.size >= l.segSize {
+		return
 	}
-	l.totalSize = total
-	if last.size < l.segSize {
-		f, err := os.OpenFile(last.path, os.O_WRONLY|os.O_APPEND, 0o600)
-		if err == nil {
-			l.cur = f
-			l.curSize = last.size
+	f, err := os.OpenFile(last.path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	l.cur = f
+	l.curSize = last.size
+}
+
+func (l *outputLog) applyUncleanEpoch() {
+	epoch := l.epoch
+	cleanPath := filepath.Join(l.dir, outputCleanFile)
+	_, cleanErr := os.Stat(cleanPath)
+	prior := len(l.segs) > 0 || epoch > 0 || l.nextSeq > 0
+	if cleanErr == nil {
+		_ = os.Remove(cleanPath)
+		if epoch == 0 {
+			epoch = 1
 		}
+	} else if prior {
+		epoch++
 	}
+	if epoch == 0 {
+		epoch = 1
+	}
+	l.epoch = epoch
+	_ = writeUintFile(filepath.Join(l.dir, outputEpochFile), epoch)
 }
 
 func (l *outputLog) writer() {
@@ -190,7 +265,13 @@ func (l *outputLog) writer() {
 	for {
 		select {
 		case <-l.done:
-			l.flushPending()
+			l.mu.Lock()
+			skip := l.skipFlush
+			l.mu.Unlock()
+			if !skip {
+				l.flushPending()
+				l.persistMeta(true)
+			}
 			l.closeFile()
 			return
 		case <-l.wake:
@@ -201,10 +282,34 @@ func (l *outputLog) writer() {
 	}
 }
 
+func (l *outputLog) persistMeta(clean bool) {
+	l.mu.Lock()
+	n := l.nextSeq
+	dir := l.dir
+	l.mu.Unlock()
+	_ = writeUintFile(filepath.Join(dir, outputSeqFile), n)
+	if clean {
+		_ = os.WriteFile(filepath.Join(dir, outputCleanFile), []byte("ok\n"), 0o600)
+	}
+}
+
 func (l *outputLog) Close() {
 	l.closeOnce.Do(func() {
 		l.mu.Lock()
 		l.closed = true
+		l.mu.Unlock()
+		close(l.done)
+		l.wg.Wait()
+	})
+}
+
+// abandon stops the writer without flushing pending bytes. Tests use it
+// to stand in for kill -9.
+func (l *outputLog) abandon() {
+	l.closeOnce.Do(func() {
+		l.mu.Lock()
+		l.closed = true
+		l.skipFlush = true
 		l.mu.Unlock()
 		close(l.done)
 		l.wg.Wait()
@@ -238,72 +343,160 @@ func (l *outputLog) Append(p []byte) {
 }
 
 func (l *outputLog) Read(cursor uint64) ReadResult {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.readLocked(cursor)
+	return l.ReadAt(cursor, 0)
 }
 
-func (l *outputLog) readLocked(cursor uint64) ReadResult {
+func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
+	l.mu.Lock()
+	snap := l.snapshotLocked()
+	l.mu.Unlock()
+	return readFromSnap(snap, cursor, reqEpoch)
+}
+
+func (l *outputLog) snapshotLocked() readSnap {
+	return readSnap{
+		earliest:  l.earliest,
+		nextSeq:   l.nextSeq,
+		diskEnd:   l.diskEnd,
+		tailStart: l.tailStart,
+		epoch:     l.epoch,
+		pending:   append([]byte(nil), l.pending...),
+		tail:      append([]byte(nil), l.tail...),
+		segs:      append([]outputSeg(nil), l.segs...),
+		degraded:  l.degraded,
+	}
+}
+
+func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
+	res := ReadResult{Epoch: s.epoch}
+	if reqEpoch != 0 && reqEpoch != s.epoch {
+		res.CursorAhead = true
+		res.CursorNext = s.nextSeq
+		res.AtEnd = true
+		return res
+	}
+	if cursor > s.nextSeq {
+		res.CursorAhead = true
+		res.CursorNext = s.nextSeq
+		res.AtEnd = true
+		return res
+	}
+
 	orig := cursor
 	var dropped uint64
-	if cursor < l.earliest {
-		dropped = l.earliest - cursor
-		cursor = l.earliest
+	if cursor < s.earliest {
+		dropped = s.earliest - cursor
+		cursor = s.earliest
 	}
-	if l.degraded && l.tailStart > l.diskEnd && cursor >= l.diskEnd && cursor < l.tailStart {
-		dropped += l.tailStart - cursor
-		cursor = l.tailStart
+	if s.degraded && s.tailStart > s.diskEnd && cursor >= s.diskEnd && cursor < s.tailStart {
+		dropped += s.tailStart - cursor
+		cursor = s.tailStart
 	}
-	if cursor >= l.nextSeq {
+
+	if cursor >= s.nextSeq {
 		next := orig
 		if dropped > 0 {
 			next = cursor
 		}
-		return ReadResult{CursorNext: next, Dropped: dropped, AtEnd: true}
+		res.CursorNext = next
+		res.Dropped = dropped
+		res.AtEnd = true
+		return res
 	}
-	data := l.gatherLocked(cursor, ReadMax)
+
+	data, skip, gap := gatherSnap(s, cursor, ReadMax)
+	if gap {
+		res.CursorAhead = true
+		res.Dropped = dropped
+		res.CursorNext = s.nextSeq
+		res.AtEnd = true
+		return res
+	}
+	if skip > 0 {
+		dropped += skip
+		cursor += skip
+		more, skip2, gap2 := gatherSnap(s, cursor, ReadMax)
+		if gap2 {
+			res.CursorAhead = true
+			res.Dropped = dropped
+			res.CursorNext = s.nextSeq
+			res.AtEnd = true
+			return res
+		}
+		dropped += skip2
+		data = more
+	}
+	if len(data) == 0 && cursor < s.nextSeq {
+		// Assigned seq that never reached disk (crash before flush).
+		res.CursorAhead = true
+		res.Dropped = dropped
+		res.CursorNext = s.nextSeq
+		res.AtEnd = true
+		return res
+	}
 	next := cursor + uint64(len(data))
-	return ReadResult{
-		Data:       data,
-		CursorNext: next,
-		Dropped:    dropped,
-		AtEnd:      next >= l.nextSeq,
-	}
+	res.Data = data
+	res.CursorNext = next
+	res.Dropped = dropped
+	res.AtEnd = next >= s.nextSeq
+	return res
 }
 
-func (l *outputLog) gatherLocked(cursor uint64, want int) []byte {
+func pendingStart(s readSnap) uint64 {
+	if len(s.pending) == 0 {
+		return s.nextSeq
+	}
+	return s.nextSeq - uint64(len(s.pending))
+}
+
+func gatherSnap(s readSnap, cursor uint64, want int) ([]byte, uint64, bool) {
 	if want <= 0 {
-		return nil
+		return nil, 0, false
 	}
 	var out []byte
-	if cursor < l.diskEnd {
-		end := l.diskEnd
+	pStart := pendingStart(s)
+	if cursor < pStart {
+		end := pStart
 		if max := cursor + uint64(want); max < end {
 			end = max
 		}
-		out = l.readDiskLocked(cursor, end)
-		cursor += uint64(len(out))
-	}
-	if len(out) >= want {
-		return out[:want]
-	}
-	if !l.degraded && cursor >= l.diskEnd && cursor < l.diskEnd+uint64(len(l.pending)) {
-		off := int(cursor - l.diskEnd)
-		chunk := l.pending[off:]
-		take := want - len(out)
-		if len(chunk) > take {
-			chunk = chunk[:take]
+		chunk, hole, gap := readDiskSnap(s.segs, cursor, end)
+		if len(chunk) == 0 {
+			if gap {
+				return nil, 0, true
+			}
+			if hole > 0 {
+				return nil, hole, false
+			}
+		} else if gap {
+			return chunk, 0, false
+		} else {
+			out = chunk
+			cursor += uint64(len(out))
 		}
-		out = append(out, chunk...)
-		cursor += uint64(len(chunk))
 	}
 	if len(out) >= want {
-		return out[:want]
+		return out[:want], 0, false
 	}
-	if cursor >= l.tailStart && cursor < l.nextSeq && len(l.tail) > 0 {
-		off := int(cursor - l.tailStart)
-		if off >= 0 && off < len(l.tail) {
-			chunk := l.tail[off:]
+	if !s.degraded && cursor >= pStart && cursor < s.nextSeq {
+		off := int(cursor - pStart)
+		if off >= 0 && off < len(s.pending) {
+			chunk := s.pending[off:]
+			take := want - len(out)
+			if len(chunk) > take {
+				chunk = chunk[:take]
+			}
+			out = append(out, chunk...)
+			cursor += uint64(len(chunk))
+		}
+	}
+	if len(out) >= want {
+		return out[:want], 0, false
+	}
+	if cursor >= s.tailStart && cursor < s.nextSeq && len(s.tail) > 0 {
+		off := int(cursor - s.tailStart)
+		if off >= 0 && off < len(s.tail) {
+			chunk := s.tail[off:]
 			take := want - len(out)
 			if len(chunk) > take {
 				chunk = chunk[:take]
@@ -311,20 +504,24 @@ func (l *outputLog) gatherLocked(cursor uint64, want int) []byte {
 			out = append(out, chunk...)
 		}
 	}
-	return out
+	return out, 0, false
 }
 
-func (l *outputLog) readDiskLocked(start, end uint64) []byte {
+func readDiskSnap(segs []outputSeg, start, end uint64) ([]byte, uint64, bool) {
 	if end <= start {
-		return nil
+		return nil, 0, false
 	}
 	var out []byte
-	for _, s := range l.segs {
+	cur := start
+	for _, s := range segs {
 		segEnd := s.start + uint64(s.size)
-		if start >= segEnd || end <= s.start {
+		if cur >= segEnd || end <= s.start {
 			continue
 		}
-		from := start
+		if s.start > cur {
+			return out, s.start - cur, true
+		}
+		from := cur
 		if from < s.start {
 			from = s.start
 		}
@@ -339,20 +536,20 @@ func (l *outputLog) readDiskLocked(start, end uint64) []byte {
 		b := make([]byte, n)
 		f, err := os.Open(s.path)
 		if err != nil {
-			continue
+			return out, uint64(n), false
 		}
 		_, err = f.ReadAt(b, int64(from-s.start))
 		_ = f.Close()
 		if err != nil {
-			continue
+			return out, uint64(n), false
 		}
 		out = append(out, b...)
-		start = to
-		if start >= end {
+		cur = to
+		if cur >= end {
 			break
 		}
 	}
-	return out
+	return out, 0, false
 }
 
 func (l *outputLog) flushPending() {
@@ -366,9 +563,13 @@ func (l *outputLog) flushPending() {
 		return
 	}
 	chunk := append([]byte(nil), l.pending...)
+	chunkStart := l.nextSeq - uint64(len(l.pending))
+	nseq := l.nextSeq
+	dir := l.dir
 	l.mu.Unlock()
+	_ = writeUintFile(filepath.Join(dir, outputSeqFile), nseq)
 
-	if err := l.writeChunk(chunk); err != nil {
+	if err := l.writeChunk(chunk, chunkStart); err != nil {
 		l.fail(err)
 		return
 	}
@@ -376,12 +577,15 @@ func (l *outputLog) flushPending() {
 	l.mu.Lock()
 	if len(l.pending) >= len(chunk) {
 		l.pending = l.pending[len(chunk):]
-		l.diskEnd += uint64(len(chunk))
+		l.diskEnd = chunkStart + uint64(len(chunk))
 	}
+	n := l.nextSeq
 	l.mu.Unlock()
+	_ = writeUintFile(filepath.Join(dir, outputSeqFile), n)
 }
 
-func (l *outputLog) writeChunk(p []byte) error {
+func (l *outputLog) writeChunk(p []byte, start uint64) error {
+	off := start
 	for len(p) > 0 {
 		l.mu.Lock()
 		if l.degraded {
@@ -389,14 +593,14 @@ func (l *outputLog) writeChunk(p []byte) error {
 			return fmt.Errorf("output log degraded")
 		}
 		if l.cur == nil || l.curSize >= l.segSize {
-			if err := l.openNewSegLocked(); err != nil {
+			if err := l.openNewSegLocked(off); err != nil {
 				l.mu.Unlock()
 				return err
 			}
 		}
 		room := l.segSize - l.curSize
 		if room <= 0 {
-			if err := l.openNewSegLocked(); err != nil {
+			if err := l.openNewSegLocked(off); err != nil {
 				l.mu.Unlock()
 				return err
 			}
@@ -418,6 +622,7 @@ func (l *outputLog) writeChunk(p []byte) error {
 		if n < len(chunk) {
 			return fmt.Errorf("short write")
 		}
+		off += uint64(n)
 
 		l.mu.Lock()
 		l.curSize += int64(n)
@@ -433,15 +638,10 @@ func (l *outputLog) writeChunk(p []byte) error {
 	return nil
 }
 
-func (l *outputLog) openNewSegLocked() error {
+func (l *outputLog) openNewSegLocked(start uint64) error {
 	if l.cur != nil {
 		_ = l.cur.Close()
 		l.cur = nil
-	}
-	start := l.diskEnd
-	if len(l.segs) > 0 {
-		last := l.segs[len(l.segs)-1]
-		start = last.start + uint64(last.size)
 	}
 	path := outputSegPath(l.dir, start)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -505,22 +705,30 @@ func (l *outputLog) Degraded() bool {
 	return l.degraded
 }
 
-// readOutputFiles serves a read from disk only. Used when the agent is gone
-// and the unflushed tail died with it.
-func readOutputFiles(dir string, cursor uint64) ReadResult {
+func (l *outputLog) Epoch() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.epoch
+}
+
+// readOutputFiles serves a read from disk and the persisted seq high-water
+// mark when the agent is gone.
+func readOutputFiles(dir string, cursor, epoch uint64) ReadResult {
 	l := &outputLog{dir: dir, maxBytes: DefaultOutputLogMax, segSize: outputLayout(DefaultOutputLogMax)}
-	l.load()
-	l.nextSeq = l.diskEnd
-	l.tailStart = l.nextSeq
-	return l.readLocked(cursor)
+	l.restoreFiles()
+	if l.epoch == 0 {
+		l.epoch = 1
+	}
+	return l.ReadAt(cursor, epoch)
 }
 
 // ReadSession pulls output for a live dir. A running agent includes bytes
 // that have not been flushed yet. A dead agent can only return what reached
-// disk; bytes lost with the process are gone.
-func ReadSession(dir string, cursor uint64) (ReadResult, error) {
+// disk plus the persisted seq high-water mark; bytes lost with the process
+// leave a hole and later reads at that cursor return cursor_ahead.
+func ReadSession(dir string, cursor, epoch uint64) (ReadResult, error) {
 	if Alive(dir) {
-		return DialRead(dir, cursor)
+		return DialRead(dir, cursor, epoch)
 	}
-	return readOutputFiles(dir, cursor), nil
+	return readOutputFiles(dir, cursor, epoch), nil
 }

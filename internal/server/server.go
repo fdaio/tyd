@@ -906,16 +906,18 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID); err != nil {
 			return err
 		}
-		res, err := sess.Read(f.Cursor)
+		res, err := sess.Read(f.Cursor, f.Epoch)
 		if err != nil {
 			return err
 		}
 		return st.send(protocol.Frame{
-			Type:       protocol.TypeReadResult,
-			Data:       res.Data,
-			CursorNext: res.CursorNext,
-			Dropped:    res.Dropped,
-			AtEnd:      res.AtEnd,
+			Type:        protocol.TypeReadResult,
+			Data:        res.Data,
+			CursorNext:  res.CursorNext,
+			Dropped:     res.Dropped,
+			AtEnd:       res.AtEnd,
+			Epoch:       res.Epoch,
+			CursorAhead: res.CursorAhead,
 		})
 
 	case protocol.TypeWrite:
