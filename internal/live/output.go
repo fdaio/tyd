@@ -29,6 +29,7 @@ const (
 	outputSeqFile    = "output.seq"
 	outputEpochFile  = "output.epoch"
 	outputCleanFile  = "output.clean"
+	outputBoundFile  = "output.bound"
 )
 
 // ReadResult is one non-blocking pull from the sequenced output log.
@@ -48,44 +49,50 @@ type outputSeg struct {
 }
 
 type readSnap struct {
-	earliest  uint64
-	nextSeq   uint64
-	diskEnd   uint64
-	tailStart uint64
-	epoch     uint64
-	pending   []byte
-	tail      []byte
-	segs      []outputSeg
-	degraded  bool
+	earliest      uint64
+	nextSeq       uint64
+	diskEnd       uint64
+	tailStart     uint64
+	epoch         uint64
+	epochBoundary uint64
+	pending       []byte
+	tail          []byte
+	segs          []outputSeg
+	degraded      bool
 }
 
 // outputLog assigns a monotonic byte seq and writes segments on disk.
 //
-// Seq starts at 0 for the session. A flush records the in-memory next seq
-// so a crash does not reuse offsets the client already saw. An unclean
-// restart also bumps epoch; a read with a stale epoch returns cursor_ahead
-// instead of the new bytes at those offsets. The PTY path never waits on a
-// disk write.
+// Seq starts at 0 for the session. read flushes pending bytes to the kernel
+// before it replies, so a kill -9 of this process cannot leave a client
+// cursor past what is on disk. Epoch still bumps on an unclean restart so a
+// power loss (or a disk-full hole) cannot reuse offsets the client already
+// saw. A stale epoch still serves cursors within that restart's durable
+// end; only a cursor past it returns cursor_ahead. The PTY path never
+// waits on a disk write.
 type outputLog struct {
 	dir      string
 	maxBytes int64
 	segSize  int64
 
-	mu        sync.Mutex
-	earliest  uint64
-	nextSeq   uint64
-	diskEnd   uint64
-	pending   []byte
-	tail      []byte
-	tailStart uint64
-	segs      []outputSeg
-	cur       *os.File
-	curSize   int64
-	totalSize int64
-	degraded  bool
-	closed    bool
-	epoch     uint64
-	skipFlush bool
+	mu            sync.Mutex
+	flushMu       sync.Mutex
+	earliest      uint64
+	nextSeq       uint64
+	diskEnd       uint64
+	pending       []byte
+	tail          []byte
+	tailStart     uint64
+	segs          []outputSeg
+	cur           *os.File
+	curSize       int64
+	totalSize     int64
+	degraded      bool
+	closed        bool
+	epoch         uint64
+	epochBoundary uint64
+	skipFlush     bool
+	pauseFlush    bool
 
 	wake      chan struct{}
 	done      chan struct{}
@@ -217,6 +224,11 @@ func (l *outputLog) restoreFiles() {
 	if n, ok := readUintFile(filepath.Join(l.dir, outputEpochFile)); ok && n > 0 {
 		l.epoch = n
 	}
+	if n, ok := readUintFile(filepath.Join(l.dir, outputBoundFile)); ok {
+		l.epochBoundary = n
+	} else {
+		l.epochBoundary = l.diskEnd
+	}
 }
 
 func (l *outputLog) attachCurrentSeg() {
@@ -238,11 +250,18 @@ func (l *outputLog) attachCurrentSeg() {
 	l.curSize = last.size
 }
 
+// applyUncleanEpoch assigns the log generation. output.clean is written only
+// after a clean Close (flush, then persistMeta(true)). kill -9, a crash, or
+// abandon() leave that file missing. The next open treats a missing clean
+// file plus any prior seq/epoch/segments as an unclean restart and bumps
+// epoch. A present clean file is consumed immediately, so a running process
+// is again "not cleanly closed" until the next Close.
 func (l *outputLog) applyUncleanEpoch() {
 	epoch := l.epoch
 	cleanPath := filepath.Join(l.dir, outputCleanFile)
 	_, cleanErr := os.Stat(cleanPath)
 	prior := len(l.segs) > 0 || epoch > 0 || l.nextSeq > 0
+	bumped := false
 	if cleanErr == nil {
 		_ = os.Remove(cleanPath)
 		if epoch == 0 {
@@ -250,12 +269,17 @@ func (l *outputLog) applyUncleanEpoch() {
 		}
 	} else if prior {
 		epoch++
+		bumped = true
 	}
 	if epoch == 0 {
 		epoch = 1
 	}
 	l.epoch = epoch
+	if bumped {
+		l.epochBoundary = l.diskEnd
+	}
 	_ = writeUintFile(filepath.Join(l.dir, outputEpochFile), epoch)
+	_ = writeUintFile(filepath.Join(l.dir, outputBoundFile), l.epochBoundary)
 }
 
 func (l *outputLog) writer() {
@@ -275,8 +299,14 @@ func (l *outputLog) writer() {
 			l.closeFile()
 			return
 		case <-l.wake:
+			if l.writerFlushPaused() {
+				continue
+			}
 			l.flushPending()
 		case <-tick.C:
+			if l.writerFlushPaused() {
+				continue
+			}
 			l.flushPending()
 		}
 	}
@@ -284,13 +314,30 @@ func (l *outputLog) writer() {
 
 func (l *outputLog) persistMeta(clean bool) {
 	l.mu.Lock()
-	n := l.nextSeq
+	n := l.diskEnd
+	if l.degraded && l.nextSeq > n {
+		n = l.nextSeq
+	}
 	dir := l.dir
 	l.mu.Unlock()
 	_ = writeUintFile(filepath.Join(dir, outputSeqFile), n)
 	if clean {
 		_ = os.WriteFile(filepath.Join(dir, outputCleanFile), []byte("ok\n"), 0o600)
 	}
+}
+
+func (l *outputLog) writerFlushPaused() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.pauseFlush
+}
+
+// pauseWriterFlush keeps the background writer from draining pending. Tests
+// use it so abandon() can stand in for kill -9 before a flush.
+func (l *outputLog) pauseWriterFlush() {
+	l.mu.Lock()
+	l.pauseFlush = true
+	l.mu.Unlock()
 }
 
 func (l *outputLog) Close() {
@@ -348,36 +395,46 @@ func (l *outputLog) Read(cursor uint64) ReadResult {
 
 func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
 	l.mu.Lock()
+	skip := l.skipFlush
+	l.mu.Unlock()
+	if !skip {
+		l.flushPending()
+	}
+	l.mu.Lock()
 	snap := l.snapshotLocked()
 	l.mu.Unlock()
+	// Replies only include bytes already given to the kernel, except the
+	// disk-full path which still serves the in-memory tail.
+	snap.pending = nil
+	if !snap.degraded {
+		snap.tail = nil
+	}
 	return readFromSnap(snap, cursor, reqEpoch)
 }
 
 func (l *outputLog) snapshotLocked() readSnap {
 	return readSnap{
-		earliest:  l.earliest,
-		nextSeq:   l.nextSeq,
-		diskEnd:   l.diskEnd,
-		tailStart: l.tailStart,
-		epoch:     l.epoch,
-		pending:   append([]byte(nil), l.pending...),
-		tail:      append([]byte(nil), l.tail...),
-		segs:      append([]outputSeg(nil), l.segs...),
-		degraded:  l.degraded,
+		earliest:      l.earliest,
+		nextSeq:       l.nextSeq,
+		diskEnd:       l.diskEnd,
+		tailStart:     l.tailStart,
+		epoch:         l.epoch,
+		epochBoundary: l.epochBoundary,
+		pending:       append([]byte(nil), l.pending...),
+		tail:          append([]byte(nil), l.tail...),
+		segs:          append([]outputSeg(nil), l.segs...),
+		degraded:      l.degraded,
 	}
 }
 
 func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
 	res := ReadResult{Epoch: s.epoch}
-	if reqEpoch != 0 && reqEpoch != s.epoch {
-		res.CursorAhead = true
-		res.CursorNext = s.nextSeq
-		res.AtEnd = true
-		return res
-	}
+	resumeAt := s.nextSeq
+	stale := reqEpoch != 0 && reqEpoch != s.epoch
+
 	if cursor > s.nextSeq {
 		res.CursorAhead = true
-		res.CursorNext = s.nextSeq
+		res.CursorNext = resumeAt
 		res.AtEnd = true
 		return res
 	}
@@ -388,7 +445,23 @@ func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
 		dropped = s.earliest - cursor
 		cursor = s.earliest
 	}
-	if s.degraded && s.tailStart > s.diskEnd && cursor >= s.diskEnd && cursor < s.tailStart {
+
+	if stale {
+		bound := s.epochBoundary
+		if cursor > bound {
+			res.CursorAhead = true
+			res.CursorNext = resumeAt
+			res.Dropped = dropped
+			res.AtEnd = true
+			return res
+		}
+		s.nextSeq = bound
+		s.diskEnd = bound
+		s.pending = nil
+		s.tail = nil
+		s.degraded = false
+		s.tailStart = bound
+	} else if s.degraded && s.tailStart > s.diskEnd && cursor >= s.diskEnd && cursor < s.tailStart {
 		dropped += s.tailStart - cursor
 		cursor = s.tailStart
 	}
@@ -408,7 +481,7 @@ func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
 	if gap {
 		res.CursorAhead = true
 		res.Dropped = dropped
-		res.CursorNext = s.nextSeq
+		res.CursorNext = resumeAt
 		res.AtEnd = true
 		return res
 	}
@@ -419,7 +492,7 @@ func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
 		if gap2 {
 			res.CursorAhead = true
 			res.Dropped = dropped
-			res.CursorNext = s.nextSeq
+			res.CursorNext = resumeAt
 			res.AtEnd = true
 			return res
 		}
@@ -427,10 +500,9 @@ func readFromSnap(s readSnap, cursor, reqEpoch uint64) ReadResult {
 		data = more
 	}
 	if len(data) == 0 && cursor < s.nextSeq {
-		// Assigned seq that never reached disk (crash before flush).
 		res.CursorAhead = true
 		res.Dropped = dropped
-		res.CursorNext = s.nextSeq
+		res.CursorNext = resumeAt
 		res.AtEnd = true
 		return res
 	}
@@ -553,6 +625,9 @@ func readDiskSnap(segs []outputSeg, start, end uint64) ([]byte, uint64, bool) {
 }
 
 func (l *outputLog) flushPending() {
+	l.flushMu.Lock()
+	defer l.flushMu.Unlock()
+
 	l.mu.Lock()
 	if l.degraded {
 		l.mu.Unlock()
@@ -564,10 +639,7 @@ func (l *outputLog) flushPending() {
 	}
 	chunk := append([]byte(nil), l.pending...)
 	chunkStart := l.nextSeq - uint64(len(l.pending))
-	nseq := l.nextSeq
-	dir := l.dir
 	l.mu.Unlock()
-	_ = writeUintFile(filepath.Join(dir, outputSeqFile), nseq)
 
 	if err := l.writeChunk(chunk, chunkStart); err != nil {
 		l.fail(err)
@@ -577,11 +649,11 @@ func (l *outputLog) flushPending() {
 	l.mu.Lock()
 	if len(l.pending) >= len(chunk) {
 		l.pending = l.pending[len(chunk):]
-		l.diskEnd = chunkStart + uint64(len(chunk))
 	}
-	n := l.nextSeq
+	durable := l.diskEnd
+	dir := l.dir
 	l.mu.Unlock()
-	_ = writeUintFile(filepath.Join(dir, outputSeqFile), n)
+	_ = writeUintFile(filepath.Join(dir, outputSeqFile), durable)
 }
 
 func (l *outputLog) writeChunk(p []byte, start uint64) error {
@@ -629,11 +701,21 @@ func (l *outputLog) writeChunk(p []byte, start uint64) error {
 		l.totalSize += int64(n)
 		if len(l.segs) > 0 {
 			l.segs[len(l.segs)-1].size = l.curSize
+			end := l.segs[len(l.segs)-1].start + uint64(l.curSize)
+			if end > l.diskEnd {
+				l.diskEnd = end
+			}
 		}
+		var dropped []string
 		for l.totalSize > l.maxBytes && len(l.segs) > 1 {
-			l.dropOldestLocked()
+			if p := l.dropOldestLocked(); p != "" {
+				dropped = append(dropped, p)
+			}
 		}
 		l.mu.Unlock()
+		for _, p := range dropped {
+			_ = os.Remove(p)
+		}
 	}
 	return nil
 }
@@ -654,12 +736,11 @@ func (l *outputLog) openNewSegLocked(start uint64) error {
 	return nil
 }
 
-func (l *outputLog) dropOldestLocked() {
+func (l *outputLog) dropOldestLocked() string {
 	if len(l.segs) == 0 {
-		return
+		return ""
 	}
 	old := l.segs[0]
-	_ = os.Remove(old.path)
 	l.totalSize -= old.size
 	if l.totalSize < 0 {
 		l.totalSize = 0
@@ -667,9 +748,10 @@ func (l *outputLog) dropOldestLocked() {
 	l.segs = l.segs[1:]
 	if len(l.segs) == 0 {
 		l.earliest = l.diskEnd
-		return
+	} else {
+		l.earliest = l.segs[0].start
 	}
-	l.earliest = l.segs[0].start
+	return old.path
 }
 
 func (l *outputLog) fail(err error) {
@@ -722,10 +804,11 @@ func readOutputFiles(dir string, cursor, epoch uint64) ReadResult {
 	return l.ReadAt(cursor, epoch)
 }
 
-// ReadSession pulls output for a live dir. A running agent includes bytes
-// that have not been flushed yet. A dead agent can only return what reached
-// disk plus the persisted seq high-water mark; bytes lost with the process
-// leave a hole and later reads at that cursor return cursor_ahead.
+// ReadSession pulls output for a live dir. A running agent flushes pending
+// bytes before the reply, so the cursor only advances over data already
+// given to the kernel. A dead agent can only return what reached disk. A
+// hole (assigned seq that never reached disk — power loss, or disk-full
+// then restart) returns cursor_ahead.
 func ReadSession(dir string, cursor, epoch uint64) (ReadResult, error) {
 	if Alive(dir) {
 		return DialRead(dir, cursor, epoch)

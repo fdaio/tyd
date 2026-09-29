@@ -170,16 +170,15 @@ func TestOutputLogCloseRemovesNeedForFiles(t *testing.T) {
 func TestOutputLogCursorAheadAfterAbandon(t *testing.T) {
 	dir := t.TempDir()
 	l := openOutputLog(dir, 64<<20)
+	l.pauseWriterFlush()
 	seen := []byte("seen-in-memory-not-on-disk")
 	l.Append(seen)
-	r := l.Read(0)
-	if string(r.Data) != string(seen) {
-		t.Fatalf("live read %q", r.Data)
-	}
-	oldEpoch := r.Epoch
-	oldCursor := r.CursorNext
+	oldEpoch := l.Epoch()
+	l.mu.Lock()
+	oldCursor := l.nextSeq
+	l.mu.Unlock()
 	if oldCursor == 0 || oldEpoch == 0 {
-		t.Fatalf("want assigned seq, got %+v", r)
+		t.Fatalf("want assigned seq, epoch=%d cursor=%d", oldEpoch, oldCursor)
 	}
 	l.abandon()
 
@@ -206,6 +205,63 @@ func TestOutputLogCursorAheadAfterAbandon(t *testing.T) {
 	}
 }
 
+func TestOutputLogReadFlushesBeforeReply(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 64<<20)
+	seen := []byte("flushed-by-read")
+	l.Append(seen)
+	r := l.Read(0)
+	if string(r.Data) != string(seen) || r.CursorAhead {
+		t.Fatalf("live read %+v %q", r, r.Data)
+	}
+	oldEpoch := r.Epoch
+	l.abandon()
+
+	l2 := openOutputLog(dir, 64<<20)
+	defer l2.Close()
+	got := l2.ReadAt(0, oldEpoch)
+	if got.CursorAhead {
+		t.Fatalf("flushed bytes must remain readable on a stale epoch: %+v", got)
+	}
+	if string(got.Data) != string(seen) {
+		t.Fatalf("durable data %q", got.Data)
+	}
+}
+
+func TestOutputLogStaleEpochWithinBound(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 64<<20)
+	l.Append([]byte("AAA"))
+	r := l.Read(0)
+	if string(r.Data) != "AAA" {
+		t.Fatalf("read %q", r.Data)
+	}
+	oldEpoch := r.Epoch
+	l.abandon()
+
+	l2 := openOutputLog(dir, 64<<20)
+	defer l2.Close()
+	if l2.Epoch() == oldEpoch {
+		t.Fatal("want epoch bump")
+	}
+	got := l2.ReadAt(0, oldEpoch)
+	if got.CursorAhead || !bytes.HasPrefix(got.Data, []byte("AAA")) {
+		t.Fatalf("cursor inside the old durable end must be served: %+v %q", got, got.Data)
+	}
+	if got.Epoch == oldEpoch {
+		t.Fatalf("reply should carry the new epoch, got %d", got.Epoch)
+	}
+	l2.Append([]byte("YYY"))
+	waitFlushed(t, l2)
+	stale := l2.ReadAt(0, oldEpoch)
+	if stale.CursorAhead {
+		t.Fatalf("still-durable prefix should not be cursor_ahead: %+v", stale)
+	}
+	if bytes.Contains(stale.Data, []byte("YYY")) {
+		t.Fatalf("stale epoch must not include the new epoch's bytes: %q", stale.Data)
+	}
+}
+
 func TestOutputLogCursorAheadOnSeqHole(t *testing.T) {
 	dir := t.TempDir()
 	l := openOutputLog(dir, 64<<20)
@@ -219,23 +275,71 @@ func TestOutputLogCursorAheadOnSeqHole(t *testing.T) {
 
 	l2 := openOutputLog(dir, 64<<20)
 	defer l2.Close()
-	ahead := l2.ReadAt(3, oldEpoch)
-	if !ahead.CursorAhead || bytes.Contains(ahead.Data, []byte("YYY")) {
-		t.Fatalf("hole should be cursor_ahead %+v %q", ahead, ahead.Data)
+	prefix := l2.ReadAt(0, oldEpoch)
+	if prefix.CursorAhead || !bytes.HasPrefix(prefix.Data, []byte("AAA")) {
+		t.Fatalf("durable prefix with a stale epoch: %+v %q", prefix, prefix.Data)
+	}
+	atBound := l2.ReadAt(3, oldEpoch)
+	if atBound.CursorAhead {
+		t.Fatalf("cursor at the old durable end should still be served: %+v", atBound)
+	}
+	if bytes.Contains(atBound.Data, []byte("YYY")) {
+		t.Fatalf("must not splice onto the hole: %+v %q", atBound, atBound.Data)
+	}
+	hole := l2.ReadAt(3, l2.Epoch())
+	if !hole.CursorAhead {
+		t.Fatalf("hole with the current epoch should be cursor_ahead %+v %q", hole, hole.Data)
+	}
+	past := l2.ReadAt(4, oldEpoch)
+	if !past.CursorAhead {
+		t.Fatalf("cursor past the old durable end must be cursor_ahead: %+v", past)
 	}
 	l2.Append([]byte("YYY"))
 	waitFlushed(t, l2)
-	stale := l2.ReadAt(3, oldEpoch)
+	stale := l2.ReadAt(4, oldEpoch)
 	if !stale.CursorAhead || bytes.Contains(stale.Data, []byte("YYY")) {
-		t.Fatalf("must not splice YYY onto the hole: %+v %q", stale, stale.Data)
+		t.Fatalf("stale cursor must not return new bytes: %+v %q", stale, stale.Data)
 	}
-	start := l2.ReadAt(0, ahead.Epoch)
+	start := l2.ReadAt(0, hole.Epoch)
 	if !bytes.HasPrefix(start.Data, []byte("AAA")) {
 		t.Fatalf("durable prefix lost: %q", start.Data)
 	}
-	tail := l2.ReadAt(ahead.CursorNext, ahead.Epoch)
+	tail := l2.ReadAt(hole.CursorNext, hole.Epoch)
 	if !bytes.Contains(tail.Data, []byte("YYY")) {
 		t.Fatalf("new bytes at high-water %q", tail.Data)
+	}
+}
+
+func TestOutputLogDegradedCursorAheadAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 64<<20)
+	l.writeAll = func(*os.File, []byte) (int, error) {
+		return 0, errors.New("no space left on device")
+	}
+	l.Append([]byte("still-readable"))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && !l.Degraded() {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !l.Degraded() {
+		t.Fatal("want degraded")
+	}
+	r := l.Read(0)
+	if !bytes.Contains(r.Data, []byte("still-readable")) {
+		t.Fatalf("live degraded read %q", r.Data)
+	}
+	if r.CursorNext == 0 {
+		t.Fatal("expected cursor past disk")
+	}
+	oldEpoch := r.Epoch
+	oldCursor := r.CursorNext
+	l.abandon()
+
+	l2 := openOutputLog(dir, 64<<20)
+	defer l2.Close()
+	ahead := l2.ReadAt(oldCursor, oldEpoch)
+	if !ahead.CursorAhead || bytes.Contains(ahead.Data, []byte("still-readable")) {
+		t.Fatalf("ring bytes that never hit disk must be cursor_ahead after restart: %+v %q", ahead, ahead.Data)
 	}
 }
 
@@ -256,6 +360,7 @@ func TestOutputLogConcurrentReadWriteRotate(t *testing.T) {
 				return
 			default:
 				l.Append(buf)
+				time.Sleep(100 * time.Microsecond)
 			}
 		}
 	}()
