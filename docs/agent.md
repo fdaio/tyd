@@ -62,7 +62,7 @@ tyd CLI ── unix / tls / quic / relay ── tyd up ── live-agent (one pr
 Key facts for an agent:
 
 - Pairing metadata (ids + peer public keys) lives on the Control Panel; TTY bytes never go through it.
-- A registered `tyd up` publishes QUIC candidates to the Control Panel (ephemeral, refreshed ~30s, expiring ~90s). Clients try QUIC first, then fall back to the relay (`https://app.getfda.dev/relay` by default). No flag needed unless you want `--relay off` or a custom relay URL.
+- A registered `tyd up` publishes QUIC candidates to the Control Panel (ephemeral, refreshed ~30s, expiring ~90s). Clients try QUIC first, then fall back to the relay (`https://app.getfda.dev/relay` by default). No flag needed unless you want `--relay off` or a custom relay URL. A Control Panel that restarts and loses its registrations is noticed and repaired by the daemon itself on the next round, so deploying one does not mean bouncing `tyd up` on every host.
 - `~/.tyd` is the entire state root (see `cli.md` / `operations.md` for the full file list). `sessions.json` is a **client-local** catalog; `tyd session list` never dials. `peers.json` is a cache of what the daemon holds in memory.
 
 ## Pairing
@@ -161,6 +161,8 @@ tyd session watch "$SID"    # read-only, exits on Ctrl-C
 | `untrusted public key` / `untrusted server certificate` | AuthN or TLS pin mismatch | Re-pair; or copy the server's `server.crt` and pass `--tls-cert` with `--addr` |
 | `attach pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>` |
 | Dual NAT, direct dial fails | Both sides behind NAT with no public IP | Ensure `tyd up` is running (publishes candidates) and the relay is reachable; avoid `--relay off` |
+| `tyd cp: the Control Panel had forgotten this daemon; restored registration <id>` | The Control Panel restarted; its in-memory state went with it | Nothing — the daemon re-registered and republished its endpoint in the same round. Sessions survive; a client mid-session reconnects on the next `attach` |
+| `cp maintenance: cp re-register: …` on the target | A restart was followed by a failed restore (usually the Control Panel still down) | It retries on a 30s→1m→2m→5m backoff. Check the Control Panel, then `tyd peer show <id>` — the relay carries traffic meanwhile |
 | Disk full | State writes go to temp + rename; output log degrades to the ring; memory stays authoritative | Free disk, then `tyd doctor` / `tyd doctor --fix` |
 
 Useful introspection:

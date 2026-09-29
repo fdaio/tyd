@@ -21,6 +21,18 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+// cpTransport is a clone of the default transport with a wider idle pool. A
+// daemon polls its Control Panel on a timer and holds no traffic in between, so
+// a second idle connection is the difference between reusing the TLS session
+// and paying for a handshake on every tick. The default pool of two per host is
+// the right size for a request/response client and the wrong size for a
+// poller that is also the only client of its own connection.
+var cpTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxIdleConnsPerHost = 4
+	return t
+}()
+
 func New(baseURL string) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -29,7 +41,8 @@ func New(baseURL string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 15 * time.Second,
+			Transport: cpTransport,
+			Timeout:   15 * time.Second,
 		},
 	}
 }
@@ -150,6 +163,22 @@ func (c *Client) PublishEndpoint(daemonID, publicKey, addr, certFP string, ttl t
 func (c *Client) PublishEndpointFull(daemonID string, req controlpanel.PublishEndpointRequest) error {
 	var out controlpanel.EndpointResponse
 	return c.put("/v1/daemons/"+url.PathEscape(daemonID)+"/endpoint", req, &out)
+}
+
+// Sync publishes this daemon's endpoint and takes the peer list in the same
+// request. A daemon needs both on every maintenance round, so one round trip
+// instead of two halves what a fleet asks of a Control Panel.
+//
+// It reports 404 for two different things, and the caller has to tell them
+// apart: an unknown registration (this Control Panel lost us) and a Control
+// Panel with no /sync route at all (one older than this daemon). ListPeers is
+// what separates them.
+func (c *Client) Sync(daemonID string, req controlpanel.PublishEndpointRequest) (*controlpanel.SyncResponse, error) {
+	var out controlpanel.SyncResponse
+	if err := c.put("/v1/daemons/"+url.PathEscape(daemonID)+"/sync", req, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) GetEndpoint(daemonID string) (addr, certFP string, err error) {
