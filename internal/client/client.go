@@ -223,7 +223,13 @@ func dialViaRelay(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Co
 // against the peer public key learned at pairing time.
 func verifyRelayBinding(conn net.Conn, ep Endpoint, binder []byte) error {
 	if len(ep.PeerPublic) != ed25519.PublicKeySize {
-		return fmt.Errorf("relay e2e: no pinned key for peer %s; re-pair this peer", ep.PeerID)
+		// No key means this host cannot check who it reached. Telling the user to
+		// pair again is only right when the peer really was paired before
+		// tyd pinned keys; the pair itself may be sound and the key simply never
+		// reached the client, so say what is missing and what to do about it.
+		return fmt.Errorf("relay e2e: this host holds no key pinned for peer %s, so the peer behind the "+
+			"relay cannot be identified; run 'tyd peer list' to see whether the key is on record, and "+
+			"'tyd revoke %s' followed by a fresh 'tyd accept' if it is not", ep.PeerID, ep.PeerID)
 	}
 	_ = conn.SetDeadline(time.Now().Add(transport.E2EHandshakeTimeout))
 	f, err := protocol.ReadFrame(conn)
@@ -238,7 +244,11 @@ func verifyRelayBinding(conn net.Conn, ep Endpoint, binder []byte) error {
 		return fmt.Errorf("relay e2e: expected a binding, got %q", f.Type)
 	}
 	if !bytes.Equal(f.PublicKey, ep.PeerPublic) {
-		return fmt.Errorf("relay e2e: peer key mismatch")
+		// A key is on record and the peer answered with a different one. That is
+		// a refusal, not a request to pair again, and saying so keeps the two
+		// failures apart.
+		return fmt.Errorf("relay e2e: the peer behind the relay presented a key that is not the one pinned "+
+			"for %s; this connection is refused", ep.PeerID)
 	}
 	return transport.VerifyPeerBinding(ep.PeerPublic, nil, binder, f.Data)
 }
