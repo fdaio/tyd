@@ -348,7 +348,10 @@ func TestSendLargeDoesNotWedge(t *testing.T) {
 	defer cleanup()
 
 	// Well past a PTY input buffer, so the write cannot complete at once.
-	big := bytes.Repeat([]byte("x"), 8<<10)
+	// The trailing newline matters: without it the shell is left mid-line and
+	// the next command's echo is swallowed by a line redraw, which is a
+	// property of the shell rather than of send.
+	big := append(bytes.Repeat([]byte("x"), 8<<10), '\n')
 	done := make(chan error, 1)
 	go func() {
 		_, err := s.Send(big)
