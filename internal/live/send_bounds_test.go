@@ -137,6 +137,68 @@ func TestAttachPreemptsStuckSend(t *testing.T) {
 
 // A partial write is reported honestly, so a retry resumes from the right
 // offset rather than repeating what already landed.
+// While one send is held open, every other send is refused rather than queued,
+// and none of them reaches the PTY.
+//
+// This is the same property the session-level TestSendConcurrent used to assert
+// by racing 24 goroutines and requiring a collision to happen. Here the overlap
+// is arranged instead of hoped for, so the assertion cannot flake.
+func TestConcurrentSendsAreRefusedWhileOneIsHeld(t *testing.T) {
+	w := newBlockingWriter()
+	a := newTestAgent(t, w.Write, time.Minute)
+
+	held := make(chan int64, 1)
+	const heldBytes = 4096
+	go func() {
+		n, _ := a.awaitSend(make([]byte, heldBytes))
+		held <- int64(n)
+	}()
+	// Wait for the held send to have claimed the slot and reached the writer,
+	// rather than assuming a sleep was long enough. sent is bumped by the writer
+	// immediately before it calls the writer, so this is the moment the slot is
+	// genuinely occupied and the PTY genuinely blocked.
+	deadline := time.Now().Add(5 * time.Second)
+	for a.sent.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the held send never reached the writer")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	const n = 16
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = a.awaitSend([]byte("x"))
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if !errors.Is(err, errSendBusy) {
+			t.Fatalf("send %d: want refused as busy, got %v", i, err)
+		}
+	}
+	// A refused send returns before it can queue anything, so the PTY must have
+	// seen only the held send's own chunk.
+	if got := w.total(); got != 0 {
+		t.Fatalf("a refused send reached the PTY: %d bytes written", got)
+	}
+
+	w.unblock()
+	// Unblocking lets the held send finish all of its chunks. The total is
+	// exactly what it was given: the sixteen refused one-byte sends never
+	// reached the writer, before or after.
+	if written := <-held; written != heldBytes {
+		t.Fatalf("the held send reported %d bytes, want %d", written, heldBytes)
+	}
+	if got := w.total(); got != heldBytes {
+		t.Fatalf("the writer took %d bytes, want the held send's %d", got, heldBytes)
+	}
+}
+
 func TestSendReportsPartialWriteOnPreempt(t *testing.T) {
 	release := make(chan struct{})
 	var wg sync.WaitGroup
