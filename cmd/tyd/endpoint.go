@@ -45,12 +45,7 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
 		if len(relays) > 0 {
-			return client.Endpoint{
-				Kind:      transport.KindRelay,
-				RelayURL:  relays[0],
-				RelayURLs: relays,
-				PeerID:    peerID,
-			}, peerID, nil
+			return relayEndpoint(opts, relays, peerID), peerID, nil
 		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
 	}
@@ -61,12 +56,7 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 	addrs := endpointDialOrder(ep)
 	if len(addrs) == 0 {
 		if len(relays) > 0 {
-			return client.Endpoint{
-				Kind:      transport.KindRelay,
-				RelayURL:  relays[0],
-				RelayURLs: relays,
-				PeerID:    peerID,
-			}, peerID, nil
+			return relayEndpoint(opts, relays, peerID), peerID, nil
 		}
 		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
 	}
@@ -78,6 +68,10 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 		RelayURL:   firstOrEmpty(relays),
 		RelayURLs:  relays,
 		PeerID:     peerID,
+		// The relay is a fallback on this endpoint, not a separate one, so the
+		// key that identifies the peer has to travel with it. Without this the
+		// fallback cannot verify the peer it reached.
+		PeerPublic: peerPublicKey(opts, peerID),
 	}, peerID, nil
 }
 
@@ -471,6 +465,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		RelayURL:   firstOrEmpty(relays),
 		RelayURLs:  relays,
 		PeerID:     peerID,
+		PeerPublic: peerPublicKey(opts, peerID),
 	}, nil
 }
 
