@@ -71,7 +71,8 @@ holds standing access.
 ### Audit log (independent of approval mode)
 
 - `tyd up --audit-log PATH` appends JSON Lines (`0600`), suggested `~/.tyd/audit.log`
-- Events: create, create_pending, approve, reject, attach, attach_pending, detach, close, idle_close, denied
+- Events: create, create_pending, approve, reject, attach, attach_pending, detach, close, idle_close, denied, read
+- `read` appears only for a broken page (`cursor_reset`, `dropped_prefix`), not for ordinary paging
 - Records are metadata only (session id, principal, peer id, transport, remote addr, capability, timestamps); never TTY content
 - Audit stays local: nothing is sent to the CP
 - Without the flag, **post** writes the same records to stderr and other modes write nothing

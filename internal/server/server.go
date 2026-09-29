@@ -630,6 +630,26 @@ func (s *Server) gateAttach(st *connState, sessionID string) error {
 	return fmt.Errorf("attach pending approval; ask the operator to run: tyd session approve %s", sessionID)
 }
 
+// auditRead records a read that broke the client's view of the stream: the
+// cursor was reset, or the requested prefix was already gone. A plain page is
+// not recorded. Draining the disk cap is a thousand calls and the chain does
+// not rotate, so one event per page would bury the attach it belongs to.
+func (s *Server) auditRead(st *connState, sessionID string, cursorAhead bool, dropped uint64) {
+	reason := ""
+	switch {
+	case cursorAhead:
+		reason = "cursor_reset"
+	case dropped > 0:
+		reason = "dropped_prefix"
+	default:
+		return
+	}
+	e := s.connEvent(st, audit.KindRead)
+	e.SessionID = sessionID
+	e.Reason = reason
+	s.audit(e)
+}
+
 func (s *Server) Connections() []protocol.ConnInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -910,6 +930,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
+		s.auditRead(st, f.SessionID, res.CursorAhead, res.Dropped)
 		return st.send(protocol.Frame{
 			Type:        protocol.TypeReadResult,
 			Data:        res.Data,
