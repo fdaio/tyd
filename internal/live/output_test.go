@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -163,5 +164,141 @@ func TestOutputLogCloseRemovesNeedForFiles(t *testing.T) {
 	RemoveDir(dir)
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("dir still there: %v", err)
+	}
+}
+
+func TestOutputLogCursorAheadAfterAbandon(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 64<<20)
+	seen := []byte("seen-in-memory-not-on-disk")
+	l.Append(seen)
+	r := l.Read(0)
+	if string(r.Data) != string(seen) {
+		t.Fatalf("live read %q", r.Data)
+	}
+	oldEpoch := r.Epoch
+	oldCursor := r.CursorNext
+	if oldCursor == 0 || oldEpoch == 0 {
+		t.Fatalf("want assigned seq, got %+v", r)
+	}
+	l.abandon()
+
+	l2 := openOutputLog(dir, 64<<20)
+	defer l2.Close()
+	if l2.Epoch() == oldEpoch {
+		t.Fatalf("unclean restart should bump epoch, still %d", oldEpoch)
+	}
+	ahead := l2.ReadAt(oldCursor, oldEpoch)
+	if !ahead.CursorAhead || len(ahead.Data) != 0 {
+		t.Fatalf("want cursor_ahead, got %+v", ahead)
+	}
+
+	fresh := bytes.Repeat([]byte("Z"), 64)
+	l2.Append(fresh)
+	waitFlushed(t, l2)
+	stale := l2.ReadAt(oldCursor, oldEpoch)
+	if !stale.CursorAhead || bytes.Contains(stale.Data, []byte("Z")) {
+		t.Fatalf("stale cursor must not return new bytes: %+v %q", stale, stale.Data)
+	}
+	reset := l2.ReadAt(ahead.CursorNext, ahead.Epoch)
+	if !bytes.Contains(reset.Data, []byte("Z")) {
+		t.Fatalf("after reset want new bytes, got %q", reset.Data)
+	}
+}
+
+func TestOutputLogCursorAheadOnSeqHole(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 64<<20)
+	l.Append([]byte("AAA"))
+	waitFlushed(t, l)
+	if err := writeUintFile(filepath.Join(dir, outputSeqFile), 9); err != nil {
+		t.Fatal(err)
+	}
+	oldEpoch := l.Epoch()
+	l.abandon()
+
+	l2 := openOutputLog(dir, 64<<20)
+	defer l2.Close()
+	ahead := l2.ReadAt(3, oldEpoch)
+	if !ahead.CursorAhead || bytes.Contains(ahead.Data, []byte("YYY")) {
+		t.Fatalf("hole should be cursor_ahead %+v %q", ahead, ahead.Data)
+	}
+	l2.Append([]byte("YYY"))
+	waitFlushed(t, l2)
+	stale := l2.ReadAt(3, oldEpoch)
+	if !stale.CursorAhead || bytes.Contains(stale.Data, []byte("YYY")) {
+		t.Fatalf("must not splice YYY onto the hole: %+v %q", stale, stale.Data)
+	}
+	start := l2.ReadAt(0, ahead.Epoch)
+	if !bytes.HasPrefix(start.Data, []byte("AAA")) {
+		t.Fatalf("durable prefix lost: %q", start.Data)
+	}
+	tail := l2.ReadAt(ahead.CursorNext, ahead.Epoch)
+	if !bytes.Contains(tail.Data, []byte("YYY")) {
+		t.Fatalf("new bytes at high-water %q", tail.Data)
+	}
+}
+
+func TestOutputLogConcurrentReadWriteRotate(t *testing.T) {
+	dir := t.TempDir()
+	l := openOutputLog(dir, 8<<10)
+	defer l.Close()
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		buf := bytes.Repeat([]byte("w"), 256)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				l.Append(buf)
+			}
+		}
+	}()
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var cursor, epoch uint64
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					r := l.ReadAt(cursor, epoch)
+					if r.Epoch != 0 {
+						epoch = r.Epoch
+					}
+					if r.CursorAhead {
+						cursor = r.CursorNext
+						continue
+					}
+					cursor = r.CursorNext
+				}
+			}
+		}()
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	rotated := false
+	for time.Now().Before(deadline) {
+		r := l.Read(0)
+		if r.Dropped > 0 {
+			rotated = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(stop)
+	wg.Wait()
+	if !rotated {
+		r := l.Read(0)
+		if r.Dropped == 0 {
+			t.Fatal("expected a dropped prefix from rotation")
+		}
 	}
 }

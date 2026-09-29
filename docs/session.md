@@ -205,7 +205,12 @@ after a disconnect without taking the writer slot:
 
 - Seq is a byte offset from 0 for the life of the session. An agent restart
   continues from the files already in `~/.tyd/live/<id>/`. Output produced
-  while the agent was dead is gone.
+  while the agent was dead is gone and cannot be recovered.
+- If the process is killed before a flush, a client may hold a cursor past
+  what is on disk. The next agent bumps `epoch` and `read` returns
+  `cursor_ahead`. Resume from `cursor_next` with the new `epoch`; do not
+  keep the old cursor, or later writes at those offsets will look like the
+  missing bytes.
 - `attach` and `watch` are unchanged: exclusive writer, 64KB ring replay.
 - `read` is a non-blocking page (64KB max) with `cursor` / `cursor_next`.
   Holding `attach` can now retrieve up to the disk cap (default 64MB), not

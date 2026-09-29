@@ -50,7 +50,7 @@ Maximum frame size: 1 MiB.
 | `exited` | Shell exited; the session stays attachable and is now `EXITED` |
 | `exit` | Session closed, or a closed-session watch finished |
 | `closed` | Session close acknowledged |
-| `read_result` | Reply to `read`: `data`, `cursor_next`, `dropped`, `at_end` |
+| `read_result` | Reply to `read`: `data`, `cursor_next`, `dropped`, `at_end`, `epoch`, `cursor_ahead` |
 
 ## Authentication handshake
 
@@ -113,22 +113,32 @@ an in-process PTY (tests, no `tyd up`) replies `error` with
 Request:
 
 ```json
-{"type":"read","session_id":"…","cursor":0}
+{"type":"read","session_id":"…","cursor":0,"epoch":1}
 ```
 
 `cursor` is a byte offset from the first output byte of that session (seq 0).
-It does not reset when the live-agent process restarts; the new process
-continues from the end of the files already on disk. Bytes that were never
-flushed while the process was dead cannot be recovered.
+Omit `epoch` (or send 0) on the first pull; after that, send the `epoch` from
+the last `read_result`.
+
+The live-agent process can die before every byte the client already saw is on
+disk. A later agent continues seq from the durable high-water mark and bumps
+`epoch`. Reading with the old cursor then returns `cursor_ahead` instead of
+bytes that now sit at those offsets. Adopt `cursor_next` and `epoch` from that
+reply; do not keep the old cursor.
+
+Bytes produced while no agent was alive cannot be recovered. That gap is
+permanent.
 
 Reply (`read_result`):
 
 | Field | Meaning |
 |-------|---------|
-| `data` | Raw PTY bytes, same JSON encoding as `attached` / `output` `data`. At most 64KB. |
-| `cursor_next` | Offset after `data`. Use it as the next `cursor`. |
+| `data` | Raw PTY bytes, same JSON encoding as `attached` / `output` `data`. At most 64KB. Page with `cursor_next`. |
+| `cursor_next` | Offset after `data`. Use it as the next `cursor`. On `cursor_ahead`, this is the seq to resume from. |
 | `dropped` | If `cursor` is in a prefix the disk already deleted: `earliest - cursor`. The reply starts at the earliest readable byte. Not an error. |
-| `at_end` | No further bytes are known yet. If `data` is empty, `cursor_next` equals the request `cursor` (or the earliest seq when `dropped` forced a skip on an empty remainder). The call does not wait. |
+| `at_end` | No further bytes are known yet. If `data` is empty and `cursor_ahead` is false, `cursor_next` equals the request `cursor` (or the earliest seq when `dropped` forced a skip on an empty remainder). The call does not wait. |
+| `epoch` | Generation of this log. Send it on the next `read`. |
+| `cursor_ahead` | The request cursor is past durable seq, or `epoch` does not match. `data` is empty. Adopt `cursor_next` and `epoch`. |
 
 Hot attach/watch still replay only the 64KB in-memory ring. The disk log is
 for `read`. Default cap is 64MB per session (`--session-output-log-max`), in

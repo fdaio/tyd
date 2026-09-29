@@ -160,13 +160,13 @@ func (c *Conn) readLoop() {
 
 // DialRead is a one-shot pull of sequenced output. It does not take the
 // attach slot and does not stay connected.
-func DialRead(dir string, cursor uint64) (ReadResult, error) {
+func DialRead(dir string, cursor, epoch uint64) (ReadResult, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
 		return ReadResult{}, err
 	}
 	defer nc.Close()
-	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor}); err != nil {
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor, Epoch: epoch}); err != nil {
 		return ReadResult{}, err
 	}
 	f, err := protocol.ReadFrame(nc)
@@ -180,10 +180,12 @@ func DialRead(dir string, cursor uint64) (ReadResult, error) {
 		return ReadResult{}, fmt.Errorf("unexpected read reply %q", f.Type)
 	}
 	return ReadResult{
-		Data:       append([]byte(nil), f.Data...),
-		CursorNext: f.CursorNext,
-		Dropped:    f.Dropped,
-		AtEnd:      f.AtEnd,
+		Data:        append([]byte(nil), f.Data...),
+		CursorNext:  f.CursorNext,
+		Dropped:     f.Dropped,
+		AtEnd:       f.AtEnd,
+		Epoch:       f.Epoch,
+		CursorAhead: f.CursorAhead,
 	}, nil
 }
 

@@ -626,7 +626,8 @@ var ErrReadUnsupported = fmt.Errorf("read is not supported on in-process session
 
 // Read pulls a page of sequenced output. It does not take the exclusive
 // attach slot. Live-agents serve the disk log; in-process sessions error.
-func (s *Session) Read(cursor uint64) (live.ReadResult, error) {
+// epoch 0 means the caller has no generation yet.
+func (s *Session) Read(cursor, epoch uint64) (live.ReadResult, error) {
 	s.mu.Lock()
 	dir := s.liveDir
 	closed := s.closed || s.state == StateClosed
@@ -642,7 +643,7 @@ func (s *Session) Read(cursor uint64) (live.ReadResult, error) {
 	if dir == "" {
 		return live.ReadResult{}, ErrReadUnsupported
 	}
-	return live.ReadSession(dir, cursor)
+	return live.ReadSession(dir, cursor, epoch)
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {

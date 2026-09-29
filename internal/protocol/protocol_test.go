@@ -31,11 +31,13 @@ func TestFrameRoundTrip(t *testing.T) {
 
 func TestReadResultRoundTrip(t *testing.T) {
 	in := Frame{
-		Type:       TypeReadResult,
-		Data:       []byte("chunk"),
-		CursorNext: 12,
-		Dropped:    4,
-		AtEnd:      true,
+		Type:        TypeReadResult,
+		Data:        []byte("chunk"),
+		CursorNext:  12,
+		Dropped:     4,
+		AtEnd:       true,
+		Epoch:       3,
+		CursorAhead: true,
 	}
 	var buf bytes.Buffer
 	if err := WriteFrame(&buf, in); err != nil {
@@ -45,7 +47,7 @@ func TestReadResultRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Type != TypeReadResult || string(out.Data) != "chunk" || out.CursorNext != 12 || out.Dropped != 4 || !out.AtEnd {
+	if out.Type != TypeReadResult || string(out.Data) != "chunk" || out.CursorNext != 12 || out.Dropped != 4 || !out.AtEnd || out.Epoch != 3 || !out.CursorAhead {
 		t.Fatalf("got %+v", out)
 	}
 }

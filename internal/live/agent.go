@@ -319,16 +319,18 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 	}
 	var res ReadResult
 	if log != nil {
-		res = log.Read(f.Cursor)
+		res = log.ReadAt(f.Cursor, f.Epoch)
 	} else {
 		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
 	}
 	_ = protocol.WriteFrame(conn, protocol.Frame{
-		Type:       protocol.TypeReadResult,
-		Data:       res.Data,
-		CursorNext: res.CursorNext,
-		Dropped:    res.Dropped,
-		AtEnd:      res.AtEnd,
+		Type:        protocol.TypeReadResult,
+		Data:        res.Data,
+		CursorNext:  res.CursorNext,
+		Dropped:     res.Dropped,
+		AtEnd:       res.AtEnd,
+		Epoch:       res.Epoch,
+		CursorAhead: res.CursorAhead,
 	})
 }
 
