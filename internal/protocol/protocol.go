@@ -19,6 +19,7 @@ const (
 	TypeDetach  Type = "detach"
 	TypeWrite   Type = "write"
 	TypeRead    Type = "read"
+	TypeSend    Type = "send"
 	TypeResize  Type = "resize"
 	TypeSignal  Type = "signal"
 	TypeClose   Type = "close"
@@ -69,6 +70,10 @@ type Frame struct {
 	AtEnd       bool   `json:"at_end,omitempty"`
 	Epoch       uint64 `json:"epoch,omitempty"`
 	CursorAhead bool   `json:"cursor_ahead,omitempty"`
+	Exited      bool   `json:"exited,omitempty"`
+	// WaitMS asks the server to hold a read open until bytes arrive or the
+	// wait elapses. Zero means return immediately.
+	WaitMS uint32 `json:"wait_ms,omitempty"`
 }
 
 type ConnInfo struct {

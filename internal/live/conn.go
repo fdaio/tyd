@@ -159,14 +159,15 @@ func (c *Conn) readLoop() {
 }
 
 // DialRead is a one-shot pull of sequenced output. It does not take the
-// attach slot and does not stay connected.
-func DialRead(dir string, cursor, epoch uint64) (ReadResult, error) {
+// attach slot and does not stay connected. A non-zero waitMS parks the read
+// until bytes arrive, the wait elapses, or the reply must be returned anyway.
+func DialRead(dir string, cursor, epoch uint64, waitMS uint32) (ReadResult, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
 		return ReadResult{}, err
 	}
 	defer nc.Close()
-	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor, Epoch: epoch}); err != nil {
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor, Epoch: epoch, WaitMS: waitMS}); err != nil {
 		return ReadResult{}, err
 	}
 	f, err := protocol.ReadFrame(nc)
@@ -186,7 +187,31 @@ func DialRead(dir string, cursor, epoch uint64) (ReadResult, error) {
 		AtEnd:       f.AtEnd,
 		Epoch:       f.Epoch,
 		CursorAhead: f.CursorAhead,
+		Exited:      f.Exited,
 	}, nil
+}
+
+// DialSend injects keystrokes without taking the attach slot.
+func DialSend(dir string, data []byte) (int, error) {
+	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
+	if err != nil {
+		return 0, err
+	}
+	defer nc.Close()
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data}); err != nil {
+		return 0, err
+	}
+	f, err := protocol.ReadFrame(nc)
+	if err != nil {
+		return 0, err
+	}
+	if f.Type == protocol.TypeError {
+		return 0, fmt.Errorf("%s", f.Error)
+	}
+	if f.Type != protocol.TypeOK {
+		return 0, fmt.Errorf("unexpected send reply %q", f.Type)
+	}
+	return int(f.CursorNext), nil
 }
 
 func (c *Conn) Write(p []byte) (int, error) {

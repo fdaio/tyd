@@ -40,6 +40,9 @@ type ReadResult struct {
 	AtEnd       bool
 	Epoch       uint64
 	CursorAhead bool // stale cursor or epoch; adopt CursorNext and Epoch
+	// Exited reports that the shell is gone and the reply is at the end of
+	// the stream, so a follower has nothing left to wait for.
+	Exited bool
 }
 
 type outputSeg struct {
@@ -99,7 +102,32 @@ type outputLog struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
+	// dataCh is closed and replaced on every Append, so a waiting reader can
+	// block until the log grows instead of polling.
+	dataChMu sync.Mutex
+	dataCh   chan struct{}
+
 	writeAll func(f *os.File, p []byte) (int, error)
+}
+
+// dataSignal returns a channel closed the next time bytes are appended.
+func (l *outputLog) dataSignal() <-chan struct{} {
+	l.dataChMu.Lock()
+	defer l.dataChMu.Unlock()
+	if l.dataCh == nil {
+		l.dataCh = make(chan struct{})
+	}
+	return l.dataCh
+}
+
+func (l *outputLog) signalData() {
+	l.dataChMu.Lock()
+	ch := l.dataCh
+	l.dataCh = make(chan struct{})
+	l.dataChMu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
 }
 
 func outputLayout(maxBytes int64) (segSize int64) {
@@ -368,8 +396,8 @@ func (l *outputLog) Append(p []byte) {
 		return
 	}
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return
 	}
 	l.nextSeq += uint64(len(p))
@@ -380,9 +408,13 @@ func (l *outputLog) Append(p []byte) {
 	}
 	l.tailStart = l.nextSeq - uint64(len(l.tail))
 	if l.degraded {
+		l.mu.Unlock()
+		l.signalData()
 		return
 	}
 	l.pending = append(l.pending, p...)
+	l.mu.Unlock()
+	l.signalData()
 	select {
 	case l.wake <- struct{}{}:
 	default:
@@ -419,6 +451,49 @@ func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
 		snap.diskEnd = limit
 	}
 	return readFromSnap(snap, cursor, reqEpoch)
+}
+
+// ReadAtWait is ReadAt that blocks up to wait for new bytes. A reply that
+// already carries data, resets the cursor, or reports a dropped prefix
+// returns at once: the caller must see those without waiting.
+func (l *outputLog) ReadAtWait(cursor, reqEpoch uint64, wait time.Duration, exited func() bool) ReadResult {
+	if wait <= 0 {
+		res := l.ReadAt(cursor, reqEpoch)
+		res.Exited = exited != nil && exited()
+		return res
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		res := l.ReadAt(cursor, reqEpoch)
+		res.Exited = exited != nil && exited()
+		if len(res.Data) > 0 || res.CursorAhead || res.Dropped > 0 || res.Exited {
+			return res
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return res
+		}
+		ch := l.dataSignal()
+		// Re-check after arming the signal: an append that lands between the
+		// read and here would otherwise be missed until the timeout.
+		if l.hasNewDataSince(cursor) {
+			continue
+		}
+		timer := time.NewTimer(remaining)
+		select {
+		case <-ch:
+		case <-timer.C:
+		case <-l.done:
+		}
+		timer.Stop()
+	}
+}
+
+// hasNewDataSince reports whether the log holds bytes past cursor.
+func (l *outputLog) hasNewDataSince(cursor uint64) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.nextSeq > cursor
 }
 
 func (l *outputLog) snapshotLocked() readSnap {
@@ -769,15 +844,18 @@ func (l *outputLog) fail(err error) {
 		l.mu.Unlock()
 		return
 	}
-	l.degraded = true
 	l.pending = nil
 	cur := l.cur
 	l.cur = nil
+	// Write the marker before publishing the flag. A caller that sees
+	// Degraded() must be able to read output.err, because that is what
+	// `tyd doctor` reports.
+	_ = os.WriteFile(OutputErrPath(l.dir), []byte(err.Error()+"\n"), 0o600)
+	l.degraded = true
 	l.mu.Unlock()
 	if cur != nil {
 		_ = cur.Close()
 	}
-	_ = os.WriteFile(OutputErrPath(l.dir), []byte(err.Error()+"\n"), 0o600)
 }
 
 func (l *outputLog) closeFile() {
@@ -818,9 +896,23 @@ func readOutputFiles(dir string, cursor, epoch uint64) ReadResult {
 // given to the kernel. A dead agent can only return what reached disk. A
 // hole (assigned seq that never reached disk — power loss, or disk-full
 // then restart) returns cursor_ahead.
-func ReadSession(dir string, cursor, epoch uint64) (ReadResult, error) {
+//
+// A wait only applies to a live agent: once the shell is gone there is
+// nothing left to wait for, so a dead dir answers straight from disk.
+func ReadSession(dir string, cursor, epoch uint64, wait time.Duration) (ReadResult, error) {
 	if Alive(dir) {
-		return DialRead(dir, cursor, epoch)
+		return DialRead(dir, cursor, epoch, uint32(wait/time.Millisecond))
 	}
-	return readOutputFiles(dir, cursor, epoch), nil
+	res := readOutputFiles(dir, cursor, epoch)
+	res.Exited = true
+	return res, nil
+}
+
+// SendSession injects keystrokes into a live dir without taking the attach
+// slot. It fails when the agent is gone, so a send never starts a shell.
+func SendSession(dir string, data []byte) (int, error) {
+	if !Alive(dir) {
+		return 0, fmt.Errorf("session has no running agent; send needs a live shell")
+	}
+	return DialSend(dir, data)
 }

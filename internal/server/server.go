@@ -25,6 +25,15 @@ import (
 // operator approval for it, stay valid.
 const DefaultApprovalTTL = 10 * time.Minute
 
+const (
+	// MaxSendBytes caps one send. The frame limit is larger, but a send
+	// writes straight into the PTY, so a single call stays modest.
+	MaxSendBytes = 64 << 10
+	// MaxReadWait caps the server-side wait. A parked read holds a
+	// connection and a goroutine, so a client cannot ask for an open end.
+	MaxReadWait = 30 * time.Second
+)
+
 type Config struct {
 	Socket       string
 	Listen       string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
@@ -650,6 +659,15 @@ func (s *Server) auditRead(st *connState, sessionID string, cursorAhead bool, dr
 	s.audit(e)
 }
 
+// auditSend records that bytes were injected. The count goes in, never the
+// bytes: the chain stays free of terminal content.
+func (s *Server) auditSend(st *connState, sessionID string, n int) {
+	e := s.connEvent(st, audit.KindSend)
+	e.SessionID = sessionID
+	e.Bytes = n
+	s.audit(e)
+}
+
 func (s *Server) Connections() []protocol.ConnInfo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -926,7 +944,11 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID); err != nil {
 			return err
 		}
-		res, err := sess.Read(f.Cursor, f.Epoch)
+		wait := time.Duration(f.WaitMS) * time.Millisecond
+		if wait > MaxReadWait {
+			wait = MaxReadWait
+		}
+		res, err := sess.Read(f.Cursor, f.Epoch, wait)
 		if err != nil {
 			return err
 		}
@@ -939,7 +961,38 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			AtEnd:       res.AtEnd,
 			Epoch:       res.Epoch,
 			CursorAhead: res.CursorAhead,
+			Exited:      res.Exited,
 		})
+
+	case protocol.TypeSend:
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		if len(f.Data) == 0 {
+			return fmt.Errorf("send requires data")
+		}
+		if len(f.Data) > MaxSendBytes {
+			return fmt.Errorf("send is limited to %d bytes", MaxSendBytes)
+		}
+		sess, err := s.cfg.Mgr.Get(f.SessionID)
+		if err != nil {
+			return err
+		}
+		if err := s.require(st, auth.CapWrite, f.SessionID); err != nil {
+			return err
+		}
+		// send reads session output through the same path as read, so it is
+		// gated the same way. The approval is spent once, at the start of the
+		// request, and is not re-checked while a read waits.
+		if err := s.gateAttach(st, f.SessionID); err != nil {
+			return err
+		}
+		n, err := sess.Send(f.Data)
+		if err != nil {
+			return err
+		}
+		s.auditSend(st, f.SessionID, n)
+		return st.send(protocol.Frame{Type: protocol.TypeOK, CursorNext: uint64(n)})
 
 	case protocol.TypeWrite:
 		if st.att == nil {
