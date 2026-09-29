@@ -229,6 +229,10 @@ after a disconnect without taking the writer slot:
 - `tyd session read <id> --follow` streams until the shell exits; `--wait` holds
   one page open until bytes arrive. Under `pre` each page needs its own
   approval, so `--follow` is impractical there.
+- `read --until-match REGEX`, `--until-idle D` and `--max-bytes N` wait for a
+  condition instead of for any data. `--json` reports which one fired in
+  `reason`. `send --json` reports the cursor it wrote at, so a script can read
+  only the output its own command produced.
 - `read` is a non-blocking page (64KB max) with `cursor` / `cursor_next`.
   Holding `attach` can now retrieve up to the disk cap (default 64MB), not
   only the ring. That is still "can see the terminal"; it is a larger window.

@@ -71,14 +71,23 @@ func parseArgs(args []string) (options, error) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		// session read and session send own their flags. Once the subcommand
-		// is in hand, hand the rest over untouched instead of rejecting the
-		// flags it is going to parse itself.
-		if len(positional) >= 3 && strings.HasPrefix(a, "-") &&
-			positional[len(positional)-3] == "session" &&
-			(positional[len(positional)-2] == "read" || positional[len(positional)-2] == "send") {
-			opts.rest = append(append([]string{}, positional[1:]...), args[i:]...)
-			return opts, nil
+		// session read and session send own their flags. Once one of them is
+		// in hand, hand the rest over untouched instead of rejecting the
+		// flags it is going to parse itself. The session id may already be
+		// here or may still be coming, so look for the subcommand rather than
+		// assuming a position.
+		if strings.HasPrefix(a, "-") {
+			for k := 0; k+1 < len(positional); k++ {
+				if positional[k] != "session" {
+					continue
+				}
+				if positional[k+1] != "read" && positional[k+1] != "send" {
+					continue
+				}
+				opts.cmd = "session"
+				opts.rest = append(append([]string{}, positional[k+1:]...), args[i:]...)
+				return opts, nil
+			}
 		}
 		switch {
 		case a == "-h" || a == "--help":

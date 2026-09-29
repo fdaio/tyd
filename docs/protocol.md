@@ -119,8 +119,17 @@ most 64KB per call. It needs the **write** capability, not `attach`. The shell
 interprets the bytes, so this is typing, not a non-interactive `exec`: line
 discipline applies and the result comes back through `read`.
 
-Reply is `ok` with the byte count written, or `error`. The errors are
-deliberate and explicit:
+Reply is `ok` carrying the byte count written, plus the `cursor` (the output
+end **before** the write) and its `epoch`. A caller that sends and then reads
+from that cursor sees only what its own keystrokes produced; without it the
+read would race the echo and could pick up a prompt from earlier.
+
+```json
+{"type":"ok","cursor_next":8,"cursor":165,"epoch":1}
+```
+
+An `error` reply means nothing was written. The errors are deliberate and
+explicit:
 
 | Error | Meaning |
 |-------|---------|
@@ -152,6 +161,48 @@ non-zero value the server holds the reply until bytes arrive, the wait
 elapses, or the reply has to say something anyway. The server clamps the wait
 to 30s and allows at most 16 parked reads per session. A `cursor_ahead` or a
 `dropped` prefix is returned immediately without waiting.
+
+### Wake conditions
+
+Three optional fields decide *why* a waiting read returns. They sit alongside
+`wait_ms`, which stays the overall deadline.
+
+| Field | Range | Returns when |
+|-------|-------|--------------|
+| `idle_ms` | 50–30000 | Output has been quiet this long, measured from the last byte after the cursor. The clock only starts once at least one byte has arrived, so a session that says nothing waits for the timeout instead. |
+| `match` | RE2, ≤512 bytes | The cleaned text matches. |
+| `max_bytes` | ≤65536 | This many bytes have accumulated after the cursor. The reply is cut to exactly that, backed off to a rune boundary, so `cursor_next` is exact. |
+
+Any condition needs `wait_ms > 0`; without it the server returns an error
+rather than returning at once, which is the opposite of what was asked. With
+no condition the read behaves exactly as before, so an older client is
+unaffected.
+
+With a condition, data already sitting at the cursor is **not** enough. The
+read keeps waiting until a condition is met, the wait runs out, or the shell
+ends. `cursor_ahead` and a dropped prefix still return at once.
+
+`match` is evaluated against the terminal text a person would see: ANSI and
+OSC escapes removed, CRLF folded to a newline, a lone CR treated as redrawing
+the line, and a backspace erasing the character before it. An incomplete
+escape at the end of what has arrived is held back rather than guessed at, so
+a prompt split across two writes does not match on its first half. Only the
+last 16KB is examined, and the pattern is run at most every 20ms so a session
+that floods output cannot spend the CPU on it. RE2 is linear time, so the
+pattern itself cannot be a denial of service.
+
+The reply carries `reason`:
+
+| `reason` | Meaning |
+|----------|---------|
+| `available` | No condition was given and there was data, or a prefix was dropped |
+| `match` / `idle` / `max_bytes` | That condition fired |
+| `timeout` | The wait ran out with no condition met |
+| `exited` | The shell is gone and the reply is at the end of the stream |
+| `cursor_ahead` | The cursor had to be reset |
+
+`reason` and the `exited` flag always agree: `reason` is *why* the read
+returned, `exited` is that the stream is finished.
 
 `cursor` is a byte offset from the first output byte of that session (seq 0).
 Omit `epoch` (or send 0) on the first pull; after that, send the `epoch` from

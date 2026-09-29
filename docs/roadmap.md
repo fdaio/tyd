@@ -21,6 +21,10 @@
   page and `--follow` to stream until the shell exits
 - `tyd session send` injects keystrokes without taking the attach slot, and
   `read --wait` holds a page open until bytes arrive
+- `read` wake conditions — `idle_ms`, `match` (RE2 over the cleaned terminal
+  text), `max_bytes` — so a caller can say "wake me when the prompt appears"
+  instead of polling. `send` returns the cursor it wrote at, so a stateless
+  caller can read only the output its own keystrokes caused
 
 `send` writes **raw terminal bytes**, the same encoding `write` uses. It is not
 a non-interactive `exec`: it types into the session's shell, so the shell
