@@ -39,6 +39,9 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Acceptance (send/read against a real daemon)
+        run: make acceptance
+
       - name: Build
         run: go build -o tyd ./cmd/tyd
 
@@ -70,6 +73,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Acceptance (send/read against a real daemon)
+        run: make acceptance
 
       - name: Build
         run: go build -o tyd ./cmd/tyd

@@ -174,7 +174,11 @@ type agent struct {
 	ln      net.Listener
 	cmdDone chan struct{}
 
-	mu          sync.Mutex
+	mu sync.Mutex
+	// ioMu serialises a send's PTY write against an attach taking the slot.
+	// It is separate from mu because the write can block, and mu is needed
+	// by the shell reader that would unblock it.
+	ioMu        sync.Mutex
 	ring        []byte
 	rows        uint16
 	cols        uint16
@@ -260,7 +264,11 @@ func (a *agent) handleAttach(conn net.Conn, f protocol.Frame) {
 		}
 	}
 	p := newPeer(conn)
+	// Claim the slot under ioMu so a send in flight is not interleaved with
+	// the attach that is about to own the session.
+	a.ioMu.Lock()
 	a.attach = p
+	a.ioMu.Unlock()
 	if a.pty != nil {
 		_ = pty.Setsize(a.pty, &pty.Winsize{Rows: a.rows, Cols: a.cols})
 	}
@@ -385,28 +393,38 @@ func (a *agent) shellIsGone() bool {
 }
 
 // handleSend injects keystrokes without taking the attach slot. The occupancy
-// check and the PTY write happen under one lock so an attach that starts in
+// check and the PTY write happen under ioMu, so an attach that starts in
 // between cannot have its input interleaved with this write.
+//
+// The write must not hold a.mu. A PTY write blocks once the shell stops
+// draining its input, and the echo that would drain it comes back through
+// broadcast, which needs a.mu. Holding a.mu here would wedge the agent on any
+// large send: the writer waits for a reader that is itself waiting.
 func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
+	a.ioMu.Lock()
 	a.mu.Lock()
 	switch {
 	case a.closed:
 		a.mu.Unlock()
+		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session closed"})
 		return
 	case a.attach != nil:
 		// Do not name the holder: that would leak who is watching.
 		a.mu.Unlock()
+		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session in use: attached elsewhere"})
 		return
 	case a.shellExited:
 		// send never starts a shell. Respawning here would run a command the
 		// caller never asked to run.
 		a.mu.Unlock()
+		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "shell exited; attach to start a new one"})
 		return
 	case a.pty == nil:
 		a.mu.Unlock()
+		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "no shell running"})
 		return
 	}
@@ -415,8 +433,12 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 	// read would race the echo and may pick up a prompt from earlier.
 	cursor, epoch := a.outCursor()
 	ptmx := a.pty
-	n, err := ptmx.Write(f.Data)
 	a.mu.Unlock()
+	// The PTY write happens with a.mu released: it blocks once the shell
+	// stops draining its input, and the echo that would unblock it is
+	// recorded through a.mu. Holding it here wedges the agent on a large send.
+	n, err := ptmx.Write(f.Data)
+	a.ioMu.Unlock()
 	if err != nil {
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		return
