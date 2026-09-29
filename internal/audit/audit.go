@@ -30,6 +30,11 @@ const (
 	// It is a denial, and it is recorded so that waiting out the TTL leaves a
 	// trace rather than nothing.
 	KindApprovalExpired Kind = "approval_expired"
+	// KindRead marks a read that could not return a contiguous page: the
+	// cursor was reset, or the requested prefix was already gone. Paging
+	// through a log is not recorded, because a full drain is a thousand
+	// calls and the chain has no rotation.
+	KindRead Kind = "read"
 )
 
 type Event struct {

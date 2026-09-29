@@ -180,10 +180,14 @@ One JSON object per line, file created `0600`, appended across restarts:
 ```
 
 Events: `create`, `create_pending`, `approve`, `reject`, `attach`,
-`attach_pending`, `detach`, `close`, `idle_close`, `denied`. Records carry
-metadata only — terminal input and output never enter the log, and nothing is
-sent to the Control Panel. Without `--audit-log`, `post` mode still writes the
-same records to stderr, and `full` / `pre` write nothing.
+`attach_pending`, `detach`, `close`, `idle_close`, `denied`, `read`.
+`read` is recorded only when the reply broke the reader's view of the stream:
+`reason` is `cursor_reset` (the cursor was reset, so the reader lost its
+place) or `dropped_prefix` (the requested prefix was already gone). Ordinary
+paging is not recorded, because draining the output log is a thousand calls.
+Records carry metadata only — terminal input and output never enter the log,
+and nothing is sent to the Control Panel. Without `--audit-log`, `post` mode
+still writes the same records to stderr, and `full` / `pre` write nothing.
 
 ## Idle sessions
 
