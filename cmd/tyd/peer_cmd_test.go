@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +65,49 @@ func TestPeerListOrdersNewestFirst(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "2026-09-28T08:45:00Z") {
 		t.Errorf("first row should show the newest PAIRED timestamp: %q", lines[1])
+	}
+}
+
+// A dotted nickname parses as two dots in `tyd <session>.<peer>`, so setting
+// one says so there and then instead of leaving a usage error for later.
+func TestPeerAliasWarnsOnDotName(t *testing.T) {
+	dir := t.TempDir()
+	peersPath := filepath.Join(dir, "peers.json")
+	const id = "8a6592c332eba2b2"
+	doc := &peers.File{Peers: []peers.Peer{{ID: id, PairedAt: time.Now().UTC()}}}
+	if err := peers.Save(peersPath, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	namePeer := func(name string) (string, string) {
+		t.Helper()
+		var err error
+		var errOut string
+		out := captureStdout(t, func() {
+			errOut = captureStderr(t, func() {
+				err = run(options{cmd: "peer", rest: []string{"alias", id, name}, peers: peersPath})
+			})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, errOut
+	}
+
+	out, errOut := namePeer("osaka.tokyo")
+	if !strings.Contains(out, "osaka.tokyo -> "+id) {
+		t.Fatalf("nickname line missing: %q", out)
+	}
+	for _, want := range []string{"osaka.tokyo", "tyd <session>.<peer>", "--peer osaka.tokyo"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("warning missing %q: %q", want, errOut)
+		}
+	}
+	if got, _ := peers.Load(peersPath); got.Peers[0].Nickname != "osaka.tokyo" {
+		t.Fatalf("a dotted nickname is still legal and must be stored, got %q", got.Peers[0].Nickname)
+	}
+
+	if _, errOut = namePeer("osaka"); errOut != "" {
+		t.Fatalf("plain nickname must stay silent: %q", errOut)
 	}
 }

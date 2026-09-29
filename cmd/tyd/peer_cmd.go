@@ -230,6 +230,7 @@ func runPeerAlias(opts options, args []string) error {
 		return err
 	}
 	fmt.Printf("%s -> %s\n", args[1], p.ID)
+	warnDotName("peer alias", args[1], "tyd --peer "+args[1]+" session attach <session_id>")
 	return nil
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -35,4 +36,18 @@ func splitSessionPeer(token string) (sessionRef, peerRef string, ok bool) {
 		return "", "", false
 	}
 	return sessionRef, peerRef, true
+}
+
+// warnDotName says, at the moment a name is stored, that the dot in it costs
+// the user the `tyd <session>.<peer>` shortcut. Such a name is still a legal
+// alias — only the shortcut cannot parse it: two dots make the token a usage
+// error, and one dot would split the name in the wrong place. Nothing here
+// rejects the name; the long form stays the way to reach it.
+func warnDotName(kind, name, longForm string) {
+	if !strings.Contains(name, ".") {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: %s %q contains a '.', so `tyd <session>.<peer>` cannot use it; use %s\n",
+		kind, name, longForm)
 }
