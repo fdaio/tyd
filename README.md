@@ -17,8 +17,10 @@ your own instance to keep pairing metadata inside your network.
 
 ## Why tyd
 
-- Sessions outlive the client **and** the daemon — reconnect to the same shell from
-  another device, or after a `tyd up` restart.
+- Sessions outlive the client **and** the daemon. Each session runs in a process of
+  its own under `~/.tyd/live/`, so a shell keeps running across a `tyd up` restart
+  and the next daemon adopts it again. Reconnect to the same shell from another
+  device.
 - Pairs by token, not by account. Control Panel and relay are both self-hostable,
   and `--relay` takes a list so you are not tied to one rendezvous.
 - One binary for both ends. No SSH/VPN stack to configure; it layers on whatever
@@ -44,10 +46,15 @@ adds nothing: [docs/alternatives.md](docs/alternatives.md)
   session. What that means, and what to do about it, is in
   [security.md](docs/security.md).
 - **Local by default**: the daemon listens only on `~/.tyd/tyd.sock` until you
-  register; the QUIC data plane binds `0.0.0.0:0` (random port) when registered.
-- **Invites** are 10-minute, single-use tokens. Approval modes are `full`, `pre`,
-  or `post`; with `tyd up --audit-log FILE`, `post` also records control events
-  (never terminal content).
+  register; the QUIC data plane binds `0.0.0.0:0` (random port, every interface)
+  when registered. `tyd up --data-listen 127.0.0.1:0` keeps that listener on
+  loopback, `off` removes it — see
+  [data plane and relay](docs/operations.md#data-plane-and-relay).
+- **Invites** are single-use tokens that expire 10 minutes after the Control Panel
+  mints them. Approval modes are `full`, `pre`, or `post`. An audit log is
+  independent of the mode: `tyd up --audit-log FILE` records control events (never
+  terminal content) under any of them, and without that flag only `post` records
+  anything, on stderr.
 
 ## Install
 
@@ -62,15 +69,26 @@ Per-user install, no sudo. What it does:
   and keeps state in `~/.tyd`;
 - starts a per-user daemon that keeps running after your shell exits —
   `systemd --user` (with `loginctl enable-linger`) on Linux, a LaunchAgent on
-  macOS, `nohup` elsewhere;
+  macOS, `nohup` elsewhere. Nothing restarts the `nohup` fallback, so it does not
+  come back after a reboot; on a host with neither systemd nor launchd, start
+  `tyd up` again yourself or install a service of your own;
 - in a TTY, asks whether to mint a pairing invite. It does **not** touch your
   shell profile, and never uses `sudo`.
 
-Prefer to read it first? The script is the same file that is in this repo:
+Prefer to read it first? Fetch the script out of this repository:
 
 ```bash
-curl -fsSL https://app.getfda.dev/install.sh -o install.sh && less install.sh
+curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh -o install.sh && less install.sh
 ```
+
+`app.getfda.dev/install.sh` serves that same file. The archives it downloads are
+not signed, but GitHub publishes a SHA-256 digest for each one on the
+[release page](https://github.com/fdaio/tyd/releases/latest) if you want to check
+what you got.
+
+> Saved `install.sh` from before 2026-09-28? Fetch it again: release archives are
+> now named per architecture, so an old copy asks for a name that no longer
+> exists.
 
 Non-interactive installs:
 
@@ -89,19 +107,21 @@ supported.
 On the machine that holds the shells:
 
 ```bash
+tyd approval pre                      # set the mode before tyd up reads it
 tyd up                                # daemon
 tyd invite                            # mint a pairing token, wait 10 minutes
 tyd invite --no-wait                  # mint it and exit immediately
 ```
 
-Both forms wait for the peer to accept and refresh the token's TTL; press `Ctrl-C`
+Both forms wait for the peer to accept, counting the token's remaining life down
+on screen; it expires 10 minutes after it was minted either way. Press `Ctrl-C`
 to revoke. `invite` prints the peer command to run:
 
 ```
 Invite minted.
 
   url                   https://app.getfda.dev/tyd/6cbf1a02e8d94715
-  approval              full
+  approval              pre
   invite ttl            10m0s
   relay                 https://app.getfda.dev/relay (offers on tyd up)
 
@@ -109,12 +129,25 @@ Copy and run on the peer:
   tyd accept 8f1d4c60b29a4e37
 ```
 
+`url` is this daemon's page on the Control Panel, not a credential. The token on
+the `tyd accept` line is the one the peer needs, and it is derived here rather
+than issued by the Control Panel, so the Control Panel cannot use it to stand in
+for this host.
+
+`pre` is the mode worth starting with for a peer you have not used before: every
+remote create, attach, and watch waits for a `tyd session approve` on this
+machine, and each approval covers one request. `full` is the default and starts
+a shell as soon as the peer asks. `tyd approval pre` switches without changing
+the daemon id or any pairing, and a `tyd up` restart applies it; a host with no
+registration yet wants `tyd register --approval pre` instead. See
+[approval modes](docs/session.md#approval-modes).
+
 On the peer machine, after installing tyd:
 
 ```bash
 tyd accept TOKEN --as laptop          # pair
 tyd --peer laptop session create      # create a shell and attach
-tyd session alias jammy               # name it, for the shortcut below
+tyd session alias jammy               # name the most recent session
 tyd jammy.laptop                      # = tyd --peer laptop session attach jammy
 tyd session list                      # local catalog
 tyd session watch jammy               # read-only follow
@@ -141,7 +174,7 @@ attachable. Pairing, dual-NAT, and network details: [docs/connect.md](docs/conne
 
 ## Uninstall
 
-There is no `tyd uninstall`. Close your sessions first — each one is a live agent
+There is no `tyd uninstall`. Close your sessions first — each one is a shell
 process that outlives the daemon:
 
 ```bash
@@ -154,6 +187,7 @@ Then stop the daemon and its autostart entry:
 ```bash
 # Linux (systemd user unit)
 systemctl --user disable --now tyd.service && rm ~/.config/systemd/user/tyd.service
+loginctl disable-linger "$(id -un)"   # the installer turns this on
 # macOS (LaunchAgent)
 launchctl unload ~/Library/LaunchAgents/dev.getfda.tyd.plist
 # nohup fallback
@@ -204,10 +238,6 @@ make install     # ~/.local/bin/tyd
 a detached process). That daemon keeps running after the shell exits. A
 `DESTDIR` install only stages the binary and does not start anything. The
 [install script](#install) downloads the latest GitHub Release and does the same daemon setup.
-
-If you saved `install.sh` before 2026-09-28, fetch it again: release archives
-are now named per architecture, so the old copy asks for a name that no longer
-exists.
 
 ## Contributing
 
