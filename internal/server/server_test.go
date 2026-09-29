@@ -15,6 +15,7 @@ import (
 	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/client"
+	"tyd/internal/live"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -1133,7 +1134,7 @@ func TestReadInProcessUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Read(ep, key, info.ID, 0, 0, 0)
+	_, err = client.Read(ep, key, info.ID, 0, 0, 0, live.ReadConditions{})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("want unsupported, got %v", err)
 	}

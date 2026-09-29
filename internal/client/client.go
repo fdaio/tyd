@@ -18,6 +18,7 @@ import (
 	"golang.org/x/term"
 
 	"tyd/internal/auth"
+	"tyd/internal/live"
 	"tyd/internal/protocol"
 	"tyd/internal/relay"
 	"tyd/internal/transport"
@@ -485,13 +486,16 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 // exclusive attach slot. The reply is raw PTY bytes; cursor_next pages.
 // Pass epoch 0 on the first pull, then the epoch from the last read_result.
 // A non-zero wait parks the read until bytes arrive or the wait elapses.
-func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64, wait time.Duration) (protocol.Frame, error) {
+func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64, wait time.Duration, cond live.ReadConditions) (protocol.Frame, error) {
 	resp, err := rpc(ep, key, protocol.Frame{
 		Type:      protocol.TypeRead,
 		SessionID: sessionID,
 		Cursor:    cursor,
 		Epoch:     epoch,
 		WaitMS:    uint32(wait / time.Millisecond),
+		IdleMS:    cond.IdleMS,
+		Match:     cond.Match,
+		MaxBytes:  cond.MaxBytes,
 	})
 	if err != nil {
 		return protocol.Frame{}, err
@@ -502,21 +506,30 @@ func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch u
 	return resp, nil
 }
 
+// SendReply is what a send reports: how many bytes landed, and the output
+// position from before the write, so a caller can read only what its own
+// keystrokes produced.
+type SendReply struct {
+	Written int
+	Cursor  uint64
+	Epoch   uint64
+}
+
 // Send injects keystrokes without taking the exclusive attach slot. It needs
 // the write capability but not attach. An error means nothing was written.
-func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (int, error) {
+func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
 	resp, err := rpc(ep, key, protocol.Frame{
 		Type:      protocol.TypeSend,
 		SessionID: sessionID,
 		Data:      data,
 	})
 	if err != nil {
-		return 0, err
+		return SendReply{}, err
 	}
 	if resp.Type != protocol.TypeOK {
-		return 0, fmt.Errorf("unexpected send reply %q", resp.Type)
+		return SendReply{}, fmt.Errorf("unexpected send reply %q", resp.Type)
 	}
-	return int(resp.CursorNext), nil
+	return SendReply{Written: int(resp.CursorNext), Cursor: resp.Cursor, Epoch: resp.Epoch}, nil
 }
 
 func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {

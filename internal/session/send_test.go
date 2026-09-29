@@ -34,7 +34,7 @@ func readUntil(t *testing.T, s *Session, cursor, epoch uint64, want string, wait
 	deadline := time.Now().Add(8 * time.Second)
 	var acc []byte
 	for time.Now().Before(deadline) {
-		res, err := s.Read(cursor, epoch, wait)
+		res, err := s.Read(cursor, epoch, wait, live.ReadConditions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +227,7 @@ func TestReadWaitTimesOut(t *testing.T) {
 	cursor, epoch, _ := readUntil(t, s, 0, 0, "", 200*time.Millisecond)
 
 	start := time.Now()
-	res, err := s.Read(cursor, epoch, 300*time.Millisecond)
+	res, err := s.Read(cursor, epoch, 300*time.Millisecond, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestReadWaitSkipsOnCursorAhead(t *testing.T) {
 	defer cleanup()
 
 	start := time.Now()
-	res, err := s.Read(1<<40, 0, 5*time.Second)
+	res, err := s.Read(1<<40, 0, 5*time.Second, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestReadExitedFlag(t *testing.T) {
 
 	// Ask for a long wait. A dead shell must not make the caller sit it out.
 	start := time.Now()
-	res, err := s.Read(cursor, epoch, 5*time.Second)
+	res, err := s.Read(cursor, epoch, 5*time.Second, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestSendReadUnsupportedInProcess(t *testing.T) {
 	if _, err := s.Send([]byte("echo x\n")); !errors.Is(err, ErrSendUnsupported) {
 		t.Fatalf("want ErrSendUnsupported, got %v", err)
 	}
-	if _, err := s.Read(0, 0, 0); !errors.Is(err, ErrReadUnsupported) {
+	if _, err := s.Read(0, 0, 0, live.ReadConditions{}); !errors.Is(err, ErrReadUnsupported) {
 		t.Fatalf("want ErrReadUnsupported, got %v", err)
 	}
 }
