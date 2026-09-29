@@ -170,9 +170,16 @@ func TestSendAfterDetach(t *testing.T) {
 	readUntil(t, s, 0, 0, "send-after-detach", 2*time.Second)
 }
 
-// A second send is refused while one is in progress rather than queued
-// behind it, so a caller learns immediately and can retry. The sends that
-// are accepted must not corrupt each other.
+// Concurrent sends must each either land or be told to retry, and the ones that
+// land must not corrupt each other.
+//
+// Whether any send is actually refused is deliberately not asserted here. The
+// slot is held for the length of one small PTY write plus a writer handoff, so
+// whether 24 goroutines collide is decided by the scheduler, not by this code:
+// it failed about one run in sixty, and on a loaded runner often enough to turn
+// main red. That a second send is refused rather than queued behind the first
+// is proved deterministically in internal/live, where the writer can be held
+// open instead of raced against.
 func TestSendConcurrent(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
@@ -188,18 +195,13 @@ func TestSendConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	var busy int
 	for i, err := range errs {
 		switch {
 		case err == nil:
 		case strings.Contains(err.Error(), "a send is in progress"):
-			busy++
 		default:
 			t.Fatalf("send %d: %v", i, err)
 		}
-	}
-	if busy == 0 {
-		t.Fatal("expected some sends to be refused as busy")
 	}
 	if s.State() == StateExited {
 		t.Fatal("concurrent sends killed the shell")
