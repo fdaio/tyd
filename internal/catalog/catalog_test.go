@@ -28,46 +28,100 @@ func TestRememberAndList(t *testing.T) {
 
 func TestMergeAliasesAndRecent(t *testing.T) {
 	f := &File{}
-	adoc := &alias.File{Aliases: []alias.Entry{{Name: "amy", SessionID: "s1", PeerID: "p1", SetAt: time.Now()}}}
+	adoc := &alias.File{Aliases: []alias.Entry{{Name: "amy", SessionID: "fedcba9876543210", PeerID: "p1", SetAt: time.Now()}}}
 	f.MergeAliases(adoc)
-	f.MergeRecent(&recent.File{PeerID: "p1", SessionID: "s1"})
-	f.MergeRecent(&recent.File{PeerID: "p2", SessionID: "s2"})
+	f.MergeRecent(&recent.File{PeerID: "p1", SessionID: "fedcba9876543210"})
+	f.MergeRecent(&recent.File{PeerID: "p2", SessionID: "0011223344556677"})
 	if len(f.Sessions) != 2 {
 		t.Fatalf("%+v", f.Sessions)
 	}
-	rec, ok := f.Get("s1")
+	rec, ok := f.Get("fedcba9876543210")
 	if !ok || rec.PeerID != "p1" {
 		t.Fatalf("%v %+v", ok, rec)
 	}
 }
 
+// A nickname reaches recent.json and aliases.json whenever the user types one,
+// because the reference is resolved before the daemon is asked. Neither file
+// may turn that name into a session row.
+func TestMergeSkipsNamesAsSessionIDs(t *testing.T) {
+	f := &File{}
+	adoc := &alias.File{Aliases: []alias.Entry{
+		{Name: "tama.cp", SessionID: "work-laptop", PeerID: "p1"},
+		{Name: "ok", SessionID: "0123456789abcdef", PeerID: "p1"},
+	}}
+	f.MergeAliases(adoc)
+	f.MergeRecent(&recent.File{PeerID: "p1", SessionID: "amy"})
+	if _, ok := f.Get("work-laptop"); ok {
+		t.Error("an alias name must not become a session row")
+	}
+	if _, ok := f.Get("amy"); ok {
+		t.Error("a recent name must not become a session row")
+	}
+	if _, ok := f.Get("0123456789abcdef"); !ok {
+		t.Error("a real session id must still merge")
+	}
+}
+
 func TestMergeAliasesSkipsCorruptAliasAsID(t *testing.T) {
-	f := &File{Sessions: []Record{{ID: "real-sess", State: "DETACHED"}}}
+	f := &File{Sessions: []Record{{ID: "fedcba9876543210", State: "DETACHED"}}}
 	adoc := &alias.File{Aliases: []alias.Entry{
 		{Name: "tama", SessionID: "tama", PeerID: "p1"},
-		{Name: "ok", SessionID: "real-sess", PeerID: "p1"},
+		{Name: "ok", SessionID: "fedcba9876543210", PeerID: "p1"},
 	}}
 	f.MergeAliases(adoc)
 	if _, ok := f.Get("tama"); ok {
 		t.Fatal("corrupt alias name-as-id must not enter catalog")
 	}
-	if _, ok := f.Get("real-sess"); !ok {
+	if _, ok := f.Get("fedcba9876543210"); !ok {
 		t.Fatal("real session missing")
+	}
+}
+
+func TestIsSessionID(t *testing.T) {
+	for _, id := range []string{"0123456789abcdef", "0000000000000000", "abcdef0123456789"} {
+		if !IsSessionID(id) {
+			t.Errorf("%q should be a session id", id)
+		}
+	}
+	for _, id := range []string{"", "amy", "work-laptop", "tama.cp", "0123456789abcde", "0123456789abcdef0", "0123456789ABCDEF", "0123456789abcdeg"} {
+		if IsSessionID(id) {
+			t.Errorf("%q should not be a session id", id)
+		}
+	}
+}
+
+// A row whose id is a name can never be pruned by name once the alias is
+// renamed away, so the shape check has to be its own pass.
+func TestPruneNonSessionIDs(t *testing.T) {
+	f := &File{Sessions: []Record{
+		{ID: "amy", State: "DETACHED"},
+		{ID: "work-laptop", State: "DETACHED"},
+		{ID: "fedcba9876543210", State: "ATTACHED"},
+	}}
+	if !f.PruneNonSessionIDs() {
+		t.Fatal("expected prune")
+	}
+	if len(f.Sessions) != 1 || f.Sessions[0].ID != "fedcba9876543210" {
+		t.Fatalf("%+v", f.Sessions)
+	}
+	if f.PruneNonSessionIDs() {
+		t.Fatal("second prune should be no-op")
 	}
 }
 
 func TestPruneAliasNamedIDs(t *testing.T) {
 	f := &File{Sessions: []Record{
 		{ID: "tama", State: "DETACHED", PeerID: "p1"},
-		{ID: "31ee241ce1aae29b", State: "DETACHED", PeerID: "p1"},
+		{ID: "fedcba9876543210", State: "DETACHED", PeerID: "p1"},
 	}}
 	adoc := &alias.File{Aliases: []alias.Entry{
-		{Name: "tama", SessionID: "31ee241ce1aae29b", PeerID: "p1"},
+		{Name: "tama", SessionID: "fedcba9876543210", PeerID: "p1"},
 	}}
 	if !f.PruneAliasNamedIDs(adoc) {
 		t.Fatal("expected prune")
 	}
-	if len(f.Sessions) != 1 || f.Sessions[0].ID != "31ee241ce1aae29b" {
+	if len(f.Sessions) != 1 || f.Sessions[0].ID != "fedcba9876543210" {
 		t.Fatalf("%+v", f.Sessions)
 	}
 	if f.PruneAliasNamedIDs(adoc) {
