@@ -120,11 +120,15 @@ Request:
 Omit `epoch` (or send 0) on the first pull; after that, send the `epoch` from
 the last `read_result`.
 
-The live-agent process can die before every byte the client already saw is on
-disk. A later agent continues seq from the durable high-water mark and bumps
-`epoch`. Reading with the old cursor then returns `cursor_ahead` instead of
-bytes that now sit at those offsets. Adopt `cursor_next` and `epoch` from that
-reply; do not keep the old cursor.
+`read` flushes pending bytes to the kernel before it replies, so a `kill -9` of
+the live-agent cannot leave a client cursor past what is on disk. Epoch still
+bumps on an unclean restart (missing `output.clean`) so a power loss, or a
+disk-full hole, cannot reuse offsets the client already saw.
+
+A later agent continues seq from the durable files. An `epoch` mismatch still
+serves a cursor that sits inside the previous epoch's durable end; only a
+cursor past that bound returns `cursor_ahead`. Adopt `cursor_next` and `epoch`
+from a `cursor_ahead` reply; do not keep the old cursor.
 
 Bytes produced while no agent was alive cannot be recovered. That gap is
 permanent.
@@ -138,14 +142,16 @@ Reply (`read_result`):
 | `dropped` | If `cursor` is in a prefix the disk already deleted: `earliest - cursor`. The reply starts at the earliest readable byte. Not an error. |
 | `at_end` | No further bytes are known yet. If `data` is empty and `cursor_ahead` is false, `cursor_next` equals the request `cursor` (or the earliest seq when `dropped` forced a skip on an empty remainder). The call does not wait. |
 | `epoch` | Generation of this log. Send it on the next `read`. |
-| `cursor_ahead` | The request cursor is past durable seq, or `epoch` does not match. `data` is empty. Adopt `cursor_next` and `epoch`. |
+| `cursor_ahead` | The request cursor is past durable seq, or past the previous epoch's durable end. `data` is empty. Adopt `cursor_next` and `epoch`. An `epoch` mismatch with a cursor still inside that durable end is served and the reply carries the current `epoch`. |
 
 Hot attach/watch still replay only the 64KB in-memory ring. The disk log is
 for `read`. Default cap is 64MB per session (`--session-output-log-max`), in
 4MB segments. Files are `0600` under `~/.tyd/live/<id>/` and are deleted with
 the session. They are **not** the `--audit-log` chain: that log still never
 records terminal bytes. A full disk stops new segment writes and keeps the
-PTY on the ring; `tyd doctor` reports `output.err`.
+PTY on the 64KB ring (`seq` still advances). Live `read` can return those ring
+bytes; they are not durable, and after restart a cursor in that range is
+`cursor_ahead`. `tyd doctor` reports `output.err`.
 
 ## Transport
 
