@@ -1,4 +1,4 @@
-package live
+package termclean
 
 import (
 	"strings"
@@ -63,7 +63,7 @@ func TestCleanCRLFAndBackspace(t *testing.T) {
 // A prompt split across two writes must not match on the first half. The
 // cleaner holds an incomplete sequence back until the rest arrives.
 func TestCleanHoldsPartialEscape(t *testing.T) {
-	c := newTextCleaner()
+	c := New()
 	first := c.Feed([]byte("user@host\x1b[01;3"))
 	if strings.Contains(string(first), "01;3") {
 		t.Fatalf("partial CSI leaked: %q", first)
@@ -84,7 +84,7 @@ func TestCleanHoldsPartialEscape(t *testing.T) {
 // A prompt split in the middle of plain text must still be matchable, because
 // the caller sees the tail once the second half lands.
 func TestCleanAcrossChunksPrompt(t *testing.T) {
-	c := newTextCleaner()
+	c := New()
 	first := c.Feed([]byte("pass"))
 	if !strings.Contains(string(first), "pass") {
 		t.Fatalf("first chunk: %q", first)
@@ -99,7 +99,7 @@ func TestCleanAcrossChunksPrompt(t *testing.T) {
 // A CR at the end of a chunk must be held back, because the next chunk may
 // start with LF and make it a CRLF.
 func TestCleanHoldsTrailingCR(t *testing.T) {
-	c := newTextCleaner()
+	c := New()
 	first := c.Feed([]byte("done\r"))
 	if strings.Contains(string(first), "\n") {
 		t.Fatalf("CR turned into a newline early: %q", first)
@@ -115,37 +115,37 @@ func TestTruncateUTF8(t *testing.T) {
 	s := []byte("你好世界")
 	cases := map[int]int{0: 0, 1: 0, 2: 0, 3: 3, 4: 3, 5: 3, 6: 6, 9: 9, 12: 12}
 	for n, want := range cases {
-		if got := truncateUTF8(s, n); got != want {
+		if got := TruncateUTF8(s, n); got != want {
 			t.Fatalf("truncate(%d) = %d, want %d", n, got, want)
 		}
 	}
 	// Past the end is clamped, not an error.
-	if got := truncateUTF8(s, 99); got != len(s) {
+	if got := TruncateUTF8(s, 99); got != len(s) {
 		t.Fatalf("clamp: %d", got)
 	}
 	// ASCII is never moved.
-	if got := truncateUTF8([]byte("abcdef"), 3); got != 3 {
+	if got := TruncateUTF8([]byte("abcdef"), 3); got != 3 {
 		t.Fatalf("ascii: %d", got)
 	}
 }
 
 func TestLastWindow(t *testing.T) {
-	b := []byte(strings.Repeat("a", matchWindow*2))
-	w := lastWindow(b, 0)
-	if len(w) != matchWindow {
+	b := []byte(strings.Repeat("a", MatchWindow*2))
+	w := LastWindow(b, 0)
+	if len(w) != MatchWindow {
 		t.Fatalf("window = %d", len(w))
 	}
 	// A cursor inside the data starts from the cursor.
-	w = lastWindow(b, matchWindow)
-	if len(w) != matchWindow {
+	w = LastWindow(b, MatchWindow)
+	if len(w) != MatchWindow {
 		t.Fatalf("window from cursor = %d", len(w))
 	}
 	// A cursor past the end is empty, not a panic.
-	if w := lastWindow(b, len(b)+10); len(w) != 0 {
+	if w := LastWindow(b, len(b)+10); len(w) != 0 {
 		t.Fatalf("past end = %d", len(w))
 	}
 	// A cursor before the start is clamped.
-	if w := lastWindow(b, -5); len(w) != matchWindow {
+	if w := LastWindow(b, -5); len(w) != MatchWindow {
 		t.Fatalf("negative cursor = %d", len(w))
 	}
 }
