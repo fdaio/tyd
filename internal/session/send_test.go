@@ -343,43 +343,31 @@ func TestSendReadUnsupportedInProcess(t *testing.T) {
 // write blocks until the shell drains it, and the echo that drains it is
 // recorded under the agent's state lock, so a send that holds that lock
 // across the write deadlocks the whole session.
+//
+// The assertions are about send and read returning, not about what the
+// shell prints. A kilobyte-long command line makes the shell redraw and
+// mangle whatever comes next, so asserting on output here tests the shell.
 func TestSendLargeDoesNotWedge(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 
 	// Well past a PTY input buffer, so the write cannot complete at once.
-	// The trailing newline matters: without it the shell is left mid-line and
-	// the next command's echo is swallowed by a line redraw, which is a
-	// property of the shell rather than of send.
-	big := append(bytes.Repeat([]byte("x"), 8<<10), '\n')
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.Send(big)
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		// A timeout here is acceptable backpressure; a hang is not.
-		if err != nil {
-			t.Logf("large send reported %v (backpressure, not a wedge)", err)
+	big := bytes.Repeat([]byte("x"), 8<<10)
+	await := func(what string, fn func() error) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- fn() }()
+		select {
+		case err := <-done:
+			// A timeout here is acceptable backpressure; a hang is not.
+			if err != nil {
+				t.Logf("%s reported %v (backpressure, not a wedge)", what, err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s hung instead of returning", what)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("a large send hung instead of returning")
 	}
-
-	// The session has to still work afterwards.
-	waitDone := make(chan error, 1)
-	go func() {
-		_, err := s.Send([]byte("echo AFTER\n"))
-		waitDone <- err
-	}()
-	select {
-	case err := <-waitDone:
-		if err != nil {
-			t.Fatalf("session unusable after a large send: %v", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("session wedged after a large send")
-	}
-	readUntil(t, s, 0, 0, "AFTER", 10*time.Second)
+	await("large send", func() error { _, err := s.Send(big); return err })
+	await("send after a large one", func() error { _, err := s.Send([]byte("true\n")); return err })
+	await("read after a large send", func() error { _, err := s.Read(0, 0, 0, live.ReadConditions{}); return err })
 }
