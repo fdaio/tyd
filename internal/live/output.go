@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"tyd/internal/termclean"
 )
 
 const (
@@ -547,7 +549,7 @@ func (l *outputLog) sleepUntilData(cursor uint64, remaining time.Duration) bool 
 // the rest of it arrives.
 func (l *outputLog) readUntilCondition(cursor, reqEpoch uint64, wait time.Duration, cond Conditions, exited func() bool) ReadResult {
 	deadline := time.Now().Add(wait)
-	cleaner := newTextCleaner()
+	cleaner := termclean.New()
 	var (
 		cleaned   []byte
 		seeded    bool
@@ -585,7 +587,7 @@ func (l *outputLog) readUntilCondition(cursor, reqEpoch uint64, wait time.Durati
 
 		if cond.MaxBytes > 0 && res.CursorNext-cursor >= uint64(cond.MaxBytes) {
 			if len(res.Data) > cond.MaxBytes {
-				res.Data = res.Data[:truncateUTF8(res.Data, cond.MaxBytes)]
+				res.Data = res.Data[:termclean.TruncateUTF8(res.Data, cond.MaxBytes)]
 				res.CursorNext = cursor + uint64(len(res.Data))
 				res.AtEnd = res.CursorNext >= l.nextSeqOf()
 			}
@@ -604,7 +606,7 @@ func (l *outputLog) readUntilCondition(cursor, reqEpoch uint64, wait time.Durati
 			l.mu.Lock()
 			l.matchEvals++
 			l.mu.Unlock()
-			if cond.Match.Match(lastWindow(cleaned, 0)) {
+			if cond.Match.Match(termclean.LastWindow(cleaned, 0)) {
 				res.Reason = ReasonMatch
 				return res
 			}
@@ -647,8 +649,8 @@ func (l *outputLog) readWindowLocked(cursor uint64) []byte {
 	if limit <= cursor {
 		return nil
 	}
-	if limit-cursor > matchWindow {
-		cursor = limit - matchWindow
+	if limit-cursor > termclean.MatchWindow {
+		cursor = limit - termclean.MatchWindow
 	}
 	res := l.ReadAt(cursor, 0)
 	return res.Data

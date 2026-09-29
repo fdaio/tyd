@@ -1,8 +1,8 @@
-package live
+package termclean
 
 import "unicode/utf8"
 
-// textCleaner turns raw terminal bytes into the text a person would see, so a
+// Cleaner turns raw terminal bytes into the text a person would see, so a
 // match is not thrown off by colour codes or a progress bar redrawing a line.
 //
 // It handles the escapes a shell prompt actually produces: CSI sequences
@@ -15,7 +15,7 @@ import "unicode/utf8"
 // before it, so the cleaner keeps the line under construction rather than
 // emitting text that a later byte may overwrite. Text() returns everything
 // settled so far plus that line, which is what a match should see.
-type textCleaner struct {
+type Cleaner struct {
 	// pending holds a sequence that may continue in the next chunk.
 	pending []byte
 	// done is the text that can no longer be redrawn.
@@ -24,10 +24,10 @@ type textCleaner struct {
 	line []byte
 }
 
-func newTextCleaner() *textCleaner { return &textCleaner{} }
+func New() *Cleaner { return &Cleaner{} }
 
 // Feed consumes b. It returns the cleaned text available after this call.
-func (c *textCleaner) Feed(b []byte) []byte {
+func (c *Cleaner) Feed(b []byte) []byte {
 	if len(c.pending) > 0 {
 		b = append(append([]byte(nil), c.pending...), b...)
 		c.pending = nil
@@ -81,14 +81,14 @@ func (c *textCleaner) Feed(b []byte) []byte {
 	return c.Text()
 }
 
-func (c *textCleaner) endLine() {
+func (c *Cleaner) endLine() {
 	c.done = append(c.done, c.line...)
 	c.done = append(c.done, '\n')
 	c.line = c.line[:0]
 }
 
 // Text is everything cleaned so far: settled text plus the line being drawn.
-func (c *textCleaner) Text() []byte {
+func (c *Cleaner) Text() []byte {
 	if len(c.line) == 0 {
 		return c.done
 	}
@@ -135,12 +135,12 @@ func escapeLen(b []byte) (int, bool) {
 
 // CleanString is the one-shot form, for a buffer already known to be complete.
 func CleanString(b []byte) string {
-	return string(newTextCleaner().Feed(b))
+	return string(New().Feed(b))
 }
 
-// truncateUTF8 cuts n down to the nearest rune boundary, so a reply never
+// TruncateUTF8 cuts n down to the nearest rune boundary, so a reply never
 // splits a character. It backs off at most utf8.UTFMax-1 bytes.
-func truncateUTF8(b []byte, n int) int {
+func TruncateUTF8(b []byte, n int) int {
 	if n >= len(b) {
 		return len(b)
 	}
@@ -160,13 +160,13 @@ func truncateUTF8(b []byte, n int) int {
 	return n
 }
 
-// matchWindow bounds how much text a condition looks at. A busy session can
+// MatchWindow bounds how much text a condition looks at. A busy session can
 // outrun any regex, and a prompt is never 16KB back.
-const matchWindow = 16 << 10
+const MatchWindow = 16 << 10
 
-// lastWindow returns the tail of b starting at from, capped to matchWindow
+// LastWindow returns the tail of b starting at from, capped to MatchWindow
 // bytes measured from the end.
-func lastWindow(b []byte, from int) []byte {
+func LastWindow(b []byte, from int) []byte {
 	if from < 0 {
 		from = 0
 	}
@@ -174,9 +174,9 @@ func lastWindow(b []byte, from int) []byte {
 		from = len(b)
 	}
 	seg := b[from:]
-	if len(seg) > matchWindow {
+	if len(seg) > MatchWindow {
 		// Start the window on a rune boundary.
-		cut := truncateUTF8(seg, len(seg)-matchWindow)
+		cut := TruncateUTF8(seg, len(seg)-MatchWindow)
 		seg = seg[cut:]
 	}
 	return seg
