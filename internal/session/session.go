@@ -80,6 +80,9 @@ func (m *Manager) Create(opts CreateOpts) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateShell(opts.Shell); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
 	useLive := m.liveRoot != ""
 	m.mu.Unlock()
@@ -103,6 +106,9 @@ func (m *Manager) Create(opts CreateOpts) (*Session, error) {
 func (m *Manager) CreatePending(opts CreateOpts) (*Session, error) {
 	id, err := newID()
 	if err != nil {
+		return nil, err
+	}
+	if err := validateShell(opts.Shell); err != nil {
 		return nil, err
 	}
 	normalizeCreateOpts(&opts)

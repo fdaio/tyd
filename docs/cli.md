@@ -74,6 +74,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
+| `--shell PATH` | `session create`: shell to run; must be listed in the **daemon's** `/etc/shells` (default: the daemon's own shell) |
 | `--detach` | `session create`: print the id only |
 | `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr |
 | `--force` | `register`: replace an existing registration (invalidates peers) |

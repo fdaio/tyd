@@ -36,6 +36,7 @@ type options struct {
 	sessionIdle        time.Duration
 	outputLogMax       int64
 	sessionSendTimeout time.Duration
+	shell              string
 	as                 string
 	cert               string
 	key                string
@@ -276,6 +277,14 @@ func parseArgs(args []string) (options, error) {
 				return options{}, fmt.Errorf("--session-send-timeout must not be negative")
 			}
 			opts.sessionSendTimeout = d
+		case a == "--shell":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.shell = args[i]
+		case strings.HasPrefix(a, "--shell="):
+			opts.shell = strings.TrimPrefix(a, "--shell=")
 		case a == "--as":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a nickname", a)

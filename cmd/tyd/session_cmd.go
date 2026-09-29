@@ -74,7 +74,7 @@ func runSession(opts options) error {
 			st.Clear()
 			return err
 		}
-		info, err := client.Create(ep, key, client.CreateOpts{})
+		info, err := client.Create(ep, key, client.CreateOpts{Shell: opts.shell})
 		if err != nil {
 			st.Clear()
 			return err
