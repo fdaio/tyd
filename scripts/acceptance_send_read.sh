@@ -196,6 +196,49 @@ ep=$(jget "$sendjson" epoch)
 out=$(page "$sid2" "$cur" "$ep" --wait 10s --until-idle 1s)
 check "idle fires after the output stops" "idle" "$(jget "$out" reason)"
 
+# --- 2b: max_bytes stops on a character boundary --------------------------
+# The cut is a byte count, but a reply must never split a UTF-8 character, so
+# a request landing mid-character backs off. This needs the page to start on
+# multibyte output: with ASCII, or with a page that begins on the shell's
+# prompt, the check passes even when the boundary is dropped entirely.
+sidmb=$(new_session)
+# send --json reports the cursor from before the write, so the page starts on
+# the echoed payload rather than on the prompt.
+mbjson=$(python3 -c "import sys; sys.stdout.write('你'*2000)" \
+	| "$bin" session send "$sidmb" --stdin --json 2>/dev/null | head -1)
+mbcur=$(jget "$mbjson" cursor)
+mbep=$(jget "$mbjson" epoch)
+sleep 1
+python3 - "$bin" "$sidmb" "$mbcur" "$mbep" <<'MBPY'
+import base64, json, subprocess, sys
+bin_, sid, cur, ep = sys.argv[1:5]
+out = subprocess.run([bin_, "session", "read", sid, "--cursor", cur, "--epoch", ep,
+                      "--wait", "10s", "--max-bytes", "100", "--json"],
+                     capture_output=True, text=True).stdout
+d = json.loads(out.splitlines()[0])
+data = base64.b64decode(d["data"])
+if not data:
+    sys.exit("no data returned")
+try:
+    data.decode("utf-8")
+except UnicodeDecodeError as e:
+    sys.exit("reply splits a UTF-8 character at byte %d: %s" % (len(data), e))
+if len(data) == 100:
+    sys.exit("returned exactly 100 bytes, so the cut landed on a boundary anyway")
+if len(data) > 100:
+    sys.exit("returned %d bytes for a 100 byte request" % len(data))
+if len(data) < 97:
+    sys.exit("backed off too far: %d bytes for a 100 byte request" % len(data))
+if d["cursor_next"] != int(cur) + len(data):
+    sys.exit("cursor_next %d does not follow the %d bytes returned from %s"
+             % (d["cursor_next"], len(data), cur))
+MBPY
+if [ $? -eq 0 ]; then
+	ok "max_bytes stops on a UTF-8 boundary and cursor_next stays exact"
+else
+	bad "max_bytes split a character or mis-reported cursor_next"
+fi
+
 # --- 2b: output that keeps arriving is not idle ---------------------------
 # A stream that never pauses must not look quiet, so idle has to be measured
 # from the last byte rather than from the start of the read.
