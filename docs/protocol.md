@@ -128,15 +128,24 @@ read would race the echo and could pick up a prompt from earlier.
 {"type":"ok","cursor_next":8,"cursor":165,"epoch":1}
 ```
 
-An `error` reply means nothing was written. The errors are deliberate and
-explicit:
+A send that fails part way still reports the bytes that did land, in
+`cursor_next` on the `error` reply. Nothing is written after the reply, so a
+retry resumes from that count. The errors are deliberate and explicit:
 
 | Error | Meaning |
 |-------|---------|
 | `session in use: attached elsewhere` | Someone holds the exclusive attach slot. Deliberately does not name them. |
+| `send timed out` | The PTY did not accept the input in time. `cursor_next` is what landed. |
+| `preempted` | An `attach` took the session. `cursor_next` is what landed. |
+| `session busy: a send is in progress` | A second send arrived. It is refused, never queued. |
+| `send is larger than the 64KB queue` | The data exceeds one call, which is also the AF_UNIX-era cap on input. |
 | `shell exited; attach to start a new one` | The shell is gone. `send` never starts one. |
 | `session pending approval` | A remote create that has not been approved. |
 | `send is not supported on in-process sessions` | No live-agent behind this session. |
+
+The timeout is a server-side default of 5s, set with
+`--session-send-timeout` and capped at 30s. An `attach`, `watch`, `read`,
+`close`, `resize` or `signal` never waits for a send: `attach` preempts it.
 
 Under `pre`, `send` is gated exactly like `read`: the same one-shot approval,
 spent at the start of the request, and not re-checked while a read waits.

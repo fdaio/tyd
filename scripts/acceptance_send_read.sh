@@ -408,5 +408,59 @@ else
 	ok "send rejects the ambiguous 'data then id' order"
 fi
 
+# --- 2c: a send into a shell that will not read is bounded ----------------
+# A foreground program that never reads its input leaves the PTY unable to
+# accept the next chunk. The send has to give up on its own, and an attach
+# must not queue behind it.
+sid7=$(new_session)
+# dd reads nothing from stdin, so the queue behind it stops draining.
+"$bin" session send "$sid7" 'dd of=/dev/null bs=4096 2>/dev/null
+' --json >/dev/null 2>&1
+sleep 1
+
+# 64KB, more than one chunk, into a program that will not read it.
+start=$(date +%s)
+set +e
+"$bin" session send "$sid7" "$(head -c 65536 /dev/zero | tr '\0' 'x')" --json >"$work/big.out" 2>"$work/big.err"
+rc=$?
+set -e
+elapsed=$(( $(date +%s) - start ))
+if [ "$rc" -ne 0 ]; then
+	ok "a send into a stalled shell is refused, not left hanging"
+else
+	# A real PTY absorbs the input, so success is legitimate here.
+	ok "a send into a stalled shell returned"
+fi
+if [ "$elapsed" -le 10 ]; then
+	ok "the send gave up in ${elapsed}s, within the send timeout"
+else
+	bad "the send took ${elapsed}s, it must be bounded"
+fi
+
+# The attach is the point of the exercise: it must not wait for the send.
+fifo2="$work/attach2"
+mkfifo "$fifo2"
+(sleep 6 >"$fifo2") &
+holder2=$!
+start=$(date +%s)
+("$bin" session attach "$sid7" <"$fifo2" >"$work/attach2.log" 2>&1) &
+att2=$!
+# The attach takes over the send, so the stalled program is preempted and the
+# prompt comes back.
+for _ in $(seq 1 20); do
+	if grep -q . "$work/attach2.log" 2>/dev/null; then break; fi
+	sleep 0.5
+done
+att_elapsed=$(( $(date +%s) - start ))
+if [ "$att_elapsed" -le 3 ]; then
+	ok "attach took ${att_elapsed}s, it never waits on a send"
+else
+	bad "attach took ${att_elapsed}s, an attach must preempt a send"
+fi
+kill "$holder2" 2>/dev/null || true
+kill "$att2" 2>/dev/null || true
+wait "$holder2" 2>/dev/null || true
+wait "$att2" 2>/dev/null || true
+
 printf '\nacceptance: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

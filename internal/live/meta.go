@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"tyd/internal/safefile"
 )
@@ -32,6 +33,32 @@ type Meta struct {
 	CreatedAt string `json:"created_at"`
 	// OutputLogMax is the disk cap in bytes. Zero means the agent default.
 	OutputLogMax int64 `json:"output_log_max,omitempty"`
+	// SendTimeout bounds one send to the PTY. Zero means the agent default.
+	SendTimeout time.Duration `json:"send_timeout,omitempty"`
+}
+
+const (
+	// DefaultSendTimeout bounds a send so a shell that stops reading its
+	// input cannot hold a caller for ever.
+	DefaultSendTimeout = 5 * time.Second
+	// MaxSendTimeout caps the configured value.
+	MaxSendTimeout = 30 * time.Second
+)
+
+// MaxSockPathLen is the longest socket path tyd accepts. AF_UNIX allows about
+// 104 bytes; a longer path fails at connect time with "invalid argument" and
+// nothing else, so it is checked before an agent is started.
+const MaxSockPathLen = 100
+
+// CheckSockPath reports a socket path too long to bind. The message names the
+// path, its length and the limit, because the only fix is to shorten the
+// directories leading to it.
+func CheckSockPath(path string) error {
+	if len(path) <= MaxSockPathLen {
+		return nil
+	}
+	return fmt.Errorf("live-agent socket path is %d bytes, the limit is %d: %s\n"+
+		"shorten HOME, or move the project to a shorter path", len(path), MaxSockPathLen, path)
 }
 
 func Dir(root, id string) string {

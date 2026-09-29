@@ -400,7 +400,7 @@ func rpcContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, req pr
 		return protocol.Frame{}, err
 	}
 	if resp.Type == protocol.TypeError {
-		return protocol.Frame{}, fmt.Errorf("%s", resp.Error)
+		return resp, fmt.Errorf("%s", resp.Error)
 	}
 	return resp, nil
 }
@@ -523,13 +523,17 @@ func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (S
 		SessionID: sessionID,
 		Data:      data,
 	})
+	// A send that timed out or was preempted still reports how many bytes
+	// reached the PTY, so the caller can resume from there instead of
+	// resending what already landed.
+	reply := SendReply{Written: int(resp.CursorNext), Cursor: resp.Cursor, Epoch: resp.Epoch}
 	if err != nil {
-		return SendReply{}, err
+		return reply, err
 	}
 	if resp.Type != protocol.TypeOK {
-		return SendReply{}, fmt.Errorf("unexpected send reply %q", resp.Type)
+		return reply, fmt.Errorf("unexpected send reply %q", resp.Type)
 	}
-	return SendReply{Written: int(resp.CursorNext), Cursor: resp.Cursor, Epoch: resp.Epoch}, nil
+	return reply, nil
 }
 
 func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {

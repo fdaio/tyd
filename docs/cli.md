@@ -71,6 +71,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--audit-log PATH` | `up`: record control events as JSON lines (e.g. `~/.tyd/audit.log`) |
 | `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
+| `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--detach` | `session create`: print the id only |

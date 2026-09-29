@@ -261,7 +261,47 @@ func TestDialTLSFingerprintRejectsMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = c.Close()
-	if _, err := transport.DialTLSFingerprint(ln.Addr().String(), "00"+fp[2:]); err == nil {
+	wrong := otherFingerprint(fp)
+	if wrong == fp {
+		t.Fatalf("test is vacuous: the wrong fingerprint equals the real one (%s)", fp)
+	}
+	if _, err := transport.DialTLSFingerprint(ln.Addr().String(), wrong); err == nil {
 		t.Fatal("expected fingerprint mismatch")
+	}
+}
+
+// otherFingerprint returns a fingerprint that is guaranteed to differ from
+// fp. Prefixing a fixed pair is not enough: with a real fingerprint that
+// happens to start "00", the "wrong" value is the right one and the test
+// fails for the wrong reason, roughly once every 256 runs.
+func otherFingerprint(fp string) string {
+	flipped := '0'
+	if fp[0] == '0' {
+		flipped = '1'
+	}
+	return string(flipped) + fp[1:]
+}
+
+// The old assertion broke once every 256 runs, because the "mismatched"
+// fingerprint it built was the real one. Pin the case directly.
+func TestOtherFingerprintAlwaysDiffers(t *testing.T) {
+	cases := map[string]string{
+		// The exact shape that defeated the old test: a real fingerprint
+		// starting "00" is its own "mismatch".
+		"00abcdef0123456789": "10abcdef0123456789",
+		"0fabcdef0123456789": "1fabcdef0123456789",
+		"ffabcdef0123456789": "0fabcdef0123456789",
+		"3a":                 "0a",
+	}
+	for fp, want := range cases {
+		if got := otherFingerprint(fp); got != want {
+			t.Errorf("otherFingerprint(%q) = %q, want %q", fp, got, want)
+		}
+	}
+	// And it must never return its input, whatever the prefix.
+	for _, fp := range []string{"00", "0", "ff", "a0", "0000"} {
+		if got := otherFingerprint(fp); got == fp {
+			t.Errorf("otherFingerprint(%q) returned the input", fp)
+		}
 	}
 }

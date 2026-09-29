@@ -164,3 +164,9 @@ around. That trade has not been made.
 
 Security issues in tyd: open a private advisory on the repository rather than a
 public issue.
+
+A send is bounded and never blocks a takeover. `--session-send-timeout`
+(default `5s`, capped at `30s`) stops a send whose PTY will not accept input,
+and `attach` preempts a send that is still in progress. Neither path lets a
+stalled write hold the attach slot, so a client cannot pin a session by
+typing into a program that never reads.

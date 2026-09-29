@@ -57,6 +57,7 @@ tyd up --data-listen off                          # no peer data plane
 tyd up --audit-log ~/.tyd/audit.log               # control-event audit trail
 tyd up --session-idle-timeout 8h                  # reap unattended sessions
 tyd up --session-output-log-max 64MB              # per-session output log cap (default)
+tyd up --session-send-timeout 5s                   # bound on one send to the PTY (max 30s)
 ```
 
 ## Data plane and relay
@@ -285,10 +286,20 @@ stop it.
 If the Control Panel is also unreachable, the daemon keeps serving local sessions
 and tells you to run `tyd doctor --fix` once the disk is healthy.
 
+### "connect: invalid argument" from a live agent
+
+A live agent listens on a unix socket under the live root, and `AF_UNIX`
+allows about 104 bytes for the whole path. A long `HOME` overruns it. The
+agent then fails to connect with `invalid argument` and no hint, so `tyd up`
+and `session create` refuse to start instead, and `tyd doctor` reports
+`live socket path` with the length and the limit of 100. Shorten `HOME`, or
+move the project to a shorter path. A short fallback socket directory is not
+implemented.
+
 ### `tyd doctor`
 
 ```bash
-tyd doctor         # check state files, free space, writability, and output-log write failures
+tyd doctor         # check state files, free space, writability, the live socket path, and output-log write failures
 tyd doctor --fix   # set a damaged peers.json aside and rebuild it from the CP
 ```
 

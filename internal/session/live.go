@@ -32,6 +32,31 @@ func (m *Manager) ConfigureLive(root, execPath string) {
 	}
 }
 
+// SetSendTimeout bounds one send into a PTY for new live-agents. Zero means
+// the agent default, and anything above the cap is clamped there.
+func (m *Manager) SetSendTimeout(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d < 0 {
+		d = 0
+	}
+	m.sendTimeout = d
+}
+
+// CheckSockPathFor reports whether a session created under the live root
+// could bind its socket. It runs at startup so `tyd up` fails before the
+// first create rather than on it.
+func (m *Manager) CheckSockPathFor() error {
+	m.mu.Lock()
+	root := m.liveRoot
+	m.mu.Unlock()
+	if root == "" {
+		return nil
+	}
+	// Session ids are a fixed width, so one stands in for any of them.
+	return live.CheckSockPath(live.SockPath(live.Dir(root, "0123456789abcdef")))
+}
+
 // SetOutputLogMax sets the per-session disk cap for new live-agents.
 func (m *Manager) SetOutputLogMax(n int64) {
 	m.mu.Lock()
@@ -89,8 +114,9 @@ func (m *Manager) spawnAgent(id, owner string, opts CreateOpts, created time.Tim
 	execPath := m.execPath
 	starter := m.starter
 	logMax := m.outputLogMax
+	sendTO := m.sendTimeout
 	m.mu.Unlock()
-	return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax)
+	return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax, sendTO)
 }
 
 // agentSpawner snapshots the spawn parameters now and returns a callable that
@@ -103,17 +129,21 @@ func (m *Manager) agentSpawner(id, owner string, opts CreateOpts, created time.T
 	execPath := m.execPath
 	starter := m.starter
 	logMax := m.outputLogMax
+	sendTO := m.sendTimeout
 	m.mu.Unlock()
 	return func() (string, *exec.Cmd, error) {
-		return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax)
+		return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax, sendTO)
 	}
 }
 
-func spawnAgentWith(root, execPath string, starter live.Starter, id, owner string, opts CreateOpts, created time.Time, logMax int64) (string, *exec.Cmd, error) {
+func spawnAgentWith(root, execPath string, starter live.Starter, id, owner string, opts CreateOpts, created time.Time, logMax int64, sendTO time.Duration) (string, *exec.Cmd, error) {
 	if starter == nil {
 		starter = live.DefaultStarter
 	}
 	dir := live.Dir(root, id)
+	if err := live.CheckSockPath(live.SockPath(dir)); err != nil {
+		return "", nil, err
+	}
 	meta := live.Meta{
 		ID:           id,
 		Owner:        owner,
@@ -125,6 +155,7 @@ func spawnAgentWith(root, execPath string, starter live.Starter, id, owner strin
 		Cols:         opts.Cols,
 		CreatedAt:    created.Format(time.RFC3339),
 		OutputLogMax: logMax,
+		SendTimeout:  sendTO,
 	}
 	if err := live.SaveMeta(dir, meta); err != nil {
 		return "", nil, err

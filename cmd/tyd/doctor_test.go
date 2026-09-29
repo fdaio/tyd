@@ -24,7 +24,9 @@ func doctorOpts(t *testing.T, dir string) options {
 		aliases:  filepath.Join(dir, "aliases.json"),
 		sessions: filepath.Join(dir, "sessions.json"),
 		recent:   filepath.Join(dir, "recent.json"),
-		live:     filepath.Join(dir, "live"),
+		// A temp dir under macOS is long enough to overrun AF_UNIX, which
+		// would fail the socket path check for reasons unrelated to health.
+		live: shortLiveRoot(t),
 	}
 }
 
@@ -90,6 +92,46 @@ func TestDoctorHealthyStatePasses(t *testing.T) {
 			t.Fatalf("unexpected failure: %+v", c)
 		}
 	}
+}
+
+// shortLiveRoot gives each test its own live root that is still short enough
+// to bind a socket. A t.TempDir path under macOS overruns AF_UNIX, and a
+// shared path would inherit another run's leftovers.
+func shortLiveRoot(t *testing.T) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(os.TempDir(), "tq"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	d, err := os.MkdirTemp(filepath.Join(os.TempDir(), "tq"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(d) })
+	return filepath.Join(d, "l")
+}
+
+// A long HOME overruns the AF_UNIX limit. The agent would otherwise fail to
+// connect with "invalid argument", so doctor has to name the path and the
+// limit instead.
+func TestDoctorReportsLongLiveSocketPath(t *testing.T) {
+	opts := doctorOpts(t, t.TempDir())
+	opts.live = filepath.Join("/", strings.Repeat("long-home-directory", 6), "live")
+	checks, _ := doctorChecks(opts)
+	for _, c := range checks {
+		if c.name != "live socket path" {
+			continue
+		}
+		if c.level != levelFail {
+			t.Fatalf("a %d byte socket path should fail, got %+v", len(live.SockPath(live.Dir(opts.live, "0123456789abcdef"))), c)
+		}
+		for _, want := range []string{"limit is", "HOME"} {
+			if !strings.Contains(c.detail, want) {
+				t.Fatalf("detail should mention %q, got %q", want, c.detail)
+			}
+		}
+		return
+	}
+	t.Fatal("doctor did not check the live socket path")
 }
 
 // --fix sets the damaged file aside and rebuilds it from the CP, without

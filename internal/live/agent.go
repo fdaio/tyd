@@ -1,11 +1,14 @@
 package live
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,13 +40,27 @@ func Run(dir string) error {
 	}
 
 	a := &agent{
-		dir:     dir,
-		meta:    meta,
-		rows:    meta.Rows,
-		cols:    meta.Cols,
-		cmdDone: make(chan struct{}),
-		outLog:  openOutputLog(dir, meta.OutputLogMax),
+		dir:       dir,
+		meta:      meta,
+		rows:      meta.Rows,
+		cols:      meta.Cols,
+		cmdDone:   make(chan struct{}),
+		sendQueue: make(chan *sendJob, 8),
+		outLog:    openOutputLog(dir, meta.OutputLogMax),
 	}
+	// The PTY does not exist until the shell starts, so the writer looks it up
+	// each time. Tests replace this with a writer that blocks for ever, which
+	// the real PTY does not do: both platforms here absorb the input instead.
+	a.writePTY = func(p []byte) (int, error) {
+		a.mu.Lock()
+		ptmx := a.pty
+		a.mu.Unlock()
+		if ptmx == nil {
+			return 0, io.ErrClosedPipe
+		}
+		return ptmx.Write(p)
+	}
+	go a.sendWriter()
 	// Start the shell before listening: a daemon that sees the socket can then
 	// rely on the shell pid file being present, which is how it tells a
 	// running shell from an exited one.
@@ -175,18 +192,27 @@ type agent struct {
 	cmdDone chan struct{}
 
 	mu sync.Mutex
-	// ioMu serialises a send's PTY write against an attach taking the slot.
-	// It is separate from mu because the write can block, and mu is needed
-	// by the shell reader that would unblock it.
-	ioMu        sync.Mutex
-	ring        []byte
-	rows        uint16
-	cols        uint16
-	attach      *peer
-	watchers    []*peer
-	closed      bool // the session is closed: tear everything down
-	closing     bool // a close was requested; the next shell exit finishes
-	shellExited bool // the shell is gone but the session is alive
+	// sendMu guards the single-send slot. sendGen is bumped by an attach to
+	// preempt a send in flight; a send compares it between chunks instead of
+	// holding a lock, so an attach never waits for a blocked PTY write.
+	// writePTY is an indirection so a test can substitute a writer that
+	// blocks forever, which the real PTY does not do on any platform here.
+	sendMu     sync.Mutex
+	sendActive bool
+	sendCancel chan struct{} // closed by an attach to preempt a send
+	sendGen    atomic.Int64  // bumped by an attach; the writer compares it
+	sendQueue  chan *sendJob
+	sent       atomic.Int64 // bytes handed to the writer, published before the write
+	writePTY   func([]byte) (int, error)
+	ring       []byte
+	rows       uint16
+	cols       uint16
+	attach     *peer
+	watchers   []*peer
+	closed     bool // the session is closed: tear everything down
+	closing    bool // a close was requested; the next shell exit finishes
+	// shellExited is true when the shell is gone but the session is alive.
+	shellExited bool
 	exitCode    int
 	shellDone   chan struct{} // closed when the current shell exits
 	closeOnce   sync.Once
@@ -264,11 +290,12 @@ func (a *agent) handleAttach(conn net.Conn, f protocol.Frame) {
 		}
 	}
 	p := newPeer(conn)
-	// Claim the slot under ioMu so a send in flight is not interleaved with
-	// the attach that is about to own the session.
-	a.ioMu.Lock()
+	// Taking the slot preempts a send in flight. It does not wait for that
+	// send: the send notices between chunks and stops, so a human can always
+	// take a session over even while a send is stuck on a shell that is not
+	// reading its input.
+	a.preemptSend()
 	a.attach = p
-	a.ioMu.Unlock()
 	if a.pty != nil {
 		_ = pty.Setsize(a.pty, &pty.Winsize{Rows: a.rows, Cols: a.cols})
 	}
@@ -392,39 +419,59 @@ func (a *agent) shellIsGone() bool {
 	return a.closed || a.shellExited
 }
 
-// handleSend injects keystrokes without taking the attach slot. The occupancy
-// check and the PTY write happen under ioMu, so an attach that starts in
-// between cannot have its input interleaved with this write.
+// sendChunk is the granularity at which the writer re-checks for a preempt.
+// It also bounds how much of a cancelled send can still land.
+const sendChunk = 1 << 10
+
+// sendQueueMax bounds the bytes waiting to be typed. A send that would
+// exceed it is refused rather than buffered without limit.
+const sendQueueMax = 64 << 10
+
+// sendJob is one send waiting on the writer. abandoned is set when the
+// caller has already been answered, so nothing more reaches the PTY: a
+// retry resumes from the reported count and the two must not overlap.
+type sendJob struct {
+	data      []byte
+	done      chan struct{}
+	abandoned atomic.Bool
+}
+
+// Send errors. The first two carry a written count, so a caller can retry
+// the remainder instead of repeating what the PTY already took.
+var (
+	errSendTimeout  = errors.New("send timed out")
+	errPreempted    = errors.New("preempted by an attach")
+	errSendBusy     = errors.New("session busy: a send is in progress")
+	errSendTooLarge = errors.New("send is larger than the 64KB queue")
+)
+
+// handleSend injects keystrokes without taking the attach slot.
 //
-// The write must not hold a.mu. A PTY write blocks once the shell stops
-// draining its input, and the echo that would drain it comes back through
-// broadcast, which needs a.mu. Holding a.mu here would wedge the agent on any
-// large send: the writer waits for a reader that is itself waiting.
+// Sends are serialised: a second one is refused rather than queued, so two
+// callers can never interleave bytes into the same shell. The write is done
+// in chunks and never holds a lock an attach needs, so a human can always
+// take the session over, even while a send is stuck on a shell that is not
+// reading its input.
 func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
-	a.ioMu.Lock()
 	a.mu.Lock()
 	switch {
 	case a.closed:
 		a.mu.Unlock()
-		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session closed"})
 		return
 	case a.attach != nil:
 		// Do not name the holder: that would leak who is watching.
 		a.mu.Unlock()
-		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session in use: attached elsewhere"})
 		return
 	case a.shellExited:
 		// send never starts a shell. Respawning here would run a command the
 		// caller never asked to run.
 		a.mu.Unlock()
-		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "shell exited; attach to start a new one"})
 		return
 	case a.pty == nil:
 		a.mu.Unlock()
-		a.ioMu.Unlock()
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "no shell running"})
 		return
 	}
@@ -432,23 +479,126 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 	// and then read only what came after its own keystrokes. Without it a
 	// read would race the echo and may pick up a prompt from earlier.
 	cursor, epoch := a.outCursor()
-	ptmx := a.pty
 	a.mu.Unlock()
-	// The PTY write happens with a.mu released: it blocks once the shell
-	// stops draining its input, and the echo that would unblock it is
-	// recorded through a.mu. Holding it here wedges the agent on a large send.
-	n, err := ptmx.Write(f.Data)
-	a.ioMu.Unlock()
+
+	written, err := a.awaitSend(f.Data)
 	if err != nil {
-		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
+		_ = protocol.WriteFrame(conn, protocol.Frame{
+			Type:       protocol.TypeError,
+			Error:      err.Error(),
+			CursorNext: uint64(written),
+		})
 		return
 	}
 	_ = protocol.WriteFrame(conn, protocol.Frame{
 		Type:       protocol.TypeOK,
-		CursorNext: uint64(n),
+		CursorNext: uint64(written),
 		Cursor:     cursor,
 		Epoch:      epoch,
 	})
+}
+
+// sendWriter types whatever is queued, in chunks, and gives up on a preempt.
+// A caller is never blocked by this goroutine: the caller's own reply is
+// produced by its deadline, not by the write finishing.
+func (a *agent) sendWriter() {
+	for job := range a.sendQueue {
+		gen := a.sendGen.Load()
+		for len(job.data) > 0 {
+			if a.sendGen.Load() != gen || job.abandoned.Load() {
+				break
+			}
+			n := len(job.data)
+			if n > sendChunk {
+				n = sendChunk
+			}
+			// Count the chunk before writing it. A send that gives up while
+			// this write is in flight still has to report those bytes: if the
+			// count lagged, a retry would resend input the PTY already took.
+			// Over-reporting costs at most one chunk, under-reporting
+			// duplicates keystrokes.
+			a.sent.Add(int64(n))
+			if _, err := a.writePTY(job.data[:n]); err != nil {
+				break
+			}
+			job.data = job.data[n:]
+		}
+		close(job.done)
+	}
+}
+
+// awaitSend owns the whole send: the single-send slot, the cancellation an
+// attach uses, and the wait. The caller's reply is produced by its own
+// deadline, so a PTY that will not accept input delays the writer, never the
+// caller and never an attach.
+func (a *agent) awaitSend(data []byte) (written int, err error) {
+	if len(data) > sendQueueMax {
+		return 0, errSendTooLarge
+	}
+	a.sendMu.Lock()
+	if a.sendActive {
+		a.sendMu.Unlock()
+		return 0, errSendBusy
+	}
+	a.sendActive = true
+	cancel := make(chan struct{})
+	a.sendCancel = cancel
+	a.sendMu.Unlock()
+	defer func() {
+		a.sendMu.Lock()
+		a.sendActive = false
+		if a.sendCancel == cancel {
+			a.sendCancel = nil
+		}
+		a.sendMu.Unlock()
+	}()
+
+	job := &sendJob{data: data, done: make(chan struct{})}
+	a.sent.Store(0)
+	select {
+	case a.sendQueue <- job:
+	default:
+		return 0, errSendBusy
+	}
+	timer := time.NewTimer(a.sendTimeout())
+	defer timer.Stop()
+	select {
+	case <-job.done:
+	case <-timer.C:
+		err = errSendTimeout
+	case <-cancel:
+		err = errPreempted
+	}
+	// Whatever the outcome, the writer must not type anything else: the
+	// caller is about to be told how many bytes landed.
+	if err != nil {
+		job.abandoned.Store(true)
+	}
+	return int(a.sent.Load()), err
+}
+
+// preemptSend asks any send in flight to stop. The attach that calls this
+// does not wait for the send, and no send byte lands after it returns apart
+// from a chunk already being written, which is reported in written.
+func (a *agent) preemptSend() {
+	a.sendGen.Add(1)
+	a.sendMu.Lock()
+	if a.sendCancel != nil {
+		close(a.sendCancel)
+		a.sendCancel = nil
+	}
+	a.sendMu.Unlock()
+}
+
+func (a *agent) sendTimeout() time.Duration {
+	d := a.meta.SendTimeout
+	if d <= 0 {
+		d = DefaultSendTimeout
+	}
+	if d > MaxSendTimeout {
+		d = MaxSendTimeout
+	}
+	return d
 }
 
 // outCursor is the log position and generation, for a send reply.

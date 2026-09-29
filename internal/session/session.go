@@ -60,6 +60,7 @@ type Manager struct {
 	execPath     string
 	starter      live.Starter
 	outputLogMax int64
+	sendTimeout  time.Duration
 }
 
 func NewManager() *Manager {
