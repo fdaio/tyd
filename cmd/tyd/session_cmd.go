@@ -97,6 +97,10 @@ func runSession(opts options) error {
 		return finishStream(opts, info.ID, err)
 	case "list":
 		return runSessionList(opts)
+	case "send":
+		return runSessionSend(opts)
+	case "read":
+		return runSessionRead(opts)
 	case "attach":
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
