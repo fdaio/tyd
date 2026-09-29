@@ -103,6 +103,15 @@ tyd session alias rm <name>
 A name that collides with an existing session id or alias is rejected. The older
 top-level `tyd alias` still works but prints a deprecation note.
 
+A name may contain a dot, and it is stored either way — but a dot costs the
+shortcut below, so setting one says so:
+
+```console
+$ tyd session alias 29eef5de0d40c6d9 tyd.cp
+tyd.cp -> 29eef5de0d40c6d9
+warning: session alias "tyd.cp" contains a '.', so `tyd <session>.<peer>` cannot use it; use tyd session attach tyd.cp
+```
+
 With a peer nickname, attach in one token: `tyd <session>.<peer>`. If the
 session alias is `jammy` and the peer nickname is `laptop`, `tyd jammy.laptop`
 attaches to that session. It is the same as `tyd --peer laptop session attach jammy`.

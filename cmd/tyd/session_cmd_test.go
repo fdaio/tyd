@@ -193,6 +193,64 @@ func TestTopLevelAliasDeprecationNote(t *testing.T) {
 	}
 }
 
+// A dot in an alias name is a legal name that the `tyd <session>.<peer>`
+// shortcut cannot parse, so the alias is stored and the cost is said out loud
+// at the moment it is set — not later, at attach time, as a usage error.
+func TestSessionAliasWarnsOnDotName(t *testing.T) {
+	dir := t.TempDir()
+	cli := options{
+		sessions: filepath.Join(dir, "sessions.json"),
+		recent:   filepath.Join(dir, "recent.json"),
+		aliases:  filepath.Join(dir, "aliases.json"),
+	}
+	const sid, other = "29eef5de0d40c6d9", "878144071a28b83c"
+	rememberSession(cli, catalog.Record{ID: sid, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
+	rememberSession(cli, catalog.Record{ID: other, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
+
+	runAliasArgs := func(rest ...string) (string, string) {
+		t.Helper()
+		opts := cli
+		opts.rest = rest
+		var err error
+		var errOut string
+		out := captureStdout(t, func() {
+			errOut = captureStderr(t, func() { err = runAlias(opts) })
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out, errOut
+	}
+
+	out, errOut := runAliasArgs(sid, "tyd.cp")
+	if !strings.Contains(out, "tyd.cp -> "+sid) {
+		t.Fatalf("alias line missing: %q", out)
+	}
+	for _, want := range []string{"tyd.cp", "tyd <session>.<peer>", "tyd session attach tyd.cp"} {
+		if !strings.Contains(errOut, want) {
+			t.Fatalf("warning missing %q: %q", want, errOut)
+		}
+	}
+	if doc, _ := alias.Load(cli.aliases); doc.Resolve("tyd.cp") != sid {
+		t.Fatal("a dotted alias is still a legal alias and must be stored")
+	}
+
+	// The `set` spelling warns the same way.
+	_, errOut = runAliasArgs("set", other, "tyd.cp2")
+	if !strings.Contains(errOut, "tyd session attach tyd.cp2") {
+		t.Fatalf("set path warning: %q", errOut)
+	}
+
+	// A name without a dot keeps stderr exactly as it was.
+	out, errOut = runAliasArgs(other, "jammy")
+	if !strings.Contains(out, "jammy -> "+other) {
+		t.Fatalf("alias line missing: %q", out)
+	}
+	if errOut != "" {
+		t.Fatalf("plain alias must stay silent: %q", errOut)
+	}
+}
+
 func TestWriteSessionListPlainHidesSize(t *testing.T) {
 	var buf bytes.Buffer
 	writeSessionList(&buf, []sessionListRow{

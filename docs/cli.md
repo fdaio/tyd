@@ -108,5 +108,6 @@ or id; the right side is a peer nickname or id. `tyd jammy.laptop` is the same
 command as `tyd --peer laptop session attach jammy`. The token must contain
 exactly one `.`, both sides must be non-empty, and no extra arguments are
 accepted. A `--peer` flag that names a different peer is an error. Names that
-themselves contain `.` stay on the long form. This shortcut only attaches; it
-does not watch or close.
+themselves contain `.` stay on the long form — `tyd session alias` and
+`tyd peer alias` accept such a name and warn that the shortcut cannot use it.
+This shortcut only attaches; it does not watch or close.

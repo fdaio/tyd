@@ -349,6 +349,7 @@ func runAlias(opts options) error {
 			return err
 		}
 		fmt.Printf("%s -> %s\n", args[1], sid)
+		warnDotName("session alias", args[1], "tyd session attach "+args[1])
 		return nil
 	default:
 		// tyd alias <name>                 — alias the recent session
@@ -391,6 +392,7 @@ func runAlias(opts options) error {
 			return err
 		}
 		fmt.Printf("%s -> %s\n", name, sid)
+		warnDotName("session alias", name, "tyd session attach "+name)
 		return nil
 	}
 }
