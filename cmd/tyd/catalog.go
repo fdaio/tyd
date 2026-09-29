@@ -20,6 +20,12 @@ func rememberPeerSession(opts options, peerID, sessionID string) {
 	if sessionID != "" && !catalog.IsSessionID(sessionID) {
 		sessionID = ""
 	}
+	// Remember keeps the stored session when the peer is unchanged, so a name
+	// already in the file would be written straight back. Clear it first.
+	if cur, _ := recent.Load(opts.recent); cur != nil && cur.SessionID != "" && !catalog.IsSessionID(cur.SessionID) {
+		cur.SessionID = ""
+		_ = recent.Save(opts.recent, cur)
+	}
 	_ = recent.Remember(opts.recent, peerID, sessionID)
 }
 

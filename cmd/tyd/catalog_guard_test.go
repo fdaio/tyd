@@ -153,3 +153,27 @@ func TestAliasConflictNeedsARealSession(t *testing.T) {
 		t.Fatalf("a name must be accepted, got %v", err)
 	}
 }
+
+// recent.Remember keeps the stored session when the peer is unchanged, so a
+// name left there by an earlier run would be written straight back by the next
+// command for the same peer.
+func TestNameDoesNotSurviveRecentCarryForward(t *testing.T) {
+	dir := t.TempDir()
+	opts := options{
+		sessions: filepath.Join(dir, "sessions.json"),
+		recent:   filepath.Join(dir, "recent.json"),
+		aliases:  filepath.Join(dir, "aliases.json"),
+	}
+	const peer = "a1b2c3d4e5f60718"
+	if err := recent.Remember(opts.recent, peer, "work-laptop"); err != nil {
+		t.Fatal(err)
+	}
+	rememberPeerSession(opts, peer, "")
+	rec, _ := recent.Load(opts.recent)
+	if rec.SessionID != "" {
+		t.Fatalf("a stored name was carried forward: %q", rec.SessionID)
+	}
+	if rec.PeerID != peer {
+		t.Fatalf("the peer must still be remembered: %+v", rec)
+	}
+}
