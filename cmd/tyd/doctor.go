@@ -82,6 +82,11 @@ func doctorChecks(opts options) (out []check, peersBroken bool) {
 	}
 
 	out = append(out, diskCheck(dir))
+	if err := live.CheckSockPath(live.SockPath(live.Dir(opts.live, "0123456789abcdef"))); err != nil {
+		out = append(out, check{levelFail, "live socket path", err.Error()})
+	} else {
+		out = append(out, check{levelOK, "live socket path", fmt.Sprintf("%d bytes, limit %d", len(live.SockPath(live.Dir(opts.live, "0123456789abcdef"))), live.MaxSockPathLen)})
+	}
 	out = append(out, writableCheck(dir))
 
 	for _, f := range []struct {

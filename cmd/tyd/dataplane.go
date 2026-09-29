@@ -55,6 +55,12 @@ func runUp(opts options) error {
 	}
 	mgr.ConfigureLive(liveRoot, execPath)
 	mgr.SetOutputLogMax(opts.outputLogMax)
+	mgr.SetSendTimeout(opts.sessionSendTimeout)
+	// Fail now rather than on the first create: a socket path that is too
+	// long only shows up later as connect: invalid argument.
+	if err := mgr.CheckSockPathFor(); err != nil {
+		return err
+	}
 	restored, err := mgr.RestoreLive()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tyd live restore: %v\n", err)

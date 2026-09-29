@@ -170,7 +170,9 @@ func TestSendAfterDetach(t *testing.T) {
 	readUntil(t, s, 0, 0, "send-after-detach", 2*time.Second)
 }
 
-// Concurrent sends must all land and must not corrupt each other.
+// A second send is refused while one is in progress rather than queued
+// behind it, so a caller learns immediately and can retry. The sends that
+// are accepted must not corrupt each other.
 func TestSendConcurrent(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
@@ -186,10 +188,18 @@ func TestSendConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	var busy int
 	for i, err := range errs {
-		if err != nil {
+		switch {
+		case err == nil:
+		case strings.Contains(err.Error(), "a send is in progress"):
+			busy++
+		default:
 			t.Fatalf("send %d: %v", i, err)
 		}
+	}
+	if busy == 0 {
+		t.Fatal("expected some sends to be refused as busy")
 	}
 	if s.State() == StateExited {
 		t.Fatal("concurrent sends killed the shell")

@@ -15,37 +15,38 @@ import (
 )
 
 type options struct {
-	socket       string
-	listen       string
-	dataListen   string
-	advertise    string
-	addr         string
-	peer         string
-	relay        string
-	identity     string
-	trust        string
-	peers        string
-	paired       string
-	recent       string
-	aliases      string
-	sessions     string
-	platform     string
-	approval     string
-	fix          bool
-	auditLog     string
-	sessionIdle  time.Duration
-	outputLogMax int64
-	as           string
-	cert         string
-	key          string
-	noWait       bool
-	detach       bool
-	verbose      bool
-	force        bool
-	cmd          string
-	rest         []string
-	live         string
-	dir          string
+	socket             string
+	listen             string
+	dataListen         string
+	advertise          string
+	addr               string
+	peer               string
+	relay              string
+	identity           string
+	trust              string
+	peers              string
+	paired             string
+	recent             string
+	aliases            string
+	sessions           string
+	platform           string
+	approval           string
+	fix                bool
+	auditLog           string
+	sessionIdle        time.Duration
+	outputLogMax       int64
+	sessionSendTimeout time.Duration
+	as                 string
+	cert               string
+	key                string
+	noWait             bool
+	detach             bool
+	verbose            bool
+	force              bool
+	cmd                string
+	rest               []string
+	live               string
+	dir                string
 }
 
 func parseArgs(args []string) (options, error) {
@@ -253,6 +254,28 @@ func parseArgs(args []string) (options, error) {
 				return options{}, err
 			}
 			opts.outputLogMax = n
+		case a == "--session-send-timeout":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a duration", a)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options{}, fmt.Errorf("%s: %w", a, err)
+			}
+			if d < 0 {
+				return options{}, fmt.Errorf("%s must not be negative", a)
+			}
+			opts.sessionSendTimeout = d
+		case strings.HasPrefix(a, "--session-send-timeout="):
+			d, err := time.ParseDuration(strings.TrimPrefix(a, "--session-send-timeout="))
+			if err != nil {
+				return options{}, fmt.Errorf("--session-send-timeout: %w", err)
+			}
+			if d < 0 {
+				return options{}, fmt.Errorf("--session-send-timeout must not be negative")
+			}
+			opts.sessionSendTimeout = d
 		case a == "--as":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a nickname", a)

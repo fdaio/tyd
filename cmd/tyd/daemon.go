@@ -104,6 +104,9 @@ func startLocalDaemonProcess(opts options) error {
 	}
 	if opts.outputLogMax > 0 {
 		args = append(args, "--session-output-log-max", strconv.FormatInt(opts.outputLogMax, 10))
+		if opts.sessionSendTimeout > 0 {
+			args = append(args, "--session-send-timeout", opts.sessionSendTimeout.String())
+		}
 	}
 	args = append(args, "up")
 

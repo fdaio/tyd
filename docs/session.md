@@ -238,6 +238,13 @@ after a disconnect without taking the writer slot:
   only the ring. That is still "can see the terminal"; it is a larger window.
 - Files are mode `0600`, deleted on `session close`, and never written into
   `--audit-log`. `--session-output-log-max SIZE` on `tyd up` changes the cap.
+- A send is bounded. It gives up after `--session-send-timeout DURATION`
+  (default `5s`, capped at `30s`) and the reply is `send timed out` with the
+  number of bytes that reached the PTY. Nothing is written after that point,
+  so a retry resumes from the reported count. `attach` preempts a send in
+  progress, which fails as `preempted`; a second concurrent send is refused
+  with `session busy: a send is in progress` rather than queued. An `attach`,
+  `watch`, `read`, `close`, `resize` or `signal` never waits for a send.
 
 `tyd session read` and `tyd session send` are the CLI for these frames. They
 hold no state: the caller keeps `cursor` and `epoch` and passes them back. In
