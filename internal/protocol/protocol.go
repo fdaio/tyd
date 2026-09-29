@@ -74,6 +74,18 @@ type Frame struct {
 	// WaitMS asks the server to hold a read open until bytes arrive or the
 	// wait elapses. Zero means return immediately.
 	WaitMS uint32 `json:"wait_ms,omitempty"`
+	// IdleMS returns once output has been quiet this long, counted from the
+	// last byte after the cursor. The clock only starts once at least one
+	// byte has arrived, so a silent session waits for the timeout.
+	IdleMS uint32 `json:"idle_ms,omitempty"`
+	// Match is an RE2 pattern. The reply returns once the cleaned text
+	// matches. The pattern is capped at MaxMatchPattern.
+	Match string `json:"match,omitempty"`
+	// MaxBytes returns once this many bytes have accumulated after the
+	// cursor, cut back to a rune boundary.
+	MaxBytes uint32 `json:"max_bytes,omitempty"`
+	// Reason says why a read returned.
+	Reason string `json:"reason,omitempty"`
 }
 
 type ConnInfo struct {

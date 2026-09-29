@@ -15,6 +15,7 @@ import (
 	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
+	"tyd/internal/live"
 	"tyd/internal/procs"
 	"tyd/internal/protocol"
 	"tyd/internal/session"
@@ -948,7 +949,11 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if wait > MaxReadWait {
 			wait = MaxReadWait
 		}
-		res, err := sess.Read(f.Cursor, f.Epoch, wait)
+		res, err := sess.Read(f.Cursor, f.Epoch, wait, live.ReadConditions{
+			IdleMS:   f.IdleMS,
+			Match:    f.Match,
+			MaxBytes: f.MaxBytes,
+		})
 		if err != nil {
 			return err
 		}
@@ -962,6 +967,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			Epoch:       res.Epoch,
 			CursorAhead: res.CursorAhead,
 			Exited:      res.Exited,
+			Reason:      res.Reason,
 		})
 
 	case protocol.TypeSend:
@@ -987,12 +993,17 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID); err != nil {
 			return err
 		}
-		n, err := sess.Send(f.Data)
+		rep, err := sess.Send(f.Data)
 		if err != nil {
 			return err
 		}
-		s.auditSend(st, f.SessionID, n)
-		return st.send(protocol.Frame{Type: protocol.TypeOK, CursorNext: uint64(n)})
+		s.auditSend(st, f.SessionID, rep.Written)
+		return st.send(protocol.Frame{
+			Type:       protocol.TypeOK,
+			CursorNext: uint64(rep.Written),
+			Cursor:     rep.Cursor,
+			Epoch:      rep.Epoch,
+		})
 
 	case protocol.TypeWrite:
 		if st.att == nil {

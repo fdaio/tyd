@@ -43,6 +43,9 @@ type ReadResult struct {
 	// Exited reports that the shell is gone and the reply is at the end of
 	// the stream, so a follower has nothing left to wait for.
 	Exited bool
+	// Reason says why this reply came back. Empty means the pre-conditions
+	// behaviour, where having data was reason enough.
+	Reason string
 }
 
 type outputSeg struct {
@@ -106,6 +109,12 @@ type outputLog struct {
 	// block until the log grows instead of polling.
 	dataChMu sync.Mutex
 	dataCh   chan struct{}
+	// lastDataAt is when the log last grew. The idle condition measures from
+	// here, so a session that is simply silent never trips it.
+	lastDataAt time.Time
+	// matchEvals counts pattern runs. It is not part of the behaviour, but it
+	// is what shows the rate limit works on a session that floods output.
+	matchEvals int
 
 	writeAll func(f *os.File, p []byte) (int, error)
 }
@@ -407,6 +416,7 @@ func (l *outputLog) Append(p []byte) {
 		l.tail = append([]byte(nil), l.tail[drop:]...)
 	}
 	l.tailStart = l.nextSeq - uint64(len(l.tail))
+	l.lastDataAt = time.Now()
 	if l.degraded {
 		l.mu.Unlock()
 		l.signalData()
@@ -453,40 +463,211 @@ func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
 	return readFromSnap(snap, cursor, reqEpoch)
 }
 
-// ReadAtWait is ReadAt that blocks up to wait for new bytes. A reply that
-// already carries data, resets the cursor, or reports a dropped prefix
-// returns at once: the caller must see those without waiting.
-func (l *outputLog) ReadAtWait(cursor, reqEpoch uint64, wait time.Duration, exited func() bool) ReadResult {
+// ReadAtWait is ReadAt that blocks up to wait. With no conditions it returns
+// as soon as there is anything to return, which is how it behaved before
+// conditions existed.
+//
+// With conditions, data already at the cursor is not enough: the read keeps
+// waiting until one of them is met, the wait runs out, or the shell ends. A
+// reply that resets the cursor or reports a dropped prefix still comes back
+// at once, because waiting would only delay something the caller must act on.
+func (l *outputLog) ReadAtWait(cursor, reqEpoch uint64, wait time.Duration, cond Conditions, exited func() bool) ReadResult {
 	if wait <= 0 {
 		res := l.ReadAt(cursor, reqEpoch)
 		res.Exited = exited != nil && exited()
+		res.Reason = plainReason(res)
 		return res
 	}
+	if !cond.Any() {
+		return l.readUntilData(cursor, reqEpoch, wait, exited)
+	}
+	return l.readUntilCondition(cursor, reqEpoch, wait, cond, exited)
+}
+
+func plainReason(res ReadResult) string {
+	switch {
+	case res.CursorAhead:
+		return ReasonCursorHead
+	case res.Dropped > 0:
+		return ReasonAvailable
+	case res.Exited:
+		return ReasonExited
+	case len(res.Data) > 0:
+		return ReasonAvailable
+	default:
+		return ReasonTimeout
+	}
+}
+
+// readUntilData is the condition-free path: return the moment there is
+// anything to say.
+func (l *outputLog) readUntilData(cursor, reqEpoch uint64, wait time.Duration, exited func() bool) ReadResult {
 	deadline := time.Now().Add(wait)
 	for {
 		res := l.ReadAt(cursor, reqEpoch)
 		res.Exited = exited != nil && exited()
 		if len(res.Data) > 0 || res.CursorAhead || res.Dropped > 0 || res.Exited {
+			res.Reason = plainReason(res)
 			return res
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
+			res.Reason = ReasonTimeout
 			return res
 		}
-		ch := l.dataSignal()
-		// Re-check after arming the signal: an append that lands between the
-		// read and here would otherwise be missed until the timeout.
-		if l.hasNewDataSince(cursor) {
+		if !l.sleepUntilData(cursor, remaining) {
 			continue
 		}
-		timer := time.NewTimer(remaining)
+	}
+}
+
+// sleepUntilData waits for the log to grow, the timer, or a close. It reports
+// whether the wait ran out.
+func (l *outputLog) sleepUntilData(cursor uint64, remaining time.Duration) bool {
+	ch := l.dataSignal()
+	// Re-check after arming the signal: an append that lands between the read
+	// and here would otherwise be missed until the timeout.
+	if l.hasNewDataSince(cursor) {
+		return false
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return false
+	case <-timer.C:
+		return true
+	case <-l.done:
+		return false
+	}
+}
+
+// readUntilCondition waits for one of the caller's conditions. The cleaner
+// is kept across wakes, so a prompt split across writes still matches once
+// the rest of it arrives.
+func (l *outputLog) readUntilCondition(cursor, reqEpoch uint64, wait time.Duration, cond Conditions, exited func() bool) ReadResult {
+	deadline := time.Now().Add(wait)
+	cleaner := newTextCleaner()
+	var (
+		cleaned   []byte
+		seeded    bool
+		lastMatch time.Time
+	)
+	for {
+		res := l.ReadAt(cursor, reqEpoch)
+		res.Exited = exited != nil && exited()
+
+		// These say something the caller must act on, so they never wait.
+		if res.CursorAhead {
+			res.Reason = ReasonCursorHead
+			return res
+		}
+		if res.Dropped > 0 {
+			res.Reason = ReasonAvailable
+			return res
+		}
+		if res.Exited {
+			res.Reason = ReasonExited
+			return res
+		}
+
+		// Feed the cleaner only the new page, so a line that a later byte
+		// redraws is cleaned once, not re-cleaned.
+		if len(res.Data) > 0 {
+			cleaned = cleaner.Feed(res.Data)
+			seeded = true
+		} else if !seeded {
+			// Start from the cursor even when this page is empty, so a
+			// condition can still see text already in the log.
+			cleaned = cleaner.Feed(l.readWindowLocked(cursor))
+			seeded = true
+		}
+
+		if cond.MaxBytes > 0 && res.CursorNext-cursor >= uint64(cond.MaxBytes) {
+			if len(res.Data) > cond.MaxBytes {
+				res.Data = res.Data[:truncateUTF8(res.Data, cond.MaxBytes)]
+				res.CursorNext = cursor + uint64(len(res.Data))
+				res.AtEnd = res.CursorNext >= l.nextSeqOf()
+			}
+			res.Reason = ReasonMaxBytes
+			return res
+		}
+
+		now := time.Now()
+		grown := res.CursorNext > cursor
+		if cond.Idle > 0 && grown && l.idleFor() >= cond.Idle {
+			res.Reason = ReasonIdle
+			return res
+		}
+		if cond.Match != nil && now.Sub(lastMatch) >= matchEvalInterval {
+			lastMatch = now
+			l.mu.Lock()
+			l.matchEvals++
+			l.mu.Unlock()
+			if cond.Match.Match(lastWindow(cleaned, 0)) {
+				res.Reason = ReasonMatch
+				return res
+			}
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			res.Reason = ReasonTimeout
+			return res
+		}
+		// Wake on whichever of the three deadlines comes first, so the idle
+		// and match timers cannot overshoot the caller's wait.
+		sleep := remaining
+		if cond.Idle > 0 && grown {
+			if left := cond.Idle - l.idleFor(); left > 0 && left < sleep {
+				sleep = left
+			}
+		}
+		if cond.Match != nil {
+			if left := matchEvalInterval - now.Sub(lastMatch); left > 0 && left < sleep {
+				sleep = left
+			}
+		}
+		timer := time.NewTimer(sleep)
 		select {
-		case <-ch:
+		case <-l.dataSignal():
 		case <-timer.C:
 		case <-l.done:
 		}
 		timer.Stop()
 	}
+}
+
+// readWindowLocked returns the bytes from cursor to the end of the log, for
+// seeding the cleaner on a read whose first page is empty.
+func (l *outputLog) readWindowLocked(cursor uint64) []byte {
+	l.mu.Lock()
+	limit := l.nextSeq
+	l.mu.Unlock()
+	if limit <= cursor {
+		return nil
+	}
+	if limit-cursor > matchWindow {
+		cursor = limit - matchWindow
+	}
+	res := l.ReadAt(cursor, 0)
+	return res.Data
+}
+
+func (l *outputLog) nextSeqOf() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.nextSeq
+}
+
+// idleFor is how long the log has been quiet.
+func (l *outputLog) idleFor() time.Duration {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lastDataAt.IsZero() {
+		return 0
+	}
+	return time.Since(l.lastDataAt)
 }
 
 // hasNewDataSince reports whether the log holds bytes past cursor.
@@ -874,6 +1055,13 @@ func (l *outputLog) Degraded() bool {
 	return l.degraded
 }
 
+// NextSeq is the end of the log, used to stamp a send reply.
+func (l *outputLog) NextSeq() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.nextSeq
+}
+
 func (l *outputLog) Epoch() uint64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -899,9 +1087,9 @@ func readOutputFiles(dir string, cursor, epoch uint64) ReadResult {
 //
 // A wait only applies to a live agent: once the shell is gone there is
 // nothing left to wait for, so a dead dir answers straight from disk.
-func ReadSession(dir string, cursor, epoch uint64, wait time.Duration) (ReadResult, error) {
+func ReadSession(dir string, cursor, epoch uint64, wait time.Duration, cond ReadConditions) (ReadResult, error) {
 	if Alive(dir) {
-		return DialRead(dir, cursor, epoch, uint32(wait/time.Millisecond))
+		return DialRead(dir, cursor, epoch, uint32(wait/time.Millisecond), cond.IdleMS, cond.Match, cond.MaxBytes)
 	}
 	res := readOutputFiles(dir, cursor, epoch)
 	res.Exited = true
@@ -910,9 +1098,9 @@ func ReadSession(dir string, cursor, epoch uint64, wait time.Duration) (ReadResu
 
 // SendSession injects keystrokes into a live dir without taking the attach
 // slot. It fails when the agent is gone, so a send never starts a shell.
-func SendSession(dir string, data []byte) (int, error) {
+func SendSession(dir string, data []byte) (SendReply, error) {
 	if !Alive(dir) {
-		return 0, fmt.Errorf("session has no running agent; send needs a live shell")
+		return SendReply{}, fmt.Errorf("session has no running agent; send needs a live shell")
 	}
 	return DialSend(dir, data)
 }

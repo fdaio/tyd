@@ -144,7 +144,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 		{"list", "List local sessions (alive first, newest first)"},
 		{"attach", "Attach (id, alias, or omit for recent)"},
 		{"watch", "Follow output (id, alias, or omit for recent)"},
-		{"read", "Pull output by cursor (--cursor/--epoch/--wait/--json/--follow)"},
+		{"read", "Pull output by cursor (--wait/--until-match/--until-idle/--max-bytes/--json/--follow)"},
 		{"send", "Inject keystrokes without attaching (--stdin for raw bytes)"},
 		{"approve", "Approve PENDING session (local unix only)"},
 		{"reject", "Reject PENDING session (local unix only)"},
@@ -159,6 +159,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  --verbose                SSH-style connect debug on stderr.")
 	fmt.Fprintln(w, "  watch [session_id|alias]  Read-only follow; banner + type-ignored hint.")
 	fmt.Fprintln(w, "  read --follow             Stream output until the shell exits; Ctrl-C stops.")
+	fmt.Fprintln(w, "  read --until-match '\\$ '  Wait for a prompt instead of polling; needs --wait.")
 	fmt.Fprintln(w, "  send 'echo hi\\n'          Type into a session nobody is attached to.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")

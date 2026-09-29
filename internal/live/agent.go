@@ -325,9 +325,20 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session closed"})
 		return
 	}
+	// A condition with no wait would return at once, which is the opposite of
+	// what the caller asked for.
+	cond, err := ValidateConditions(f.IdleMS, f.Match, f.MaxBytes)
+	if err != nil {
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
+		return
+	}
+	if cond.Any() && f.WaitMS == 0 {
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "a read condition needs wait_ms"})
+		return
+	}
 	var res ReadResult
 	if log != nil {
-		res = log.ReadAtWait(f.Cursor, f.Epoch, time.Duration(f.WaitMS)*time.Millisecond, a.shellIsGone)
+		res = log.ReadAtWait(f.Cursor, f.Epoch, time.Duration(f.WaitMS)*time.Millisecond, cond, a.shellIsGone)
 	} else {
 		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
 	}
@@ -340,6 +351,7 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 		Epoch:       res.Epoch,
 		CursorAhead: res.CursorAhead,
 		Exited:      res.Exited,
+		Reason:      res.Reason,
 	})
 }
 
@@ -398,6 +410,10 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "no shell running"})
 		return
 	}
+	// The cursor is the output end before this write, so a caller can send
+	// and then read only what came after its own keystrokes. Without it a
+	// read would race the echo and may pick up a prompt from earlier.
+	cursor, epoch := a.outCursor()
 	ptmx := a.pty
 	n, err := ptmx.Write(f.Data)
 	a.mu.Unlock()
@@ -405,7 +421,20 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		return
 	}
-	_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeOK, CursorNext: uint64(n)})
+	_ = protocol.WriteFrame(conn, protocol.Frame{
+		Type:       protocol.TypeOK,
+		CursorNext: uint64(n),
+		Cursor:     cursor,
+		Epoch:      epoch,
+	})
+}
+
+// outCursor is the log position and generation, for a send reply.
+func (a *agent) outCursor() (uint64, uint64) {
+	if a.outLog == nil {
+		return 0, 0
+	}
+	return a.outLog.NextSeq(), a.outLog.Epoch()
 }
 
 func (a *agent) handleWatch(conn net.Conn) {

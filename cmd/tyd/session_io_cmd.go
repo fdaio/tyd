@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"tyd/internal/client"
+	"tyd/internal/live"
 )
 
 // exitSessionInUse is returned when a send is refused because someone holds
@@ -101,6 +102,7 @@ func runSessionSend(opts options) error {
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	stdin := fs.Bool("stdin", false, "read raw bytes from stdin")
+	asJSON := fs.Bool("json", false, "print the resulting cursor and epoch")
 	flagArgs, pos, err := splitFlags(fs, opts.rest[1:])
 	if err != nil {
 		return fmt.Errorf("usage: tyd session send <session_id|alias> [DATA] [--stdin]: %w", err)
@@ -149,14 +151,32 @@ func runSessionSend(opts options) error {
 	}
 	rememberPeerSession(opts, peerID, sid)
 	_ = fromCatalog
-	if _, err := client.Send(ep, key, sid, data); err != nil {
+	rep, err := client.Send(ep, key, sid, data)
+	if err != nil {
 		if strings.Contains(err.Error(), "session in use") {
 			fmt.Fprintf(os.Stderr, "tyd: %s\n", err)
 			os.Exit(exitSessionInUse)
 		}
 		return err
 	}
+	if *asJSON {
+		rec := sendRecord{SessionID: sid, Written: rep.Written, Cursor: rep.Cursor, Epoch: rep.Epoch}
+		line, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stdout, "%s\n", line)
+	}
 	return nil
+}
+
+// sendRecord is the --json output of a send. Cursor is the output position from
+// before the write, so the caller can read only what its keys produced.
+type sendRecord struct {
+	SessionID string `json:"session_id"`
+	Written   int    `json:"written"`
+	Cursor    uint64 `json:"cursor"`
+	Epoch     uint64 `json:"epoch"`
 }
 
 // readPage is one --json record.
@@ -171,6 +191,7 @@ type readPage struct {
 	Dropped     uint64 `json:"dropped"`
 	CursorAhead bool   `json:"cursor_ahead"`
 	Exited      bool   `json:"exited"`
+	Reason      string `json:"reason"`
 }
 
 func runSessionRead(opts options) error {
@@ -181,6 +202,9 @@ func runSessionRead(opts options) error {
 	wait := fs.Duration("wait", 0, "wait up to this long for new output")
 	asJSON := fs.Bool("json", false, "one JSON object per page")
 	follow := fs.Bool("follow", false, "keep pulling until the shell exits")
+	untilIdle := fs.Duration("until-idle", 0, "return once output has been quiet this long")
+	untilMatch := fs.String("until-match", "", "return once the cleaned output matches this RE2 pattern")
+	maxBytes := fs.Int("max-bytes", 0, "return once this many bytes have accumulated")
 	flagArgs, pos, err := splitFlags(fs, opts.rest[1:])
 	if err != nil {
 		return fmt.Errorf("usage: tyd session read <session_id|alias> [--cursor N] [--epoch E] [--wait D] [--json] [--follow]: %w", err)
@@ -196,11 +220,21 @@ func runSessionRead(opts options) error {
 	if err != nil {
 		return err
 	}
+	cond := live.ReadConditions{IdleMS: uint32(*untilIdle / time.Millisecond), Match: *untilMatch, MaxBytes: uint32(*maxBytes)}
 	if *follow && *wait == 0 {
 		*wait = 2 * time.Second
 	}
 	if *wait < 0 {
 		return fmt.Errorf("--wait must not be negative")
+	}
+	// A condition with no wait would return at once, which is the opposite of
+	// what the caller asked for. The server refuses it too; catching it here
+	// gives a better message.
+	if *wait == 0 && (cond.IdleMS > 0 || cond.Match != "" || cond.MaxBytes > 0) {
+		return fmt.Errorf("--until-idle, --until-match and --max-bytes need --wait")
+	}
+	if *untilIdle < 0 {
+		return fmt.Errorf("--until-idle must not be negative")
 	}
 
 	ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
@@ -231,7 +265,7 @@ func runSessionRead(opts options) error {
 			default:
 			}
 		}
-		page, err := client.Read(ep, key, sid, cur, epNo, *wait)
+		page, err := client.Read(ep, key, sid, cur, epNo, *wait, cond)
 		if err != nil {
 			// A connection error is a failure, not a reason to reconnect.
 			return err
@@ -258,6 +292,7 @@ func runSessionRead(opts options) error {
 				Dropped:     page.Dropped,
 				CursorAhead: page.CursorAhead,
 				Exited:      page.Exited,
+				Reason:      page.Reason,
 			}
 			line, err := json.Marshal(rec)
 			if err != nil {
@@ -272,8 +307,8 @@ func runSessionRead(opts options) error {
 			}
 		}
 		if !*asJSON {
-			fmt.Fprintf(os.Stderr, "tyd: cursor %d epoch %d at_end=%v exited=%v\n",
-				page.CursorNext, page.Epoch, page.AtEnd, page.Exited)
+			fmt.Fprintf(os.Stderr, "tyd: cursor %d epoch %d at_end=%v exited=%v reason=%s\n",
+				page.CursorNext, page.Epoch, page.AtEnd, page.Exited, page.Reason)
 		}
 		if page.Exited {
 			return nil

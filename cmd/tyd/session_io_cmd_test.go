@@ -112,6 +112,50 @@ func TestSplitFlagsStopsAtDoubleDash(t *testing.T) {
 	}
 }
 
+// session read and session send parse their own flags, so parseArgs must hand
+// them the tail instead of rejecting what it does not recognise. The session
+// id may come before or after those flags, and global flags may come first.
+func TestSubcommandFlagRouting(t *testing.T) {
+	cases := []struct {
+		args []string
+		rest []string
+	}{
+		{[]string{"session", "send", "s1", "--json"}, []string{"send", "s1", "--json"}},
+		{[]string{"session", "send", "--json", "s1"}, []string{"send", "--json", "s1"}},
+		{[]string{"session", "read", "s1", "--cursor", "0", "--json"}, []string{"read", "s1", "--cursor", "0", "--json"}},
+		{[]string{"--peer", "laptop", "session", "read", "s1", "--wait", "2s"}, []string{"read", "s1", "--wait", "2s"}},
+		{[]string{"session", "send", "s1", `hello\n`}, []string{"send", "s1", `hello\n`}},
+	}
+	for _, tc := range cases {
+		opts, err := parseArgs(tc.args)
+		if err != nil {
+			t.Errorf("%v: %v", tc.args, err)
+			continue
+		}
+		if opts.cmd != "session" {
+			t.Errorf("%v: cmd = %q, want session", tc.args, opts.cmd)
+			continue
+		}
+		if len(opts.rest) != len(tc.rest) {
+			t.Errorf("%v: rest = %v, want %v", tc.args, opts.rest, tc.rest)
+			continue
+		}
+		for i := range tc.rest {
+			if opts.rest[i] != tc.rest[i] {
+				t.Errorf("%v: rest = %v, want %v", tc.args, opts.rest, tc.rest)
+				break
+			}
+		}
+	}
+}
+
+// Other subcommands keep the old behaviour: an unknown flag is still an error.
+func TestUnknownFlagStillRejected(t *testing.T) {
+	if _, err := parseArgs([]string{"session", "list", "--nope"}); err == nil {
+		t.Fatal("want an error for an unknown flag on session list")
+	}
+}
+
 type nopWriter struct{}
 
 func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }

@@ -246,7 +246,7 @@ func TestInProcessReadUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.Read(0, 0, 0)
+	_, err = s.Read(0, 0, 0, live.ReadConditions{})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("want unsupported, got %v", err)
 	}
@@ -292,7 +292,7 @@ func TestLiveReadResume(t *testing.T) {
 		t.Fatalf("no marker in attach stream: %q", got)
 	}
 
-	first, err := s.Read(0, 0, 0)
+	first, err := s.Read(0, 0, 0, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +302,7 @@ func TestLiveReadResume(t *testing.T) {
 	if !strings.Contains(string(first.Data), marker) {
 		t.Fatalf("read missing marker: %q", first.Data)
 	}
-	second, err := s.Read(first.CursorNext, first.Epoch, 0)
+	second, err := s.Read(first.CursorNext, first.Epoch, 0, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +329,7 @@ func TestLiveReadResume(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	third, err := s.Read(first.CursorNext, first.Epoch, 0)
+	third, err := s.Read(first.CursorNext, first.Epoch, 0, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestLiveReadResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer att2.Detach()
-	after, err := s.Read(0, 0, 0)
+	after, err := s.Read(0, 0, 0, live.ReadConditions{})
 	if err != nil {
 		t.Fatal(err)
 	}

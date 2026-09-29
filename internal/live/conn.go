@@ -161,13 +161,13 @@ func (c *Conn) readLoop() {
 // DialRead is a one-shot pull of sequenced output. It does not take the
 // attach slot and does not stay connected. A non-zero waitMS parks the read
 // until bytes arrive, the wait elapses, or the reply must be returned anyway.
-func DialRead(dir string, cursor, epoch uint64, waitMS uint32) (ReadResult, error) {
+func DialRead(dir string, cursor, epoch uint64, waitMS, idleMS uint32, pattern string, maxBytes uint32) (ReadResult, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
 		return ReadResult{}, err
 	}
 	defer nc.Close()
-	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor, Epoch: epoch, WaitMS: waitMS}); err != nil {
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeRead, Cursor: cursor, Epoch: epoch, WaitMS: waitMS, IdleMS: idleMS, Match: pattern, MaxBytes: maxBytes}); err != nil {
 		return ReadResult{}, err
 	}
 	f, err := protocol.ReadFrame(nc)
@@ -188,30 +188,39 @@ func DialRead(dir string, cursor, epoch uint64, waitMS uint32) (ReadResult, erro
 		Epoch:       f.Epoch,
 		CursorAhead: f.CursorAhead,
 		Exited:      f.Exited,
+		Reason:      f.Reason,
 	}, nil
 }
 
+// SendReply is what a send tells the caller: how many bytes landed, and
+// where the output was beforehand so the caller can read only what follows.
+type SendReply struct {
+	Written int
+	Cursor  uint64
+	Epoch   uint64
+}
+
 // DialSend injects keystrokes without taking the attach slot.
-func DialSend(dir string, data []byte) (int, error) {
+func DialSend(dir string, data []byte) (SendReply, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
-		return 0, err
+		return SendReply{}, err
 	}
 	defer nc.Close()
 	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data}); err != nil {
-		return 0, err
+		return SendReply{}, err
 	}
 	f, err := protocol.ReadFrame(nc)
 	if err != nil {
-		return 0, err
+		return SendReply{}, err
 	}
 	if f.Type == protocol.TypeError {
-		return 0, fmt.Errorf("%s", f.Error)
+		return SendReply{}, fmt.Errorf("%s", f.Error)
 	}
 	if f.Type != protocol.TypeOK {
-		return 0, fmt.Errorf("unexpected send reply %q", f.Type)
+		return SendReply{}, fmt.Errorf("unexpected send reply %q", f.Type)
 	}
-	return int(f.CursorNext), nil
+	return SendReply{Written: int(f.CursorNext), Cursor: f.Cursor, Epoch: f.Epoch}, nil
 }
 
 func (c *Conn) Write(p []byte) (int, error) {

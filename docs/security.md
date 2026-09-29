@@ -115,6 +115,15 @@ exited is refused, so `send` cannot run a command nobody asked it to run.
 Under `pre`, `send` is gated exactly like `read` and the approval is spent
 once per call.
 
+`read` can also be given a wake condition: wait for output to go quiet
+(`idle_ms`), for a pattern to appear (`match`), or for a number of bytes to
+accumulate (`max_bytes`). Two limits are worth knowing. A cursor that lands in
+the middle of an escape sequence can leave a few stray bytes at the start of
+the window, because the cleaner has no way to know what the bytes before the
+cursor were doing. And matching is unreliable for full-screen programs
+(`vim`, `top`, `less`), which paint the screen themselves; a condition may
+never fire there, so always give `wait_ms` a bound.
+
 In `post` mode the audit log covers control events only. **It does not record
 what ran in the session.** A `send` is recorded as a control event carrying
 the byte count and never the bytes. The output log does hold terminal bytes

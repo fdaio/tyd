@@ -628,7 +628,7 @@ var ErrReadUnsupported = fmt.Errorf("read is not supported on in-process session
 // attach slot. Live-agents serve the disk log; in-process sessions error.
 // epoch 0 means the caller has no generation yet. A non-zero wait parks the
 // read until bytes arrive or the wait elapses.
-func (s *Session) Read(cursor, epoch uint64, wait time.Duration) (live.ReadResult, error) {
+func (s *Session) Read(cursor, epoch uint64, wait time.Duration, cond live.ReadConditions) (live.ReadResult, error) {
 	s.mu.Lock()
 	dir := s.liveDir
 	closed := s.closed || s.state == StateClosed
@@ -644,7 +644,7 @@ func (s *Session) Read(cursor, epoch uint64, wait time.Duration) (live.ReadResul
 	if dir == "" {
 		return live.ReadResult{}, ErrReadUnsupported
 	}
-	return live.ReadSession(dir, cursor, epoch, wait)
+	return live.ReadSession(dir, cursor, epoch, wait, cond)
 }
 
 // ErrSendUnsupported is returned when a process-in-PTY session (tests, no
@@ -658,9 +658,9 @@ var ErrSessionInUse = fmt.Errorf("session in use: attached elsewhere")
 // Send injects keystrokes without taking the exclusive attach slot. It never
 // starts a shell: an exited or pending session is an error, so a send cannot
 // run a command the caller did not ask for.
-func (s *Session) Send(p []byte) (int, error) {
+func (s *Session) Send(p []byte) (live.SendReply, error) {
 	if len(p) == 0 {
-		return 0, fmt.Errorf("send requires data")
+		return live.SendReply{}, fmt.Errorf("send requires data")
 	}
 	s.mu.Lock()
 	dir := s.liveDir
@@ -673,16 +673,16 @@ func (s *Session) Send(p []byte) (int, error) {
 	busy := s.attach != nil && !s.attach.endedLocked()
 	s.mu.Unlock()
 	if pending {
-		return 0, fmt.Errorf("session pending approval")
+		return live.SendReply{}, fmt.Errorf("session pending approval")
 	}
 	if closed {
-		return 0, fmt.Errorf("session %s is closed", id)
+		return live.SendReply{}, fmt.Errorf("session %s is closed", id)
 	}
 	if busy {
-		return 0, ErrSessionInUse
+		return live.SendReply{}, ErrSessionInUse
 	}
 	if dir == "" {
-		return 0, ErrSendUnsupported
+		return live.SendReply{}, ErrSendUnsupported
 	}
 	return live.SendSession(dir, p)
 }
