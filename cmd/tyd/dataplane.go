@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
@@ -127,8 +129,14 @@ func runUp(opts options) error {
 	}
 
 	stop := make(chan struct{})
-	if err := ensureCPRegistration(opts, state); err != nil {
+	// One poll for the life of the daemon: it owns the schedule, and the route
+	// it settled on, so the first round and every round after it talk to the
+	// Control Panel the same way.
+	poll := &cpPoll{}
+	if id, err := ensureCPRegistration(opts, state); err != nil {
 		fmt.Fprintf(os.Stderr, "cp registration restore skipped: %v\n", err)
+	} else if id != "" {
+		fmt.Fprintf(os.Stderr, "tyd restored CP registration %s\n", id)
 	}
 	if srv.DataPlaneAddr() != "" {
 		cands := transport.PreferNonLoopback(transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise))
@@ -137,13 +145,11 @@ func runUp(opts options) error {
 		} else {
 			pubAddr := cands[0]
 			fmt.Fprintf(os.Stderr, "tyd data-plane quic %s (%d candidates published to CP)\n", pubAddr, len(cands))
-			if err := syncPeersAndTrust(opts, state, trust); err != nil {
-				fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
+			ep := dataEndpoint{addr: pubAddr, certFP: srv.TLSFingerprintFull(), candidates: cands}
+			if err := cpRound(poll, opts, state, trust, ep); err != nil {
+				fmt.Fprintf(os.Stderr, "cp sync skipped: %v\n", err)
 			}
-			if err := publishDataEndpoint(opts, state, pubAddr, srv.TLSFingerprintFull(), cands); err != nil {
-				fmt.Fprintf(os.Stderr, "cp endpoint publish skipped: %v\n", err)
-			}
-			go dataPlaneMaintain(opts, state, trust, pubAddr, srv.TLSFingerprintFull(), cands, stop)
+			go dataPlaneMaintain(poll, opts, state, trust, ep, stop)
 		}
 	} else {
 		if err := syncPeersFromCP(opts, state); err != nil {
@@ -267,25 +273,36 @@ func advertisedAddr(host, listenAddr string) string {
 	return net.JoinHostPort(host, port)
 }
 
-func ensureCPRegistration(opts options, state *peerstate.State) error {
+// ensureCPRegistration makes sure the Control Panel still knows this daemon.
+// peers.json is a cache of what the daemon holds in memory, so it can be ahead
+// of the Control Panel: a restarted Control Panel has no registrations at all,
+// and a daemon nobody can name is a daemon nobody can reach. Restore is
+// idempotent and only restates what this identity already knows -- it is keyed
+// by this daemon's own id and public key and cannot mint an identity -- so it
+// is safe on every start and on every 404.
+//
+// It returns the id it restored, or "" when the Control Panel already knew the
+// daemon or there is nothing to restore. The caller logs it: the same restore
+// reads differently at startup and in the middle of a poll.
+func ensureCPRegistration(opts options, state *peerstate.State) (string, error) {
 	doc := state.Snapshot()
 	if !doc.HasRegistration() {
-		return nil
+		return "", nil
 	}
 	platform := state.Platform(opts.platform)
 	key, err := auth.LoadIdentity(opts.identity)
 	if err != nil {
-		return err
+		return "", err
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	if doc.Registration.PublicKey != "" && doc.Registration.PublicKey != pub {
-		return fmt.Errorf("peers.json registration public key does not match identity")
+		return "", fmt.Errorf("peers.json registration public key does not match identity")
 	}
 	cli := cpclient.New(platform)
 	if _, err := cli.ListPeers(doc.Registration.ID, pub); err == nil {
-		return nil
+		return "", nil
 	} else if !cpNotFound(err) {
-		return err
+		return "", err
 	}
 	cpPeers := make([]controlpanel.Peer, 0, len(doc.Peers))
 	for _, p := range doc.Peers {
@@ -304,10 +321,9 @@ func ensureCPRegistration(opts options, state *peerstate.State) error {
 		Peers:        cpPeers,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	fmt.Fprintf(os.Stderr, "tyd restored CP registration %s\n", resp.ID)
-	return nil
+	return resp.ID, nil
 }
 
 func cpNotFound(err error) bool {
@@ -318,41 +334,60 @@ func cpNotFound(err error) bool {
 	return strings.Contains(msg, "404") || strings.Contains(msg, "not found")
 }
 
-func publishDataEndpoint(opts options, state *peerstate.State, addr, certFP string, candidates []string) error {
+// dataEndpoint is what this daemon publishes about its own data plane: the
+// address and certificate fingerprint a client dials, and the candidates it
+// tries in order. Grouping them keeps the maintenance round from growing a
+// parameter per field, since the round, the publish and the repair all need the
+// same three.
+type dataEndpoint struct {
+	addr, certFP string
+	candidates   []string
+}
+
+// endpointRequest builds the signed record this daemon publishes. An empty id
+// means there is no registration, so there is nothing to publish and no peer
+// list to ask for.
+func endpointRequest(opts options, state *peerstate.State, ep dataEndpoint) (string, controlpanel.PublishEndpointRequest, error) {
 	reg, ok := state.Registration()
 	if !ok {
-		return nil
+		return "", controlpanel.PublishEndpointRequest{}, nil
 	}
-	platform := state.Platform(opts.platform)
 	key, err := auth.LoadIdentity(opts.identity)
 	if err != nil {
-		return err
+		return "", controlpanel.PublishEndpointRequest{}, err
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
-	cli := cpclient.New(platform)
 	ttl := controlpanel.DefaultEndpointTTL
 
 	// Sign what we are about to publish, so a Control Panel can carry the record
 	// but not rewrite it. The expiry and the sequence are ours: a client acts on
 	// the signed values, never on the ones the Control Panel reports alongside.
 	seq := endpointSeqFor(opts)
-	record := auth.NewEndpointRecord(reg.ID, pub, addr, certFP, "quic", candidates, time.Now(), ttl, seq)
+	record := auth.NewEndpointRecord(reg.ID, pub, ep.addr, ep.certFP, "quic", ep.candidates, time.Now(), ttl, seq)
 	sig, err := record.Sign(key)
 	if err != nil {
-		return fmt.Errorf("endpoint proof: %w", err)
+		return "", controlpanel.PublishEndpointRequest{}, fmt.Errorf("endpoint proof: %w", err)
 	}
-	return cli.PublishEndpointFull(reg.ID, controlpanel.PublishEndpointRequest{
+	return reg.ID, controlpanel.PublishEndpointRequest{
 		PublicKey:  pub,
-		Addr:       addr,
-		CertFP:     certFP,
+		Addr:       ep.addr,
+		CertFP:     ep.certFP,
 		Transport:  "quic",
-		Candidates: candidates,
+		Candidates: ep.candidates,
 		TTLSeconds: int(ttl / time.Second),
 		Proof: &controlpanel.EndpointProof{
 			Record: record,
 			Sig:    auth.EncodeBytes(sig),
 		},
-	})
+	}, nil
+}
+
+func publishDataEndpoint(opts options, state *peerstate.State, ep dataEndpoint) error {
+	id, req, err := endpointRequest(opts, state, ep)
+	if err != nil || id == "" {
+		return err
+	}
+	return cpclient.New(state.Platform(opts.platform)).PublishEndpointFull(id, req)
 }
 
 // endpointSeqFile keeps the publish sequence next to the pairing record. It only
@@ -381,33 +416,143 @@ func endpointSeqFor(opts options) uint64 {
 	return next
 }
 
-func dataPlaneMaintain(opts options, state *peerstate.State, trust *auth.Store, addr, certFP string, candidates []string, stop <-chan struct{}) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+// cpSyncOnce is one round trip against the Control Panel: publish the endpoint
+// and take the peer list in a single request, then apply both locally.
+func cpSyncOnce(opts options, state *peerstate.State, trust *auth.Store, ep dataEndpoint) error {
+	id, req, err := endpointRequest(opts, state, ep)
+	if err != nil || id == "" {
+		return err
+	}
+	if err := seedPaired(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "tyd trust: could not read the local pairing record: %v\n", err)
+	}
+	resp, err := cpclient.New(state.Platform(opts.platform)).Sync(id, req)
+	if err == nil {
+		err = state.Update(func(doc *peers.File) {
+			doc.ReplaceFromRemote(cpPeersToLocal(resp.Peers))
+		})
+	}
+	// Trust is rebuilt from the local pairing record, not from what the Control
+	// Panel just handed back, and it is rebuilt whether or not that call
+	// succeeded: a Control Panel that is down must not be able to delay a
+	// revocation that a local `tyd revoke` already recorded.
+	injectPeerTrust(opts, trust, state.Snapshot())
+	return err
+}
+
+// cpSyncTwice is the same round against a Control Panel without a /sync route:
+// the peer list and the endpoint as two requests. Kept because a daemon can
+// outlive the Control Panel it was built for, and a self-hosted one is
+// redeployed by hand while install.sh upgrades daemons on its own.
+func cpSyncTwice(opts options, state *peerstate.State, trust *auth.Store, ep dataEndpoint) error {
+	return errors.Join(
+		syncPeersAndTrust(opts, state, trust),
+		publishDataEndpoint(opts, state, ep),
+	)
+}
+
+// cpRound is one round of Control Panel maintenance.
+//
+// A 404 out of the combined call means one of two things, and telling them
+// apart is the whole job: an unknown registration means this Control Panel lost
+// us, and the restore puts it back; a Control Panel that knows the daemon and
+// still 404s has no /sync route, which means it is older than this daemon. The
+// restore is what separates them, because it starts by asking for the peer list
+// this daemon id already had.
+func cpRound(poll *cpPoll, opts options, state *peerstate.State, trust *auth.Store, ep dataEndpoint) error {
+	state.ReloadIfSane()
+	if poll.legacy {
+		return cpSyncTwice(opts, state, trust, ep)
+	}
+	err := cpSyncOnce(opts, state, trust, ep)
+	if !cpNotFound(err) {
+		return err
+	}
+	id, rerr := ensureCPRegistration(opts, state)
+	if rerr != nil {
+		return fmt.Errorf("cp re-register: %w (last sync: %v)", rerr, err)
+	}
+	if id == "" {
+		poll.legacy = true
+		fmt.Fprintln(os.Stderr, "tyd cp: this Control Panel has no /sync route; using the two-request path (redeploy the Control Panel to halve what the fleet asks of it)")
+		return cpSyncTwice(opts, state, trust, ep)
+	}
+	fmt.Fprintf(os.Stderr, "tyd cp: the Control Panel had forgotten this daemon; restored registration %s\n", id)
+	return cpSyncOnce(opts, state, trust, ep)
+}
+
+// cpBackoff is how long the daemon waits before the next round, indexed by
+// consecutive failures. The first step is the healthy interval, because a single
+// failure is usually one dropped connection and retrying on the normal cadence
+// costs one request. The last step is the ceiling: a Control Panel that is down
+// must not be dialled on a fixed timer forever, and the relay carries the
+// traffic meanwhile, so there is nothing to gain by knocking.
+var cpBackoff = [...]time.Duration{
+	30 * time.Second,
+	time.Minute,
+	2 * time.Minute,
+	5 * time.Minute,
+}
+
+// cpPoll is everything a daemon remembers about talking to its Control Panel:
+// when to go back, and which route to take. It is kept apart from the clock so
+// the ladder, the route and the recovery can be tested without waiting out an
+// interval.
+type cpPoll struct {
+	fails  int
+	legacy bool // the Control Panel has no /sync route; use the two requests
+}
+
+// next records a round's outcome and returns the wait before the next one,
+// before jitter.
+func (p *cpPoll) next(ok bool) time.Duration {
+	if ok {
+		p.fails = 0
+		return cpBackoff[0]
+	}
+	i := p.fails
+	p.fails++
+	if i >= len(cpBackoff)-1 {
+		return cpBackoff[len(cpBackoff)-1]
+	}
+	return cpBackoff[i]
+}
+
+// jitteredWait spreads a wait by ±20% around it. Daemons started together stay
+// in phase without it and arrive at the Control Panel as one spike every
+// interval, and the endpoints they publish expire on a shared TTL, so the
+// fleet already has a synchronising clock and does not need a second one.
+func jitteredWait(d time.Duration, frac float64) time.Duration {
+	const spread = 0.2
+	return time.Duration(float64(d) * (1 + spread*(2*frac-1)))
+}
+
+func dataPlaneMaintain(poll *cpPoll, opts options, state *peerstate.State, trust *auth.Store, ep dataEndpoint, stop <-chan struct{}) {
 	warned := false
+	timer := time.NewTimer(jitteredWait(cpBackoff[0], rand.Float64()))
+	defer timer.Stop()
 	for {
 		select {
 		case <-stop:
 			return
-		case <-ticker.C:
-
-			state.ReloadIfSane()
-			if err := syncPeersAndTrust(opts, state, trust); err != nil {
-				fmt.Fprintf(os.Stderr, "cp peer sync: %v\n", err)
-			}
-			if err := publishDataEndpoint(opts, state, addr, certFP, candidates); err != nil {
-				fmt.Fprintf(os.Stderr, "cp endpoint publish: %v\n", err)
-			}
-			if err := state.Flush(); err != nil {
-				if !warned {
-					fmt.Fprintf(os.Stderr, "peers file not writable (%v); running from memory and retrying\n", err)
-					warned = true
-				}
-			} else if warned {
-				fmt.Fprintln(os.Stderr, "peers file writable again")
-				warned = false
-			}
+		case <-timer.C:
 		}
+		roundErr := cpRound(poll, opts, state, trust, ep)
+		if roundErr != nil {
+			fmt.Fprintf(os.Stderr, "cp maintenance: %v\n", roundErr)
+		}
+		// A full disk is not the Control Panel's fault, so it does not earn a
+		// longer wait: the peers and endpoint above still need to move.
+		if err := state.Flush(); err != nil {
+			if !warned {
+				fmt.Fprintf(os.Stderr, "peers file not writable (%v); running from memory and retrying\n", err)
+				warned = true
+			}
+		} else if warned {
+			fmt.Fprintln(os.Stderr, "peers file writable again")
+			warned = false
+		}
+		timer.Reset(jitteredWait(poll.next(roundErr == nil), rand.Float64()))
 	}
 }
 

@@ -236,7 +236,7 @@ func runInvite(opts options) error {
 	cli := cpclient.New(platform)
 
 	if state, err := peerstate.Load(opts.peers); err == nil {
-		if err := ensureCPRegistration(opts, state); err != nil {
+		if _, err := ensureCPRegistration(opts, state); err != nil {
 			return fmt.Errorf("invite: restore CP registration: %w (or: tyd register --force)", err)
 		}
 	}

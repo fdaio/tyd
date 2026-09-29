@@ -207,6 +207,98 @@ func TestEndpointPublishFetchExpire(t *testing.T) {
 	}
 }
 
+// /sync is the daemon's maintenance round: the endpoint and the peer list in one
+// request. It has to be the same endpoint publish with the same proof rules --
+// halving the requests is no reason to hand a caller a route that stores a
+// record a client could not verify.
+func TestSyncPublishesAndReturnsPeers(t *testing.T) {
+	s := New()
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	s.SetNow(func() time.Time { return now })
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	daemonPub, daemonPriv := testKeyPair(t)
+	reg, err := s.Register(RegisterRequest{PublicKey: auth.EncodePublic(daemonPub)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerPub, _ := testKeyPair(t)
+	// Restore is how a peer list reaches a daemon the Control Panel already
+	// knows, which is the state a paired fleet is in.
+	if _, err := s.Restore(RestoreRequest{
+		ID:           reg.ID,
+		PublicKey:    auth.EncodePublic(daemonPub),
+		ApprovalMode: reg.ApprovalMode,
+		Peers: []Peer{{
+			ID: "peer1", PublicKey: auth.EncodePublic(peerPub), Nickname: "laptop", Direction: "inbound",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sync := func(req PublishEndpointRequest) (int, SyncResponse) {
+		t.Helper()
+		body, _ := json.Marshal(req)
+		httpReq, _ := http.NewRequest(http.MethodPut, ts.URL+"/v1/daemons/"+reg.ID+"/sync", bytes.NewReader(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(httpReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var out SyncResponse
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		return res.StatusCode, out
+	}
+
+	code, out := sync(signedEndpoint(t, reg.ID, daemonPub, daemonPriv, "127.0.0.1:61211", "abcd", now, 60, 1))
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	if out.Endpoint == nil || out.Endpoint.Addr != "127.0.0.1:61211" || out.Endpoint.CertFP != "abcd" {
+		t.Fatalf("endpoint %+v", out.Endpoint)
+	}
+	if len(out.Peers) != 1 || out.Peers[0].Nickname != "laptop" {
+		t.Fatalf("peers %+v", out.Peers)
+	}
+	// The same record has to be readable through the route clients use.
+	ep, err := s.GetEndpoint(reg.ID)
+	if err != nil || ep.Addr != "127.0.0.1:61211" {
+		t.Fatalf("stored endpoint %+v err %v", ep, err)
+	}
+
+	// A record the daemon did not sign is refused, and nothing is stored for a
+	// later client to be served.
+	bad := signedEndpoint(t, reg.ID, daemonPub, daemonPriv, "203.0.113.9:1", "beef", now, 60, 2)
+	bad.Proof = nil
+	if code, _ := sync(bad); code != http.StatusBadRequest {
+		t.Errorf("an unsigned record should be rejected, got status %d", code)
+	}
+	// A signature over a different address than the one being published is the
+	// substitution this whole check exists for.
+	sub := signedEndpoint(t, reg.ID, daemonPub, daemonPriv, "203.0.113.9:1", "beef", now, 60, 3)
+	sub.Addr = "198.51.100.1:1"
+	if code, _ := sync(sub); code != http.StatusBadRequest {
+		t.Errorf("a record that does not cover the address should be rejected, got status %d", code)
+	}
+	if ep, _ := s.GetEndpoint(reg.ID); ep.Addr != "127.0.0.1:61211" {
+		t.Errorf("a refused publish overwrote the record: %+v", ep)
+	}
+
+	// An unknown registration is 404, and that 404 is what tells a daemon the
+	// Control Panel lost it rather than that the route is missing.
+	body, _ := json.Marshal(signedEndpoint(t, "nosuchdaemon", daemonPub, daemonPriv, "127.0.0.1:1", "aa", now, 60, 4))
+	res, err := http.Post(ts.URL+"/v1/daemons/nosuchdaemon/sync", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("an unknown daemon should be 404, got %d", res.StatusCode)
+	}
+}
+
 func TestHTTPEndpoint(t *testing.T) {
 	s := New()
 	ts := httptest.NewServer(s.Handler())

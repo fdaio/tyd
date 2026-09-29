@@ -105,6 +105,39 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - An unparsable `peers.json` is quarantined and recovered from the CP without relaxing the approval mode
 - `tyd doctor [--fix]` for state/disk self-check and rebuild
 
+### Step 7 — Surviving a restarted Control Panel
+
+The Control Panel keeps its registrations in memory, so restarting it — a
+deploy, a crash, a reboot — used to leave every daemon publishing into a 404
+until somebody restarted `tyd up` on each host, and the whole fleet sat on the
+relay until they did. A 404 out of a maintenance round is now answered with the
+restore the daemon already does at startup, and the round is retried so the
+endpoint goes back out in the same pass.
+
+- 404 on the round → `POST /v1/restore` from local `peers.json`, retried
+  in the same round. Restore is keyed by this daemon's own id and public key and
+  cannot mint an identity, so the automatic path has the same authority as the
+  startup one; trust still comes from `paired.json`
+- Recovery is idempotent and bounded: one line per event on stderr, never a loop
+- Poll backoff 30s → 1m → 2m → 5m, reset on success, so a Control Panel that is
+  down is not dialled on a fixed timer (a 500 is not a 404: no restore attempt)
+- ±20% jitter, so a fleet started together does not arrive as one spike
+- The Control Panel client keeps an explicit idle pool instead of leaning on
+  `http.DefaultTransport`, so a poller reuses its TLS session between rounds
+- `PUT /v1/daemons/{id}/sync` publishes the endpoint and returns the peer list in
+  one request, halving what a fleet asks of a Control Panel. It calls the same
+  `PublishEndpoint` and `ListPeers` the two routes do, so the proof checks and
+  the TTL cap cannot drift between them
+- A daemon newer than its Control Panel finds no `/sync`, falls back to the two
+  requests, and says so once — the alternative was a daemon republishing into a
+  404 forever, which is what a self-hosted Control Panel on an older commit
+  would otherwise have caused
+
+A Control Panel that is *unreachable* is still a single point of failure for
+pairing: nothing can mint an invite until it is back. Surviving that is a
+different step — see [dataplane-networking.md](requirements/dataplane-networking.md)
+for why the relay cannot be clustered today.
+
 ## Peer management
 
 - `tyd peer list` — paired peers with nickname and direction

@@ -107,6 +107,15 @@ type EndpointResponse struct {
 	Proof *EndpointProof `json:"proof,omitempty"`
 }
 
+// SyncResponse answers a daemon's maintenance round: the peer list the Control
+// Panel holds, and the endpoint record as it was stored.
+type SyncResponse struct {
+	Peers []Peer `json:"peers"`
+	// Endpoint echoes what PublishEndpoint recorded, expiry included: the
+	// earlier of what the daemon signed and what the Control Panel allows.
+	Endpoint *EndpointResponse `json:"endpoint,omitempty"`
+}
+
 type Daemon struct {
 	ID           string    `json:"id"`
 	PublicKey    string    `json:"public_key"`
@@ -791,6 +800,30 @@ func (s *Service) PublishEndpoint(daemonID string, req PublishEndpointRequest) (
 	}, nil
 }
 
+// Sync is one maintenance round trip: the daemon publishes the endpoint it is
+// listening on and takes the peer list back in the same request. It needs both
+// on every interval, so asking twice doubles what a fleet asks of a Control
+// Panel and buys no extra freshness.
+//
+// It calls PublishEndpoint and ListPeers as they are written rather than as a
+// copy, so the proof checks, the public-key match and the TTL cap cannot drift
+// between the two routes -- an endpoint published through /sync has to clear
+// exactly what it would clear through /endpoint.
+func (s *Service) Sync(daemonID string, req PublishEndpointRequest) (*SyncResponse, error) {
+	ep, err := s.PublishEndpoint(daemonID, req)
+	if err != nil {
+		return nil, err
+	}
+	// The two take the lock separately. A peer list one instant stale is what a
+	// second request would have returned anyway, and holding the lock across
+	// both would serialise every daemon's round against every other one's.
+	peers, err := s.ListPeers(daemonID, strings.TrimSpace(req.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+	return &SyncResponse{Peers: peers, Endpoint: ep}, nil
+}
+
 func (s *Service) GetEndpoint(daemonID string) (*EndpointResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1065,6 +1098,25 @@ func (s *Service) handleDaemon(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "sync" {
+		switch r.Method {
+		case http.MethodPut, http.MethodPost:
+			var req PublishEndpointRequest
+			if err := decodeJSON(r, &req); err != nil {
+				writeErr(w, http.StatusBadRequest, "invalid json")
+				return
+			}
+			resp, err := s.Sync(id, req)
+			if err != nil {
+				writeServiceErr(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
+		default:
+			writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 	if len(parts) == 2 && parts[1] == "endpoint" {

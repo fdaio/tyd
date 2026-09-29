@@ -68,6 +68,19 @@ Panel (`transport=quic`, ephemeral signaling only, refreshed about every 30 seco
 and expiring after about 90). Clients try candidates in order, then fall back to the
 relay.
 
+A round spends **one** request: `PUT /v1/daemons/{id}/sync` publishes the endpoint
+and returns the peer list together, because a daemon needs both on every
+interval. The wait is 30 seconds with ±20% jitter, so a fleet started together
+does not arrive in one spike, and it backs off 30s → 1m → 2m → 5m on failure,
+capped there — a Control Panel that is down is not dialled on a fixed timer
+forever, and the relay carries the traffic meanwhile. A successful round resets
+it.
+
+A daemon running against a Control Panel older than itself — `install.sh` upgrades
+daemons on their own schedule, a self-hosted Control Panel is redeployed by hand
+— finds no `/sync` route, says so once on stderr, and keeps using the two-request
+path. Redeploying the Control Panel is what halves what the fleet asks of it.
+
 ```bash
 tyd up --data-listen auto                     # default: 0.0.0.0:0 when registered, off otherwise
 tyd up --data-listen 0.0.0.0:61212            # fixed host:port
@@ -239,8 +252,15 @@ Notes:
 - The container listens on `0.0.0.0:8080` with no TLS — terminate at the edge
   (e.g. Cloudflare). Compose caps it at 0.5 CPU and 128 MB.
 - **Control Panel state is in-memory only.** A container restart drops
-  registrations, invites, and peer pairs; daemons restore from local `peers.json`
-  on their next `tyd up`. The relay holds no durable session state.
+  registrations, invites, and peer pairs. Every daemon notices on its next round
+  (within about 30 seconds), restores its own registration from its local
+  `peers.json`, and republishes its endpoint — no restart of `tyd up` needed, and
+  a session spliced through the relay at that moment reconnects on the next
+  `attach`. The log line is one per event:
+  `tyd cp: the Control Panel had forgotten this daemon; restored registration
+  <id>`. Trust never depended on the Control Panel: `paired.json` is local, so a
+  restore cannot grant access that pairing did not. The relay holds no durable
+  session state.
 - Optional dedicated relay: `docker compose --profile standalone-relay up -d --build`.
 
 ## When the disk fills up
