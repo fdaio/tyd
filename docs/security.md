@@ -102,9 +102,24 @@ up to that on-disk window (default 64MB), not only the 64KB ring that
 `attach` / `watch` replay. Treat that as the same "can see the terminal"
 right, with a larger history.
 
+The **write** capability is now enough on its own to inject keystrokes, via
+`send`, and it can do so **without being able to read anything back**: `send`
+needs `write`, `read` needs `attach`, and the two are granted separately. A
+peer that can type but not see is blind input, which is a different and
+arguably more dangerous capability than "can read a terminal". Grant `write`
+only to peers that would also get `attach`.
+
+`send` refuses to run while someone holds the exclusive attach slot, so two
+writers never interleave. It never starts a shell: a session whose shell has
+exited is refused, so `send` cannot run a command nobody asked it to run.
+Under `pre`, `send` is gated exactly like `read` and the approval is spent
+once per call.
+
 In `post` mode the audit log covers control events only. **It does not record
-what ran in the session.** The output log does hold terminal bytes for `read`;
-treat the session dir as sensitive, the same way you treat the PTY itself.
+what ran in the session.** A `send` is recorded as a control event carrying
+the byte count and never the bytes. The output log does hold terminal bytes
+for `read`; treat the session dir as sensitive, the same way you treat the PTY
+itself.
 
 ## Deployment tiers
 

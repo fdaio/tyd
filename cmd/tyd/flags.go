@@ -71,6 +71,15 @@ func parseArgs(args []string) (options, error) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// session read and session send own their flags. Once the subcommand
+		// is in hand, hand the rest over untouched instead of rejecting the
+		// flags it is going to parse itself.
+		if len(positional) >= 3 && strings.HasPrefix(a, "-") &&
+			positional[len(positional)-3] == "session" &&
+			(positional[len(positional)-2] == "read" || positional[len(positional)-2] == "send") {
+			opts.rest = append(append([]string{}, positional[1:]...), args[i:]...)
+			return opts, nil
+		}
 		switch {
 		case a == "-h" || a == "--help":
 			opts.cmd = "help"

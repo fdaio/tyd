@@ -35,6 +35,9 @@ const (
 	// through a log is not recorded, because a full drain is a thousand
 	// calls and the chain has no rotation.
 	KindRead Kind = "read"
+	// KindSend records keystrokes injected without the attach slot. It
+	// carries the byte count only.
+	KindSend Kind = "send"
 )
 
 type Event struct {
@@ -50,6 +53,8 @@ type Event struct {
 	Reason     string    `json:"reason,omitempty"`
 	CreatedAt  string    `json:"created_at,omitempty"`
 	ExitCode   *int      `json:"exit_code,omitempty"`
+	// Bytes is a count of terminal bytes sent, never the bytes themselves.
+	Bytes int `json:"bytes,omitempty"`
 }
 
 type Sink interface {

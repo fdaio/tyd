@@ -484,12 +484,14 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 // Read pulls one page of sequenced session output. It does not take the
 // exclusive attach slot. The reply is raw PTY bytes; cursor_next pages.
 // Pass epoch 0 on the first pull, then the epoch from the last read_result.
-func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64) (protocol.Frame, error) {
+// A non-zero wait parks the read until bytes arrive or the wait elapses.
+func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64, wait time.Duration) (protocol.Frame, error) {
 	resp, err := rpc(ep, key, protocol.Frame{
 		Type:      protocol.TypeRead,
 		SessionID: sessionID,
 		Cursor:    cursor,
 		Epoch:     epoch,
+		WaitMS:    uint32(wait / time.Millisecond),
 	})
 	if err != nil {
 		return protocol.Frame{}, err
@@ -498,6 +500,23 @@ func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch u
 		return protocol.Frame{}, fmt.Errorf("unexpected read reply %q", resp.Type)
 	}
 	return resp, nil
+}
+
+// Send injects keystrokes without taking the exclusive attach slot. It needs
+// the write capability but not attach. An error means nothing was written.
+func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (int, error) {
+	resp, err := rpc(ep, key, protocol.Frame{
+		Type:      protocol.TypeSend,
+		SessionID: sessionID,
+		Data:      data,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if resp.Type != protocol.TypeOK {
+		return 0, fmt.Errorf("unexpected send reply %q", resp.Type)
+	}
+	return int(resp.CursorNext), nil
 }
 
 func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {

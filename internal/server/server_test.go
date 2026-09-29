@@ -1133,7 +1133,7 @@ func TestReadInProcessUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Read(ep, key, info.ID, 0, 0)
+	_, err = client.Read(ep, key, info.ID, 0, 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("want unsupported, got %v", err)
 	}

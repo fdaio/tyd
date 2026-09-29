@@ -626,8 +626,9 @@ var ErrReadUnsupported = fmt.Errorf("read is not supported on in-process session
 
 // Read pulls a page of sequenced output. It does not take the exclusive
 // attach slot. Live-agents serve the disk log; in-process sessions error.
-// epoch 0 means the caller has no generation yet.
-func (s *Session) Read(cursor, epoch uint64) (live.ReadResult, error) {
+// epoch 0 means the caller has no generation yet. A non-zero wait parks the
+// read until bytes arrive or the wait elapses.
+func (s *Session) Read(cursor, epoch uint64, wait time.Duration) (live.ReadResult, error) {
 	s.mu.Lock()
 	dir := s.liveDir
 	closed := s.closed || s.state == StateClosed
@@ -643,7 +644,47 @@ func (s *Session) Read(cursor, epoch uint64) (live.ReadResult, error) {
 	if dir == "" {
 		return live.ReadResult{}, ErrReadUnsupported
 	}
-	return live.ReadSession(dir, cursor, epoch)
+	return live.ReadSession(dir, cursor, epoch, wait)
+}
+
+// ErrSendUnsupported is returned when a process-in-PTY session (tests, no
+// live-agent) receives a send.
+var ErrSendUnsupported = fmt.Errorf("send is not supported on in-process sessions")
+
+// ErrSessionInUse is returned when someone holds the exclusive attach slot.
+// It deliberately does not say who.
+var ErrSessionInUse = fmt.Errorf("session in use: attached elsewhere")
+
+// Send injects keystrokes without taking the exclusive attach slot. It never
+// starts a shell: an exited or pending session is an error, so a send cannot
+// run a command the caller did not ask for.
+func (s *Session) Send(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, fmt.Errorf("send requires data")
+	}
+	s.mu.Lock()
+	dir := s.liveDir
+	id := s.ID
+	closed := s.closed || s.state == StateClosed
+	pending := s.state == StatePending
+	// An ended attachment does not hold the slot: the agent drops it when the
+	// shell exits or the client vanishes, and a stale pointer must not make
+	// the session look busy forever.
+	busy := s.attach != nil && !s.attach.endedLocked()
+	s.mu.Unlock()
+	if pending {
+		return 0, fmt.Errorf("session pending approval")
+	}
+	if closed {
+		return 0, fmt.Errorf("session %s is closed", id)
+	}
+	if busy {
+		return 0, ErrSessionInUse
+	}
+	if dir == "" {
+		return 0, ErrSendUnsupported
+	}
+	return live.SendSession(dir, p)
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {

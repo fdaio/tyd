@@ -34,6 +34,18 @@ func (c *captureSink) reads() []audit.Event {
 	return out
 }
 
+func (c *captureSink) byKind(k audit.Kind) []audit.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []audit.Event
+	for _, e := range c.events {
+		if e.Kind == k {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func (c *captureSink) reset() {
 	c.mu.Lock()
 	c.events = nil

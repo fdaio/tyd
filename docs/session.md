@@ -180,7 +180,8 @@ One JSON object per line, file created `0600`, appended across restarts:
 ```
 
 Events: `create`, `create_pending`, `approve`, `reject`, `attach`,
-`attach_pending`, `detach`, `close`, `idle_close`, `denied`, `read`.
+`attach_pending`, `detach`, `close`, `idle_close`, `denied`, `read`, `send`.
+`send` records the byte count and never the bytes.
 `read` is recorded only when the reply broke the reader's view of the stream:
 `reason` is `cursor_reset` (the cursor was reset, so the reader lost its
 place) or `dropped_prefix` (the requested prefix was already gone). Ordinary
@@ -223,14 +224,25 @@ after a disconnect without taking the writer slot:
   restart, a cursor in that range is `cursor_ahead`. `tyd doctor` reports
   `output.err`.
 - `attach` and `watch` are unchanged: exclusive writer, 64KB ring replay.
+- `tyd session send <id> 'echo hi\n'` types into a session without the attach
+  slot. It refuses while someone is attached, and never starts a shell.
+- `tyd session read <id> --follow` streams until the shell exits; `--wait` holds
+  one page open until bytes arrive. Under `pre` each page needs its own
+  approval, so `--follow` is impractical there.
 - `read` is a non-blocking page (64KB max) with `cursor` / `cursor_next`.
   Holding `attach` can now retrieve up to the disk cap (default 64MB), not
   only the ring. That is still "can see the terminal"; it is a larger window.
 - Files are mode `0600`, deleted on `session close`, and never written into
   `--audit-log`. `--session-output-log-max SIZE` on `tyd up` changes the cap.
 
-There is no `tyd session read` CLI in this step; the protocol frame is the
-interface. In-process sessions (no live-agent) return an explicit error.
+`tyd session read` and `tyd session send` are the CLI for these frames. They
+hold no state: the caller keeps `cursor` and `epoch` and passes them back. In
+both, `--json` is for `read` only. In-process sessions (no live-agent) return
+an explicit error.
+
+`send` needs `write` and `read` needs `attach`, so a key that can type cannot
+see the answer, and a key that can see cannot type. They are granted
+separately on purpose.
 
 ## Who may do what
 

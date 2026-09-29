@@ -1,0 +1,286 @@
+package main
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"tyd/internal/client"
+)
+
+// exitSessionInUse is returned when a send is refused because someone holds
+// the attach slot. It is distinct so a script can tell "busy" from "broken".
+const exitSessionInUse = 3
+
+// parseSendData expands the escapes a person types on a command line. It
+// never appends a newline: what is sent is what was asked for.
+func parseSendData(s string) ([]byte, error) {
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\\' {
+			out = append(out, c)
+			continue
+		}
+		i++
+		if i >= len(s) {
+			return nil, fmt.Errorf("trailing backslash")
+		}
+		switch s[i] {
+		case 'n':
+			out = append(out, '\n')
+		case 'r':
+			out = append(out, '\r')
+		case 't':
+			out = append(out, '\t')
+		case '\\':
+			out = append(out, '\\')
+		case 'x':
+			if i+2 >= len(s) {
+				return nil, fmt.Errorf("\\x needs two hex digits")
+			}
+			v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
+			if err != nil {
+				return nil, fmt.Errorf("bad \\x escape: %w", err)
+			}
+			out = append(out, byte(v))
+			i += 2
+		default:
+			return nil, fmt.Errorf("unknown escape \\%s", string(s[i]))
+		}
+	}
+	return out, nil
+}
+
+// splitFlags moves flags ahead of positional arguments. Go's flag package
+// stops at the first non-flag word, but the documented order here is
+// "read <session> --cursor N", so the flags have to be lifted out first.
+func splitFlags(fs *flag.FlagSet, args []string) (flagArgs, positional []string, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			return flagArgs, positional, nil
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			positional = append(positional, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			flagArgs = append(flagArgs, a)
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil {
+			return nil, nil, fmt.Errorf("unknown flag %s", a)
+		}
+		flagArgs = append(flagArgs, a)
+		// A non-boolean flag takes the next word as its value.
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			continue
+		}
+		if i+1 >= len(args) {
+			return nil, nil, fmt.Errorf("%s requires a value", a)
+		}
+		i++
+		flagArgs = append(flagArgs, args[i])
+	}
+	return flagArgs, positional, nil
+}
+
+func runSessionSend(opts options) error {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	stdin := fs.Bool("stdin", false, "read raw bytes from stdin")
+	flagArgs, pos, err := splitFlags(fs, opts.rest[1:])
+	if err != nil {
+		return fmt.Errorf("usage: tyd session send <session_id|alias> [DATA] [--stdin]: %w", err)
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return fmt.Errorf("usage: tyd session send <session_id|alias> [DATA] [--stdin]: %w", err)
+	}
+	rest := pos
+	if len(rest) == 0 {
+		return fmt.Errorf("usage: tyd session send <session_id|alias> [DATA] [--stdin]")
+	}
+	sid, err := resolveSessionRef(opts, rest[0])
+	if err != nil {
+		return err
+	}
+
+	var data []byte
+	switch {
+	case *stdin:
+		data, err = io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+	case len(rest) > 1:
+		data, err = parseSendData(strings.Join(rest[1:], " "))
+		if err != nil {
+			return fmt.Errorf("bad data: %w", err)
+		}
+	default:
+		return fmt.Errorf("send needs DATA or --stdin")
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("send needs at least one byte")
+	}
+
+	ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+	if err != nil {
+		return err
+	}
+	if err := ensureLocalDaemon(opts, ep); err != nil {
+		return err
+	}
+	key, err := loadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	rememberPeerSession(opts, peerID, sid)
+	_ = fromCatalog
+	if _, err := client.Send(ep, key, sid, data); err != nil {
+		if strings.Contains(err.Error(), "session in use") {
+			fmt.Fprintf(os.Stderr, "tyd: %s\n", err)
+			os.Exit(exitSessionInUse)
+		}
+		return err
+	}
+	return nil
+}
+
+// readPage is one --json record.
+type readPage struct {
+	Type        string `json:"type"`
+	SessionID   string `json:"session_id"`
+	Data        string `json:"data"`
+	Cursor      uint64 `json:"cursor"`
+	CursorNext  uint64 `json:"cursor_next"`
+	Epoch       uint64 `json:"epoch"`
+	AtEnd       bool   `json:"at_end"`
+	Dropped     uint64 `json:"dropped"`
+	CursorAhead bool   `json:"cursor_ahead"`
+	Exited      bool   `json:"exited"`
+}
+
+func runSessionRead(opts options) error {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	cursor := fs.Uint64("cursor", 0, "resume from this byte offset")
+	epoch := fs.Uint64("epoch", 0, "generation from the last page")
+	wait := fs.Duration("wait", 0, "wait up to this long for new output")
+	asJSON := fs.Bool("json", false, "one JSON object per page")
+	follow := fs.Bool("follow", false, "keep pulling until the shell exits")
+	flagArgs, pos, err := splitFlags(fs, opts.rest[1:])
+	if err != nil {
+		return fmt.Errorf("usage: tyd session read <session_id|alias> [--cursor N] [--epoch E] [--wait D] [--json] [--follow]: %w", err)
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return fmt.Errorf("usage: tyd session read <session_id|alias> [--cursor N] [--epoch E] [--wait D] [--json] [--follow]: %w", err)
+	}
+	rest := pos
+	if len(rest) == 0 {
+		return fmt.Errorf("usage: tyd session read <session_id|alias> [--cursor N] [--epoch E] [--wait D] [--json] [--follow]")
+	}
+	sid, err := resolveSessionRef(opts, rest[0])
+	if err != nil {
+		return err
+	}
+	if *follow && *wait == 0 {
+		*wait = 2 * time.Second
+	}
+	if *wait < 0 {
+		return fmt.Errorf("--wait must not be negative")
+	}
+
+	ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+	if err != nil {
+		return err
+	}
+	if err := ensureLocalDaemon(opts, ep); err != nil {
+		return err
+	}
+	key, err := loadIdentity(opts.identity)
+	if err != nil {
+		return err
+	}
+	rememberPeerSession(opts, peerID, sid)
+
+	// Ctrl-C ends a follow without turning it into a failure.
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
+	out := os.Stdout
+	cur, epNo := *cursor, *epoch
+	for {
+		if *follow {
+			select {
+			case <-sig:
+				return nil
+			default:
+			}
+		}
+		page, err := client.Read(ep, key, sid, cur, epNo, *wait)
+		if err != nil {
+			// A connection error is a failure, not a reason to reconnect.
+			return err
+		}
+		if page.Dropped > 0 {
+			fmt.Fprintf(os.Stderr, "tyd: %d bytes before this cursor are gone; resuming at %d\n",
+				page.Dropped, page.CursorNext)
+		}
+		if page.CursorAhead {
+			fmt.Fprintf(os.Stderr, "tyd: cursor was past the durable output; resuming at %d (epoch %d)\n",
+				page.CursorNext, page.Epoch)
+		}
+		cur, epNo = page.CursorNext, page.Epoch
+
+		if *asJSON {
+			rec := readPage{
+				Type:        "read_result",
+				SessionID:   sid,
+				Data:        base64.StdEncoding.EncodeToString(page.Data),
+				Cursor:      cur - uint64(len(page.Data)) - page.Dropped,
+				CursorNext:  page.CursorNext,
+				Epoch:       page.Epoch,
+				AtEnd:       page.AtEnd,
+				Dropped:     page.Dropped,
+				CursorAhead: page.CursorAhead,
+				Exited:      page.Exited,
+			}
+			line, err := json.Marshal(rec)
+			if err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintf(out, "%s\n", line); err != nil {
+				return err
+			}
+		} else if len(page.Data) > 0 {
+			if _, err := out.Write(page.Data); err != nil {
+				return err
+			}
+		}
+		if !*asJSON {
+			fmt.Fprintf(os.Stderr, "tyd: cursor %d epoch %d at_end=%v exited=%v\n",
+				page.CursorNext, page.Epoch, page.AtEnd, page.Exited)
+		}
+		if page.Exited {
+			return nil
+		}
+		if !*follow {
+			return nil
+		}
+		_ = fromCatalog
+	}
+}

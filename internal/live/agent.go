@@ -187,6 +187,7 @@ type agent struct {
 	shellDone   chan struct{} // closed when the current shell exits
 	closeOnce   sync.Once
 	waitClosed  sync.Once
+	waiters     int // reads parked in ReadAtWait
 	outLog      *outputLog
 }
 
@@ -223,6 +224,8 @@ func (a *agent) handle(conn net.Conn) {
 		a.handleWatch(conn)
 	case protocol.TypeRead:
 		a.handleRead(conn, f)
+	case protocol.TypeSend:
+		a.handleSend(conn, f)
 	case protocol.TypeClose:
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeClosed})
 		a.closeSession()
@@ -309,6 +312,11 @@ func (a *agent) handleAttach(conn net.Conn, f protocol.Frame) {
 }
 
 func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
+	if !a.acquireWaiter() {
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "too many reads waiting on this session"})
+		return
+	}
+	defer a.releaseWaiter()
 	a.mu.Lock()
 	log := a.outLog
 	closed := a.closed
@@ -319,7 +327,7 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 	}
 	var res ReadResult
 	if log != nil {
-		res = log.ReadAt(f.Cursor, f.Epoch)
+		res = log.ReadAtWait(f.Cursor, f.Epoch, time.Duration(f.WaitMS)*time.Millisecond, a.shellIsGone)
 	} else {
 		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
 	}
@@ -331,7 +339,73 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 		AtEnd:       res.AtEnd,
 		Epoch:       res.Epoch,
 		CursorAhead: res.CursorAhead,
+		Exited:      res.Exited,
 	})
+}
+
+// maxReadWaiters bounds the reads parked on one session. Each holds a
+// connection and a goroutine, so an unbounded count would let one peer pin
+// the agent.
+const maxReadWaiters = 16
+
+func (a *agent) acquireWaiter() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.waiters >= maxReadWaiters {
+		return false
+	}
+	a.waiters++
+	return true
+}
+
+func (a *agent) releaseWaiter() {
+	a.mu.Lock()
+	if a.waiters > 0 {
+		a.waiters--
+	}
+	a.mu.Unlock()
+}
+
+func (a *agent) shellIsGone() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed || a.shellExited
+}
+
+// handleSend injects keystrokes without taking the attach slot. The occupancy
+// check and the PTY write happen under one lock so an attach that starts in
+// between cannot have its input interleaved with this write.
+func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
+	a.mu.Lock()
+	switch {
+	case a.closed:
+		a.mu.Unlock()
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session closed"})
+		return
+	case a.attach != nil:
+		// Do not name the holder: that would leak who is watching.
+		a.mu.Unlock()
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session in use: attached elsewhere"})
+		return
+	case a.shellExited:
+		// send never starts a shell. Respawning here would run a command the
+		// caller never asked to run.
+		a.mu.Unlock()
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "shell exited; attach to start a new one"})
+		return
+	case a.pty == nil:
+		a.mu.Unlock()
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "no shell running"})
+		return
+	}
+	ptmx := a.pty
+	n, err := ptmx.Write(f.Data)
+	a.mu.Unlock()
+	if err != nil {
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
+		return
+	}
+	_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeOK, CursorNext: uint64(n)})
 }
 
 func (a *agent) handleWatch(conn net.Conn) {
