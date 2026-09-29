@@ -14,6 +14,9 @@
 - One **live-agent process per session** (`~/.tyd/live/<id>/`), so sessions survive
   client disconnects *and* daemon restarts; the next `tyd up` re-adopts them and
   re-grants the creator's caps
+- Sequenced output log on the live-agent (byte-offset seq, disk segments, 64MB
+  cap): `read` resumes from a cursor without taking the attach slot; attach/watch
+  still replay the 64KB ring
 
 ### Step 2 — Identity and session authorization
 

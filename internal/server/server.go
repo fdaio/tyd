@@ -892,6 +892,32 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		go s.pumpWatchOutput(st, w)
 		return nil
 
+	case protocol.TypeRead:
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		sess, err := s.cfg.Mgr.Get(f.SessionID)
+		if err != nil {
+			return err
+		}
+		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
+			return err
+		}
+		if err := s.gateAttach(st, f.SessionID); err != nil {
+			return err
+		}
+		res, err := sess.Read(f.Cursor)
+		if err != nil {
+			return err
+		}
+		return st.send(protocol.Frame{
+			Type:       protocol.TypeReadResult,
+			Data:       res.Data,
+			CursorNext: res.CursorNext,
+			Dropped:    res.Dropped,
+			AtEnd:      res.AtEnd,
+		})
+
 	case protocol.TypeWrite:
 		if st.att == nil {
 			return fmt.Errorf("not attached")

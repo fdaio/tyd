@@ -198,10 +198,28 @@ A session counts as idle from the moment the last client detaches — or, if its
 shell exited, from the moment the shell went away; attaching resets the clock.
 `PENDING` sessions are never reaped — they wait for you.
 
+## Output log and `read`
+
+Live-agents keep a sequenced copy of PTY output on disk so a client can resume
+after a disconnect without taking the writer slot:
+
+- Seq is a byte offset from 0 for the life of the session. An agent restart
+  continues from the files already in `~/.tyd/live/<id>/`. Output produced
+  while the agent was dead is gone.
+- `attach` and `watch` are unchanged: exclusive writer, 64KB ring replay.
+- `read` is a non-blocking page (64KB max) with `cursor` / `cursor_next`.
+  Holding `attach` can now retrieve up to the disk cap (default 64MB), not
+  only the ring. That is still "can see the terminal"; it is a larger window.
+- Files are mode `0600`, deleted on `session close`, and never written into
+  `--audit-log`. `--session-output-log-max SIZE` on `tyd up` changes the cap.
+
+There is no `tyd session read` CLI in this step; the protocol frame is the
+interface. In-process sessions (no live-agent) return an explicit error.
+
 ## Who may do what
 
 `attach` does not imply `write`. A key granted only `attach` can follow output
-(via `attach` or `watch`) but cannot type. An identity with `create` receives
+(via `attach`, `watch`, or `read`) but cannot type. An identity with `create` receives
 owner caps (`attach`, `write`, `resize`, `signal`, `close`) on the session it just
 created — in the running daemon's memory, re-derived on restore, never written
 back to `trusted.json`. The trust file format is in

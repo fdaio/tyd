@@ -10,6 +10,7 @@ import (
 
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
+	"tyd/internal/live"
 	"tyd/internal/peers"
 )
 
@@ -143,6 +144,26 @@ func TestDoctorFixRebuildsFromControlPanel(t *testing.T) {
 	}
 	if string(b) != `{"broken` {
 		t.Fatalf("quarantined content = %q", b)
+	}
+}
+
+func TestDoctorReportsOutputLogFailure(t *testing.T) {
+	dir := t.TempDir()
+	opts := doctorOpts(t, dir)
+	if _, _, err := auth.EnsureIdentity(opts.identity, opts.trust); err != nil {
+		t.Fatal(err)
+	}
+	sess := filepath.Join(opts.live, "abcd1234abcd1234")
+	if err := live.SaveMeta(sess, live.Meta{ID: "abcd1234abcd1234", Owner: "t", Shell: "/bin/sh"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(live.OutputErrPath(sess), []byte("no space left on device\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	checks, _ := doctorChecks(opts)
+	c := findCheck(t, checks, "output log")
+	if c.level != levelFail || !strings.Contains(c.detail, "no space") {
+		t.Fatalf("output log check = %+v", c)
 	}
 }
 

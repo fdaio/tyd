@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -100,6 +101,9 @@ func startLocalDaemonProcess(opts options) error {
 	}
 	if opts.sessionIdle > 0 {
 		args = append(args, "--session-idle-timeout", opts.sessionIdle.String())
+	}
+	if opts.outputLogMax > 0 {
+		args = append(args, "--session-output-log-max", strconv.FormatInt(opts.outputLogMax, 10))
 	}
 	args = append(args, "up")
 

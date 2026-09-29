@@ -70,6 +70,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--approval MODE` | Approval mode at register time: `full`, `pre`, `post` (default `full`) |
 | `--audit-log PATH` | `up`: record control events as JSON lines (e.g. `~/.tyd/audit.log`) |
 | `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
+| `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--detach` | `session create`: print the id only |
@@ -91,7 +92,7 @@ Everything lives under `~/.tyd`:
 | `aliases.json` | Client-local session names |
 | `recent.json` | Last peer / session used by this client |
 | `sessions.json` | Client-local session catalog read by `session list` |
-| `live/<id>/` | Per-session live-agent socket, metadata, and PID |
+| `live/<id>/` | Per-session live-agent socket, metadata, PID, and sequenced output segments (`output.<seq>`, `0600`; deleted on close) |
 | `audit.log` | Only when `--audit-log` points here |
 | `tyd.log`, `tyd.pid` | Written by the `nohup` install fallback |
 

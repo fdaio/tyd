@@ -56,6 +56,7 @@ tyd up --tls-cert /path/server.crt --tls-key /path/server.key
 tyd up --data-listen off                          # no peer data plane
 tyd up --audit-log ~/.tyd/audit.log               # control-event audit trail
 tyd up --session-idle-timeout 8h                  # reap unattended sessions
+tyd up --session-output-log-max 64MB              # per-session output log cap (default)
 ```
 
 ## Data plane and relay
@@ -277,6 +278,9 @@ stop it.
   Panel rather than reset — recovery never relaxes a `pre` or `post` daemon to
   `full`.
 - **Audit write failures warn once** and sessions carry on.
+- **Output-log write failures** stop new disk segments and keep the PTY on the
+  64KB ring. `tyd doctor` reports `output.err` in the session dir. This is not
+  the audit chain; terminal bytes never enter `--audit-log`.
 
 If the Control Panel is also unreachable, the daemon keeps serving local sessions
 and tells you to run `tyd doctor --fix` once the disk is healthy.
@@ -284,7 +288,7 @@ and tells you to run `tyd doctor --fix` once the disk is healthy.
 ### `tyd doctor`
 
 ```bash
-tyd doctor         # check state files, free space, and writability
+tyd doctor         # check state files, free space, writability, and output-log write failures
 tyd doctor --fix   # set a damaged peers.json aside and rebuild it from the CP
 ```
 

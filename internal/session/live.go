@@ -27,6 +27,19 @@ func (m *Manager) ConfigureLive(root, execPath string) {
 	if m.starter == nil {
 		m.starter = live.DefaultStarter
 	}
+	if m.outputLogMax <= 0 {
+		m.outputLogMax = live.DefaultOutputLogMax
+	}
+}
+
+// SetOutputLogMax sets the per-session disk cap for new live-agents.
+func (m *Manager) SetOutputLogMax(n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if n <= 0 {
+		n = live.DefaultOutputLogMax
+	}
+	m.outputLogMax = n
 }
 
 // SetStarter overrides how live-agents are spawned (tests).
@@ -75,8 +88,9 @@ func (m *Manager) spawnAgent(id, owner string, opts CreateOpts, created time.Tim
 	root := m.liveRoot
 	execPath := m.execPath
 	starter := m.starter
+	logMax := m.outputLogMax
 	m.mu.Unlock()
-	return spawnAgentWith(root, execPath, starter, id, owner, opts, created)
+	return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax)
 }
 
 // agentSpawner snapshots the spawn parameters now and returns a callable that
@@ -88,27 +102,29 @@ func (m *Manager) agentSpawner(id, owner string, opts CreateOpts, created time.T
 	root := m.liveRoot
 	execPath := m.execPath
 	starter := m.starter
+	logMax := m.outputLogMax
 	m.mu.Unlock()
 	return func() (string, *exec.Cmd, error) {
-		return spawnAgentWith(root, execPath, starter, id, owner, opts, created)
+		return spawnAgentWith(root, execPath, starter, id, owner, opts, created, logMax)
 	}
 }
 
-func spawnAgentWith(root, execPath string, starter live.Starter, id, owner string, opts CreateOpts, created time.Time) (string, *exec.Cmd, error) {
+func spawnAgentWith(root, execPath string, starter live.Starter, id, owner string, opts CreateOpts, created time.Time, logMax int64) (string, *exec.Cmd, error) {
 	if starter == nil {
 		starter = live.DefaultStarter
 	}
 	dir := live.Dir(root, id)
 	meta := live.Meta{
-		ID:        id,
-		Owner:     owner,
-		OwnerPub:  opts.OwnerPub,
-		PeerID:    opts.PeerID,
-		Shell:     opts.Shell,
-		Cwd:       opts.Cwd,
-		Rows:      opts.Rows,
-		Cols:      opts.Cols,
-		CreatedAt: created.Format(time.RFC3339),
+		ID:           id,
+		Owner:        owner,
+		OwnerPub:     opts.OwnerPub,
+		PeerID:       opts.PeerID,
+		Shell:        opts.Shell,
+		Cwd:          opts.Cwd,
+		Rows:         opts.Rows,
+		Cols:         opts.Cols,
+		CreatedAt:    created.Format(time.RFC3339),
+		OutputLogMax: logMax,
 	}
 	if err := live.SaveMeta(dir, meta); err != nil {
 		return "", nil, err

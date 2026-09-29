@@ -239,6 +239,128 @@ func TestInProcessCreateStillWorks(t *testing.T) {
 	t.Fatalf("got %q", got)
 }
 
+func TestInProcessReadUnsupported(t *testing.T) {
+	m := NewManager()
+	defer m.CloseAll()
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Read(0)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("want unsupported, got %v", err)
+	}
+}
+
+func TestLiveReadResume(t *testing.T) {
+	root, err := os.MkdirTemp("", "tl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+
+	m := liveManager(t, root)
+	defer m.CloseAll()
+	s, err := m.Create(CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	att, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := "read-resume-ok"
+	if _, err := att.Write([]byte("echo " + marker + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var got []byte
+	for time.Now().Before(deadline) {
+		b, err := att.RecvTimeout(100 * time.Millisecond)
+		if err == nil {
+			got = append(got, b...)
+			if strings.Contains(string(got), marker) {
+				break
+			}
+			continue
+		}
+		if !os.IsTimeout(err) {
+			t.Fatal(err)
+		}
+	}
+	if !strings.Contains(string(got), marker) {
+		t.Fatalf("no marker in attach stream: %q", got)
+	}
+
+	first, err := s.Read(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Dropped != 0 {
+		t.Fatalf("dropped=%d", first.Dropped)
+	}
+	if !strings.Contains(string(first.Data), marker) {
+		t.Fatalf("read missing marker: %q", first.Data)
+	}
+	second, err := s.Read(first.CursorNext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := append(append([]byte(nil), first.Data...), second.Data...)
+	if !strings.Contains(string(all), marker) {
+		t.Fatalf("paged read lost marker")
+	}
+
+	more := "read-page-two"
+	if _, err := att.Write([]byte("echo " + more + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		b, err := att.RecvTimeout(100 * time.Millisecond)
+		if err == nil {
+			got = append(got, b...)
+			if strings.Contains(string(got), more) {
+				break
+			}
+			continue
+		}
+		if !os.IsTimeout(err) {
+			t.Fatal(err)
+		}
+	}
+	third, err := s.Read(first.CursorNext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(third.Data), more) {
+		t.Fatalf("resume from cursor_next missed new output: %q", third.Data)
+	}
+	att.Detach()
+
+	dir := live.Dir(root, s.ID)
+	live.KillAgent(dir)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.State() == StateExited {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	att2, _, err := s.Attach()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer att2.Detach()
+	after, err := s.Read(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(after.Data), marker) {
+		t.Fatalf("seq reset after respawn: %q", after.Data)
+	}
+}
+
 // liveManager builds a manager whose live-agents are real subprocesses.
 func liveManager(t *testing.T, root string) *Manager {
 	t.Helper()
