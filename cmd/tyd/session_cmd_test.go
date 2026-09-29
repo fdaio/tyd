@@ -203,7 +203,7 @@ func TestSessionAliasWarnsOnDotName(t *testing.T) {
 		recent:   filepath.Join(dir, "recent.json"),
 		aliases:  filepath.Join(dir, "aliases.json"),
 	}
-	const sid, other = "29eef5de0d40c6d9", "878144071a28b83c"
+	const sid, other = "0123456789abcdef", "0011223344556677"
 	rememberSession(cli, catalog.Record{ID: sid, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
 	rememberSession(cli, catalog.Record{ID: other, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
 
@@ -304,7 +304,7 @@ func TestSessionListIsLocalCatalog(t *testing.T) {
 	aliases := filepath.Join(dir, "aliases.json")
 	sessions := filepath.Join(dir, "sessions.json")
 	adoc := &alias.File{}
-	if err := adoc.Set("amy", "878144071a28b83c", "8a6592c332eba2b2"); err != nil {
+	if err := adoc.Set("amy", "0011223344556677", "8a6592c332eba2b2"); err != nil {
 		t.Fatal(err)
 	}
 	if err := alias.Save(aliases, adoc); err != nil {
@@ -321,7 +321,7 @@ func TestSessionListIsLocalCatalog(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, "878144071a28b83c") || !strings.Contains(out, "amy") {
+	if !strings.Contains(out, "0011223344556677") || !strings.Contains(out, "amy") {
 		t.Fatalf("local list: %q", out)
 	}
 }
@@ -333,7 +333,7 @@ func TestFinishStreamRecordsExited(t *testing.T) {
 		recent:   filepath.Join(dir, "recent.json"),
 		aliases:  filepath.Join(dir, "aliases.json"),
 	}
-	const sid = "exited-session"
+	const sid = "0123456789abcdef"
 	rememberSession(cli, catalog.Record{ID: sid, State: "ATTACHED", Addr: "/tmp/x.sock", CreatedAt: "2026-01-01T00:00:00Z"})
 
 	// Unrelated errors pass through untouched.
@@ -373,13 +373,13 @@ func TestFinishStreamRecordsExited(t *testing.T) {
 // named that peer, while the same command showed session aliases. Prefer the
 // nickname; never lose the id for a peer that has none.
 func TestPeerLabelPrefersNickname(t *testing.T) {
-	names := map[string]string{"d62c92f8452205d4": "osaka"}
+	names := map[string]string{"a1b2c3d4e5f60718": "osaka"}
 	tests := []struct {
 		id   string
 		want string
 	}{
-		{"d62c92f8452205d4", "osaka"},
-		{"92d09d9143b21eb8", "92d09d9143b21eb8"}, // unknown peer keeps its id
+		{"a1b2c3d4e5f60718", "osaka"},
+		{"8899aabbccddeeff", "8899aabbccddeeff"}, // unknown peer keeps its id
 		{"", "-"},
 	}
 	for _, tc := range tests {
@@ -414,10 +414,10 @@ func TestSessionListShowsPeerNickname(t *testing.T) {
 	sessions := filepath.Join(dir, "sessions.json")
 	peersPath := filepath.Join(dir, "peers.json")
 
-	const named, unnamed = "d62c92f8452205d4", "92d09d9143b21eb8"
+	const named, unnamed = "a1b2c3d4e5f60718", "8899aabbccddeeff"
 	if err := catalog.Save(sessions, &catalog.File{Sessions: []catalog.Record{
-		{ID: "aaaaaaaaaaaaaaa", PeerID: named, State: "DETACHED", CreatedAt: "2026-09-28T08:46:06Z"},
-		{ID: "bbbbbbbbbbbbbbb", PeerID: unnamed, State: "DETACHED", CreatedAt: "2026-09-27T05:15:13Z"},
+		{ID: "aaaaaaaaaaaaaaaa", PeerID: named, State: "DETACHED", CreatedAt: "2026-09-28T08:46:06Z"},
+		{ID: "bbbbbbbbbbbbbbbb", PeerID: unnamed, State: "DETACHED", CreatedAt: "2026-09-27T05:15:13Z"},
 	}}); err != nil {
 		t.Fatal(err)
 	}

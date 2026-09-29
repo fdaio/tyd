@@ -40,6 +40,13 @@ c7d8e9     -       -       EXITED    2026-09-26 10:02
 d4e5f6     -       -       CLOSED    2026-09-26 09:58
 ```
 
+A session id is an opaque token the daemon mints, never a name. When a
+command resolves a reference it cannot recognise — the user typed
+`tyd session attach work-laptop` and no such session is known — the dial still goes
+ahead, but the name is not remembered as a session id, and a catalog row whose
+id is not a session id is dropped on the next read. Such a row can otherwise
+block the name as an alias forever.
+
 Alive sessions come first (`ATTACHED`, `EXITED`, `PENDING`, `DETACHED`), then
 closed ones; newest first inside each group.
 
@@ -107,9 +114,9 @@ A name may contain a dot, and it is stored either way — but a dot costs the
 shortcut below, so setting one says so:
 
 ```console
-$ tyd session alias 29eef5de0d40c6d9 tyd.cp
-tyd.cp -> 29eef5de0d40c6d9
-warning: session alias "tyd.cp" contains a '.', so `tyd <session>.<peer>` cannot use it; use tyd session attach tyd.cp
+$ tyd session alias 0123456789abcdef tama.cp
+tama.cp -> 0123456789abcdef
+warning: session alias "tama.cp" contains a '.', so `tyd <session>.<peer>` cannot use it; use tyd session attach tama.cp
 ```
 
 With a peer nickname, attach in one token: `tyd <session>.<peer>`. If the

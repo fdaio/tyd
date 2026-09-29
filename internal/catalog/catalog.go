@@ -34,6 +34,28 @@ type File struct {
 	Sessions []Record `json:"sessions"`
 }
 
+// sessionIDLen is what a session id looks like: the daemon mints 8 random
+// bytes and hex-encodes them, so an id is always 16 lowercase hex characters.
+// A nickname is not an id, and a nickname that reaches the catalog as one
+// becomes a row that can never be pruned by name and can never be used as an
+// alias again.
+const sessionIDLen = 16
+
+// IsSessionID reports whether id has the shape the daemon mints. Callers use it
+// to refuse a name where an id belongs.
+func IsSessionID(id string) bool {
+	if len(id) != sessionIDLen {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 func Load(path string) (*File, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -149,6 +171,11 @@ func (f *File) MergeAliases(adoc *alias.File) {
 		if _, bad := aliasNames[e.SessionID]; bad {
 			continue
 		}
+		// An alias may name a session that predates the local catalog, but it
+		// may not turn a nickname into a session row.
+		if !IsSessionID(e.SessionID) {
+			continue
+		}
 		if rec, ok := f.Get(e.SessionID); ok {
 			if rec.PeerID == "" {
 				rec.PeerID = e.PeerID
@@ -190,8 +217,37 @@ func (f *File) PruneAliasNamedIDs(adoc *alias.File) bool {
 	return changed
 }
 
+// PruneNonSessionIDs drops catalog rows whose id the daemon could not have
+// minted. Only a daemon response ever puts a real id here; a row whose id is a
+// name arrived through recent.json or aliases.json and names no session.
+//
+// Unlike PruneAliasNamedIDs this needs no alias to compare against, so it also
+// clears rows whose alias has since been renamed away — the case where a
+// nickname outlived the alias that shadowed it and stayed unusable as one.
+func (f *File) PruneNonSessionIDs() bool {
+	if f == nil {
+		return false
+	}
+	out := f.Sessions[:0]
+	changed := false
+	for _, r := range f.Sessions {
+		if !IsSessionID(r.ID) {
+			changed = true
+			continue
+		}
+		out = append(out, r)
+	}
+	f.Sessions = out
+	return changed
+}
+
 func (f *File) MergeRecent(r *recent.File) {
 	if r == nil || r.SessionID == "" {
+		return
+	}
+	// recent.json is written before the session is known to be reachable, so
+	// its id can still be a name the user typed. Only a daemon id becomes a row.
+	if !IsSessionID(r.SessionID) {
 		return
 	}
 	if _, ok := f.Get(r.SessionID); ok {
