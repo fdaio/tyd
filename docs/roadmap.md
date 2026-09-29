@@ -17,6 +17,17 @@
 - Sequenced output log on the live-agent (byte-offset seq, disk segments, 64MB
   cap): `read` resumes from a cursor without taking the attach slot; attach/watch
   still replay the 64KB ring
+- `tyd session read` pulls output by cursor, with `--json` for one record per
+  page and `--follow` to stream until the shell exits
+- `tyd session send` injects keystrokes without taking the attach slot, and
+  `read --wait` holds a page open until bytes arrive
+
+`send` writes **raw terminal bytes**, the same encoding `write` uses. It is not
+a non-interactive `exec`: it types into the session's shell, so the shell
+interprets it, line discipline applies, and the output still comes back through
+`read`. It does not start a shell — a session whose shell has exited says so
+instead. `read` is the only way to see what `send` caused, which is what makes
+the pair scriptable.
 
 ### Step 2 — Identity and session authorization
 

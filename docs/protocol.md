@@ -103,6 +103,37 @@ Frames never change shape because of where the PTY lives: the daemon proxies the
 to a per-session live-agent process, so a session keeps working across a daemon
 restart with the same protocol.
 
+## Keystroke injection
+
+`send` types into a session without taking the exclusive attach slot. It is
+live-agent only, like `read`.
+
+Request:
+
+```json
+{"type":"send","session_id":"…","data":"echo hi\n"}
+```
+
+`data` uses the same encoding as `write`: raw PTY bytes, base64 in JSON, at
+most 64KB per call. It needs the **write** capability, not `attach`. The shell
+interprets the bytes, so this is typing, not a non-interactive `exec`: line
+discipline applies and the result comes back through `read`.
+
+Reply is `ok` with the byte count written, or `error`. The errors are
+deliberate and explicit:
+
+| Error | Meaning |
+|-------|---------|
+| `session in use: attached elsewhere` | Someone holds the exclusive attach slot. Deliberately does not name them. |
+| `shell exited; attach to start a new one` | The shell is gone. `send` never starts one. |
+| `session pending approval` | A remote create that has not been approved. |
+| `send is not supported on in-process sessions` | No live-agent behind this session. |
+
+Under `pre`, `send` is gated exactly like `read`: the same one-shot approval,
+spent at the start of the request, and not re-checked while a read waits.
+That makes `read --follow` impractical under `pre`, because every page needs
+its own approval.
+
 ## Sequenced output read
 
 `read` is a one-shot RPC. It does not take the exclusive attach slot, so a
@@ -113,8 +144,14 @@ an in-process PTY (tests, no `tyd up`) replies `error` with
 Request:
 
 ```json
-{"type":"read","session_id":"…","cursor":0,"epoch":1}
+{"type":"read","session_id":"…","cursor":0,"epoch":1,"wait_ms":0}
 ```
+
+`wait_ms` is optional and defaults to 0, which returns at once. With a
+non-zero value the server holds the reply until bytes arrive, the wait
+elapses, or the reply has to say something anyway. The server clamps the wait
+to 30s and allows at most 16 parked reads per session. A `cursor_ahead` or a
+`dropped` prefix is returned immediately without waiting.
 
 `cursor` is a byte offset from the first output byte of that session (seq 0).
 Omit `epoch` (or send 0) on the first pull; after that, send the `epoch` from
@@ -143,6 +180,7 @@ Reply (`read_result`):
 | `at_end` | No further bytes are known yet. If `data` is empty and `cursor_ahead` is false, `cursor_next` equals the request `cursor` (or the earliest seq when `dropped` forced a skip on an empty remainder). The call does not wait. |
 | `epoch` | Generation of this log. Send it on the next `read`. |
 | `cursor_ahead` | The request cursor is past durable seq, or past the previous epoch's durable end. `data` is empty. Adopt `cursor_next` and `epoch`. An `epoch` mismatch with a cursor still inside that durable end is served and the reply carries the current `epoch`. |
+| `exited` | The shell is gone and the reply is at the end of the stream. Nothing more will arrive, so a follower should stop. A parked read returns this at once rather than waiting out its timeout. |
 
 Hot attach/watch still replay only the 64KB in-memory ring. The disk log is
 for `read`. Default cap is 64MB per session (`--session-output-log-max`), in
