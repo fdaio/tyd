@@ -238,6 +238,14 @@ after a disconnect without taking the writer slot:
   only the ring. That is still "can see the terminal"; it is a larger window.
 - Files are mode `0600`, deleted on `session close`, and never written into
   `--audit-log`. `--session-output-log-max SIZE` on `tyd up` changes the cap.
+- `session create --shell PATH` chooses the shell. It is checked against the
+  **daemon's** `/etc/shells`, not the client's: with `--peer` the client may be
+  on another host, where that file says nothing about the one that will start
+  the session. An unlisted shell is refused with a message naming the shell and
+  the file. Leaving the flag off uses the daemon's own shell, which is not
+  subject to the check, so an empty or unreadable `/etc/shells` does not stop
+  sessions from starting. This is a typo guard, not a sandbox: anyone who can
+  create a session can already run the default shell.
 - A send is bounded. It gives up after `--session-send-timeout DURATION`
   (default `5s`, capped at `30s`) and the reply is `send timed out` with the
   number of bytes that reached the PTY. Nothing is written after that point,

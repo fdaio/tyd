@@ -112,6 +112,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
+		{"--shell PATH", "session create: shell to run, must be listed in the daemon's /etc/shells"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--force", "register: replace existing registration (invalidates peers)"},
 		{"--fix", "doctor: rebuild a damaged peers.json from the Control Panel"},
