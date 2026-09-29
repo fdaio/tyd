@@ -3,6 +3,7 @@ package live
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -364,26 +365,53 @@ func TestOutputLogConcurrentReadWriteRotate(t *testing.T) {
 			}
 		}
 	}()
+	// A page must cover exactly the bytes between the requested cursor and
+	// cursor_next, minus a dropped prefix. Anything else lets a reader splice
+	// two ranges together or stop early on a hole.
+	var badMu sync.Mutex
+	var bad []string
+	note := func(format string, args ...any) {
+		badMu.Lock()
+		if len(bad) < 8 {
+			bad = append(bad, fmt.Sprintf(format, args...))
+		}
+		badMu.Unlock()
+	}
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			var cursor, epoch uint64
-			for {
+			for n := 0; ; n++ {
 				select {
 				case <-stop:
 					return
 				default:
-					r := l.ReadAt(cursor, epoch)
-					if r.Epoch != 0 {
-						epoch = r.Epoch
-					}
-					if r.CursorAhead {
-						cursor = r.CursorNext
-						continue
-					}
-					cursor = r.CursorNext
 				}
+				// Rewind often. A reader that only follows the tail never
+				// touches the segments rotation deletes, so the delete and
+				// the read would never overlap.
+				if n%32 == 31 {
+					cursor = 0
+				}
+				r := l.ReadAt(cursor, epoch)
+				if r.Epoch != 0 {
+					epoch = r.Epoch
+				}
+				// This log never degrades and never restarts, so every byte
+				// between the earliest seq and the tail is either readable or
+				// reported as dropped. A cursor_ahead here means a segment went
+				// missing without the read saying so.
+				if r.CursorAhead {
+					note("cursor %d: cursor_ahead on a healthy log (next %d)", cursor, r.CursorNext)
+				}
+				if r.CursorNext != cursor+r.Dropped+uint64(len(r.Data)) {
+					note("cursor %d: data %d dropped %d but cursor_next %d", cursor, len(r.Data), r.Dropped, r.CursorNext)
+				}
+				if r.CursorNext < cursor {
+					note("cursor %d: cursor_next went backwards to %d", cursor, r.CursorNext)
+				}
+				cursor = r.CursorNext
 			}
 		}()
 	}
@@ -400,6 +428,11 @@ func TestOutputLogConcurrentReadWriteRotate(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+	badMu.Lock()
+	for _, m := range bad {
+		t.Errorf("concurrent read: %s", m)
+	}
+	badMu.Unlock()
 	if !rotated {
 		r := l.Read(0)
 		if r.Dropped == 0 {

@@ -396,6 +396,10 @@ func (l *outputLog) Read(cursor uint64) ReadResult {
 func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
 	l.mu.Lock()
 	skip := l.skipFlush
+	// Bound the reply to the seq the flush below is about to cover. An Append
+	// that lands after this point is not in the reply, so it cannot be
+	// acknowledged as durable.
+	limit := l.nextSeq
 	l.mu.Unlock()
 	if !skip {
 		l.flushPending()
@@ -408,6 +412,11 @@ func (l *outputLog) ReadAt(cursor, reqEpoch uint64) ReadResult {
 	snap.pending = nil
 	if !snap.degraded {
 		snap.tail = nil
+	}
+	if snap.nextSeq > limit {
+		snap.nextSeq = limit
+		snap.tailStart = limit
+		snap.diskEnd = limit
 	}
 	return readFromSnap(snap, cursor, reqEpoch)
 }
