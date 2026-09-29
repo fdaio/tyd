@@ -161,14 +161,14 @@ tyd session watch "$SID"    # read-only, exits on Ctrl-C
 | `untrusted public key` / `untrusted server certificate` | AuthN or TLS pin mismatch | Re-pair; or copy the server's `server.crt` and pass `--tls-cert` with `--addr` |
 | `attach pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>` |
 | Dual NAT, direct dial fails | Both sides behind NAT with no public IP | Ensure `tyd up` is running (publishes candidates) and the relay is reachable; avoid `--relay off` |
-| Disk full | State writes go to temp + rename; memory stays authoritative | Free disk, then `tyd doctor` / `tyd doctor --fix` |
+| Disk full | State writes go to temp + rename; output log degrades to the ring; memory stays authoritative | Free disk, then `tyd doctor` / `tyd doctor --fix` |
 
 Useful introspection:
 
 ```bash
 tyd status                  # registration, peers, aliases, live connections (needs daemon + list cap)
 tyd peer show <id|nick>     # endpoint and reachability
-tyd doctor                  # state files and free space; --fix rebuilds peers.json from the Control Panel
+tyd doctor                  # state files, free space, output-log write failures; --fix rebuilds peers.json
 tyd --help; tyd session help; tyd peer help   # authoritative
 ```
 

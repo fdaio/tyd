@@ -30,6 +30,8 @@ type Meta struct {
 	Rows      uint16 `json:"rows"`
 	Cols      uint16 `json:"cols"`
 	CreatedAt string `json:"created_at"`
+	// OutputLogMax is the disk cap in bytes. Zero means the agent default.
+	OutputLogMax int64 `json:"output_log_max,omitempty"`
 }
 
 func Dir(root, id string) string {

@@ -1126,3 +1126,15 @@ func TestControlCommandsAllowedFromOutsideASession(t *testing.T) {
 		t.Fatal("the refusal helper should always return an error")
 	}
 }
+
+func TestReadInProcessUnsupported(t *testing.T) {
+	ep, key, _ := startTestServer(t)
+	info, err := client.Create(ep, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Read(ep, key, info.ID, 0)
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("want unsupported, got %v", err)
+	}
+}

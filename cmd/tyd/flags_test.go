@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/live"
 	"tyd/internal/paths"
 )
 
@@ -110,6 +111,28 @@ func TestParseAuditAndIdleFlags(t *testing.T) {
 		t.Fatal(err)
 	} else if def.sessionIdle != 0 || def.auditLog != "" {
 		t.Fatalf("idle timeout and audit log must default off: %+v", def)
+	} else if def.outputLogMax != live.DefaultOutputLogMax {
+		t.Fatalf("output log max default %d", def.outputLogMax)
+	}
+}
+
+func TestParseOutputLogMaxFlag(t *testing.T) {
+	opts, err := parseArgs([]string{"--session-output-log-max", "32MB", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.outputLogMax != 32<<20 {
+		t.Fatalf("got %d", opts.outputLogMax)
+	}
+	opts, err = parseArgs([]string{"--session-output-log-max=64K", "up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.outputLogMax != 64<<10 {
+		t.Fatalf("got %d", opts.outputLogMax)
+	}
+	if _, err := parseArgs([]string{"--session-output-log-max", "0", "up"}); err == nil {
+		t.Fatal("zero size should fail")
 	}
 }
 

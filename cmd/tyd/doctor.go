@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"tyd/internal/auth"
+	"tyd/internal/live"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/peerstate"
@@ -112,6 +114,7 @@ func doctorChecks(opts options) (out []check, peersBroken bool) {
 	}
 
 	out = append(out, liveCheck(opts))
+	out = append(out, outputLogChecks(opts)...)
 	return out, peersBroken
 }
 
@@ -189,6 +192,34 @@ func liveCheck(opts options) check {
 		}
 	}
 	return check{levelOK, "live sessions", fmt.Sprintf("%d agent dir(s) under %s", n, root)}
+}
+
+func outputLogChecks(opts options) []check {
+	root := opts.live
+	if root == "" {
+		root = paths.DefaultLive()
+	}
+	dirs, err := live.ListDirs(root)
+	if err != nil || len(dirs) == 0 {
+		return nil
+	}
+	var bad []string
+	for _, dir := range dirs {
+		p := live.OutputErrPath(dir)
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		msg := strings.TrimSpace(string(b))
+		if msg == "" {
+			msg = "write failed"
+		}
+		bad = append(bad, filepath.Base(dir)+": "+msg)
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return []check{{levelFail, "output log", strings.Join(bad, "; ")}}
 }
 
 // doctorFixPeers sets a damaged peers.json aside and rebuilds it from the CP.

@@ -481,6 +481,23 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 	return err
 }
 
+// Read pulls one page of sequenced session output. It does not take the
+// exclusive attach slot. The reply is raw PTY bytes; cursor_next pages.
+func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor uint64) (protocol.Frame, error) {
+	resp, err := rpc(ep, key, protocol.Frame{
+		Type:      protocol.TypeRead,
+		SessionID: sessionID,
+		Cursor:    cursor,
+	})
+	if err != nil {
+		return protocol.Frame{}, err
+	}
+	if resp.Type != protocol.TypeReadResult {
+		return protocol.Frame{}, fmt.Errorf("unexpected read reply %q", resp.Type)
+	}
+	return resp, nil
+}
+
 func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {
 	resp, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeApprove, SessionID: id})
 	if err != nil {

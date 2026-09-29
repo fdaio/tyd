@@ -42,11 +42,13 @@ func Run(dir string) error {
 		rows:    meta.Rows,
 		cols:    meta.Cols,
 		cmdDone: make(chan struct{}),
+		outLog:  openOutputLog(dir, meta.OutputLogMax),
 	}
 	// Start the shell before listening: a daemon that sees the socket can then
 	// rely on the shell pid file being present, which is how it tells a
 	// running shell from an exited one.
 	if err := a.startShell(); err != nil {
+		a.outLog.Close()
 		return err
 	}
 
@@ -185,6 +187,7 @@ type agent struct {
 	shellDone   chan struct{} // closed when the current shell exits
 	closeOnce   sync.Once
 	waitClosed  sync.Once
+	outLog      *outputLog
 }
 
 func (a *agent) serve() error {
@@ -218,11 +221,13 @@ func (a *agent) handle(conn net.Conn) {
 		a.handleAttach(conn, f)
 	case protocol.TypeWatch:
 		a.handleWatch(conn)
+	case protocol.TypeRead:
+		a.handleRead(conn, f)
 	case protocol.TypeClose:
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeClosed})
 		a.closeSession()
 	default:
-		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, or close"})
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, read, or close"})
 	}
 }
 
@@ -301,6 +306,30 @@ func (a *agent) handleAttach(conn net.Conn, f protocol.Frame) {
 			_ = p.w.send(protocol.Frame{Type: protocol.TypeError, Error: fmt.Sprintf("unsupported %q", rf.Type)})
 		}
 	}
+}
+
+func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
+	a.mu.Lock()
+	log := a.outLog
+	closed := a.closed
+	a.mu.Unlock()
+	if closed {
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "session closed"})
+		return
+	}
+	var res ReadResult
+	if log != nil {
+		res = log.Read(f.Cursor)
+	} else {
+		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
+	}
+	_ = protocol.WriteFrame(conn, protocol.Frame{
+		Type:       protocol.TypeReadResult,
+		Data:       res.Data,
+		CursorNext: res.CursorNext,
+		Dropped:    res.Dropped,
+		AtEnd:      res.AtEnd,
+	})
 }
 
 func (a *agent) handleWatch(conn net.Conn) {
@@ -445,6 +474,9 @@ func (a *agent) shellExit(code int) {
 	if len(a.ring) > ringMax {
 		a.ring = append([]byte(nil), a.ring[len(a.ring)-ringMax:]...)
 	}
+	if a.outLog != nil {
+		a.outLog.Append(notice)
+	}
 	att := a.attach
 	a.attach = nil
 	watchers := a.watchers
@@ -492,6 +524,9 @@ func (a *agent) broadcast(p []byte) {
 		}
 	}
 	a.ring = append(a.ring, cp...)
+	if a.outLog != nil {
+		a.outLog.Append(cp)
+	}
 	att := a.attach
 	watchers := append([]*peer(nil), a.watchers...)
 	a.mu.Unlock()
@@ -579,6 +614,9 @@ func (a *agent) finish(exitCode int) {
 		}
 		if ln != nil {
 			_ = ln.Close()
+		}
+		if a.outLog != nil {
+			a.outLog.Close()
 		}
 		RemoveDir(a.dir)
 		a.waitClosed.Do(func() { close(a.cmdDone) })

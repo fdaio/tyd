@@ -92,11 +92,14 @@ What that buys, precisely:
   that, and tyd has nowhere to put one by default.
 
 Audit records are metadata: who did what, when, over which transport. Terminal
-input, terminal output and process environment are deliberately never written —
-a log that recorded them would be a copy of your session on disk.
+input, terminal output and process environment are deliberately never written
+to `--audit-log`. Live-agents keep a separate per-session output log under
+`~/.tyd/live/<id>/` for sequenced `read` (mode `0600`, deleted on close). That
+file is not the audit chain and is not hash-chained.
 
-In `post` mode the log covers control events only. **It does not record what ran
-in the session.** Nothing in tyd records that, by design.
+In `post` mode the audit log covers control events only. **It does not record
+what ran in the session.** The output log does hold terminal bytes for `read`;
+treat the session dir as sensitive, the same way you treat the PTY itself.
 
 ## Deployment tiers
 

@@ -25,6 +25,7 @@ Maximum frame size: 1 MiB.
 | `status` | List connection topology | `list` |
 | `attach` | Attach to session (exclusive writer/viewer) | `attach` on that session |
 | `watch` | Read-only observe (or dump closed history) | `attach` on that session |
+| `read` | One non-blocking page of sequenced output (`cursor`) | `attach` on that session |
 | `write` | Bytes to PTY | `write` |
 | `resize` | Rows/cols | `resize` |
 | `signal` | e.g. `INT`, `TSTP` | `signal` |
@@ -49,6 +50,7 @@ Maximum frame size: 1 MiB.
 | `exited` | Shell exited; the session stays attachable and is now `EXITED` |
 | `exit` | Session closed, or a closed-session watch finished |
 | `closed` | Session close acknowledged |
+| `read_result` | Reply to `read`: `data`, `cursor_next`, `dropped`, `at_end` |
 
 ## Authentication handshake
 
@@ -68,7 +70,7 @@ Server accepts only public keys present in the trust store. Bad signature → `a
 |------------|-------|-------|
 | `list` | global | Also required for `status` |
 | `create` | global | On success, creator gets owner caps on the new session (in memory) |
-| `attach` | per session | Read/follow output (`attach` or `watch`); **not** write |
+| `attach` | per session | Read/follow output (`attach`, `watch`, or `read`); **not** write. `read` can return up to the on-disk log (default 64MB), not only the 64KB attach ring. |
 | `write` | per session | Keyboard / stdin to PTY |
 | `resize` | per session | |
 | `signal` | per session | |
@@ -100,6 +102,40 @@ This is the daemon’s view of **control connections**, not a mesh/network path 
 Frames never change shape because of where the PTY lives: the daemon proxies them
 to a per-session live-agent process, so a session keeps working across a daemon
 restart with the same protocol.
+
+## Sequenced output read
+
+`read` is a one-shot RPC. It does not take the exclusive attach slot, so a
+human can `watch` or `attach` at the same time. It is live-agent only:
+an in-process PTY (tests, no `tyd up`) replies `error` with
+`read is not supported on in-process sessions`.
+
+Request:
+
+```json
+{"type":"read","session_id":"…","cursor":0}
+```
+
+`cursor` is a byte offset from the first output byte of that session (seq 0).
+It does not reset when the live-agent process restarts; the new process
+continues from the end of the files already on disk. Bytes that were never
+flushed while the process was dead cannot be recovered.
+
+Reply (`read_result`):
+
+| Field | Meaning |
+|-------|---------|
+| `data` | Raw PTY bytes, same JSON encoding as `attached` / `output` `data`. At most 64KB. |
+| `cursor_next` | Offset after `data`. Use it as the next `cursor`. |
+| `dropped` | If `cursor` is in a prefix the disk already deleted: `earliest - cursor`. The reply starts at the earliest readable byte. Not an error. |
+| `at_end` | No further bytes are known yet. If `data` is empty, `cursor_next` equals the request `cursor` (or the earliest seq when `dropped` forced a skip on an empty remainder). The call does not wait. |
+
+Hot attach/watch still replay only the 64KB in-memory ring. The disk log is
+for `read`. Default cap is 64MB per session (`--session-output-log-max`), in
+4MB segments. Files are `0600` under `~/.tyd/live/<id>/` and are deleted with
+the session. They are **not** the `--audit-log` chain: that log still never
+records terminal bytes. A full disk stops new segment writes and keeps the
+PTY on the ring; `tyd doctor` reports `output.err`.
 
 ## Transport
 

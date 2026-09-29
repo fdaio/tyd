@@ -54,6 +54,7 @@ func runUp(opts options) error {
 		return fmt.Errorf("executable path: %w", err)
 	}
 	mgr.ConfigureLive(liveRoot, execPath)
+	mgr.SetOutputLogMax(opts.outputLogMax)
 	restored, err := mgr.RestoreLive()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tyd live restore: %v\n", err)

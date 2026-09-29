@@ -105,6 +105,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--approval MODE", "Register approval: full|pre|post (default full)"},
 		{"--audit-log PATH", fmt.Sprintf("up: record control events as JSON lines (e.g. %s)", paths.DefaultAudit())},
 		{"--session-idle-timeout D", "up: close sessions idle this long, e.g. 8h (default off)"},
+		{"--session-output-log-max SIZE", "up: per-session output log cap, e.g. 64MB (default 64MB)"},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},

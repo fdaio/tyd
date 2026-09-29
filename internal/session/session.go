@@ -53,12 +53,13 @@ type ClosedInfo struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
-	onClosed func(ClosedInfo)
-	liveRoot string
-	execPath string
-	starter  live.Starter
+	mu           sync.Mutex
+	sessions     map[string]*Session
+	onClosed     func(ClosedInfo)
+	liveRoot     string
+	execPath     string
+	starter      live.Starter
+	outputLogMax int64
 }
 
 func NewManager() *Manager {
@@ -616,6 +617,32 @@ func (s *Session) Watch() (*Watcher, []byte, error) {
 	}
 	s.watchers = append(s.watchers, w)
 	return w, snap, nil
+}
+
+// ErrReadUnsupported is returned when a process-in-PTY session (tests,
+// no live-agent) receives a read. The sequenced log exists only on
+// live-agents.
+var ErrReadUnsupported = fmt.Errorf("read is not supported on in-process sessions")
+
+// Read pulls a page of sequenced output. It does not take the exclusive
+// attach slot. Live-agents serve the disk log; in-process sessions error.
+func (s *Session) Read(cursor uint64) (live.ReadResult, error) {
+	s.mu.Lock()
+	dir := s.liveDir
+	closed := s.closed || s.state == StateClosed
+	pending := s.state == StatePending
+	id := s.ID
+	s.mu.Unlock()
+	if pending {
+		return live.ReadResult{}, fmt.Errorf("session pending approval")
+	}
+	if closed {
+		return live.ReadResult{}, fmt.Errorf("session %s is closed", id)
+	}
+	if dir == "" {
+		return live.ReadResult{}, ErrReadUnsupported
+	}
+	return live.ReadSession(dir, cursor)
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {

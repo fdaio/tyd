@@ -4,65 +4,69 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/term"
 	"tyd/internal/controlpanel"
+	"tyd/internal/live"
 	"tyd/internal/paths"
 )
 
 type options struct {
-	socket      string
-	listen      string
-	dataListen  string
-	advertise   string
-	addr        string
-	peer        string
-	relay       string
-	identity    string
-	trust       string
-	peers       string
-	paired      string
-	recent      string
-	aliases     string
-	sessions    string
-	platform    string
-	approval    string
-	fix         bool
-	auditLog    string
-	sessionIdle time.Duration
-	as          string
-	cert        string
-	key         string
-	noWait      bool
-	detach      bool
-	verbose     bool
-	force       bool
-	cmd         string
-	rest        []string
-	live        string
-	dir         string
+	socket       string
+	listen       string
+	dataListen   string
+	advertise    string
+	addr         string
+	peer         string
+	relay        string
+	identity     string
+	trust        string
+	peers        string
+	paired       string
+	recent       string
+	aliases      string
+	sessions     string
+	platform     string
+	approval     string
+	fix          bool
+	auditLog     string
+	sessionIdle  time.Duration
+	outputLogMax int64
+	as           string
+	cert         string
+	key          string
+	noWait       bool
+	detach       bool
+	verbose      bool
+	force        bool
+	cmd          string
+	rest         []string
+	live         string
+	dir          string
 }
 
 func parseArgs(args []string) (options, error) {
 	opts := options{
-		socket:     paths.DefaultSocket(),
-		listen:     paths.DefaultListen(),
-		dataListen: paths.DefaultDataListen(),
-		advertise:  paths.DefaultAdvertise(),
-		identity:   paths.DefaultIdentity(),
-		trust:      paths.DefaultTrust(),
-		peers:      paths.DefaultPeers(),
-		recent:     paths.DefaultRecent(),
-		aliases:    paths.DefaultAliases(),
-		sessions:   paths.DefaultSessions(),
-		live:       paths.DefaultLive(),
-		platform:   paths.DefaultPlatform(),
-		relay:      paths.DefaultRelay(),
-		approval:   controlpanel.DefaultApproval,
-		cert:       paths.DefaultServerCert(),
-		key:        paths.DefaultServerKey(),
+		socket:       paths.DefaultSocket(),
+		listen:       paths.DefaultListen(),
+		dataListen:   paths.DefaultDataListen(),
+		advertise:    paths.DefaultAdvertise(),
+		identity:     paths.DefaultIdentity(),
+		trust:        paths.DefaultTrust(),
+		peers:        paths.DefaultPeers(),
+		recent:       paths.DefaultRecent(),
+		aliases:      paths.DefaultAliases(),
+		sessions:     paths.DefaultSessions(),
+		live:         paths.DefaultLive(),
+		platform:     paths.DefaultPlatform(),
+		relay:        paths.DefaultRelay(),
+		approval:     controlpanel.DefaultApproval,
+		cert:         paths.DefaultServerCert(),
+		key:          paths.DefaultServerKey(),
+		outputLogMax: live.DefaultOutputLogMax,
 	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -215,6 +219,22 @@ func parseArgs(args []string) (options, error) {
 				return options{}, err
 			}
 			opts.sessionIdle = d
+		case a == "--session-output-log-max":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a size, e.g. 64MB", a)
+			}
+			i++
+			n, err := parseLogMax(args[i])
+			if err != nil {
+				return options{}, err
+			}
+			opts.outputLogMax = n
+		case strings.HasPrefix(a, "--session-output-log-max="):
+			n, err := parseLogMax(strings.TrimPrefix(a, "--session-output-log-max="))
+			if err != nil {
+				return options{}, err
+			}
+			opts.outputLogMax = n
 		case a == "--as":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a nickname", a)
@@ -282,4 +302,55 @@ func parseArgs(args []string) (options, error) {
 func colorEnabled(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	return ok && term.IsTerminal(int(f.Fd()))
+}
+
+func parseLogMax(v string) (int64, error) {
+	s := strings.TrimSpace(v)
+	if s == "" {
+		return 0, fmt.Errorf("--session-output-log-max requires a size, e.g. 64MB")
+	}
+	upper := strings.ToUpper(s)
+	mul := int64(1)
+	switch {
+	case strings.HasSuffix(upper, "GIB"):
+		mul = 1 << 30
+		upper = strings.TrimSuffix(upper, "GIB")
+	case strings.HasSuffix(upper, "MIB"):
+		mul = 1 << 20
+		upper = strings.TrimSuffix(upper, "MIB")
+	case strings.HasSuffix(upper, "KIB"):
+		mul = 1 << 10
+		upper = strings.TrimSuffix(upper, "KIB")
+	case strings.HasSuffix(upper, "GB"):
+		mul = 1 << 30
+		upper = strings.TrimSuffix(upper, "GB")
+	case strings.HasSuffix(upper, "MB"):
+		mul = 1 << 20
+		upper = strings.TrimSuffix(upper, "MB")
+	case strings.HasSuffix(upper, "KB"):
+		mul = 1 << 10
+		upper = strings.TrimSuffix(upper, "KB")
+	case strings.HasSuffix(upper, "G"):
+		mul = 1 << 30
+		upper = strings.TrimSuffix(upper, "G")
+	case strings.HasSuffix(upper, "M"):
+		mul = 1 << 20
+		upper = strings.TrimSuffix(upper, "M")
+	case strings.HasSuffix(upper, "K"):
+		mul = 1 << 10
+		upper = strings.TrimSuffix(upper, "K")
+	}
+	upper = strings.TrimSpace(upper)
+	n, err := strconv.ParseInt(upper, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("--session-output-log-max %q: use a size like 64MB", v)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("--session-output-log-max must be positive")
+	}
+	out := n * mul
+	if mul != 1 && out/mul != n {
+		return 0, fmt.Errorf("--session-output-log-max %q: size overflows", v)
+	}
+	return out, nil
 }

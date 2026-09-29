@@ -11,6 +11,7 @@ func TestHelpRowsNeverGlueNameToDesc(t *testing.T) {
 		{"--short", "desc"},
 		{"--exactly-at-pad-width-xx", "desc"},
 		{"--session-idle-timeout D", "up: close sessions idle this long"},
+		{"--session-output-log-max SIZE", "up: per-session output log cap"},
 		{"--live PATH", "up/doctor: live-agent state root"},
 		{"a-very-long-flag-name-that-exceeds-the-column", "desc"},
 	}
@@ -84,6 +85,7 @@ func TestRootHelpPlain(t *testing.T) {
 		"--aliases PATH",
 		"--data-listen MODE",
 		"--platform URL",
+		"--session-output-log-max SIZE",
 		"--force",
 		"Tips:",
 		"Ctrl-\\",
