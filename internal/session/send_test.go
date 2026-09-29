@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"strings"
@@ -336,4 +337,46 @@ func TestSendReadUnsupportedInProcess(t *testing.T) {
 	if _, err := s.Read(0, 0, 0, live.ReadConditions{}); !errors.Is(err, ErrReadUnsupported) {
 		t.Fatalf("want ErrReadUnsupported, got %v", err)
 	}
+}
+
+// A send large enough to fill the PTY buffer must not wedge the agent. The
+// write blocks until the shell drains it, and the echo that drains it is
+// recorded under the agent's state lock, so a send that holds that lock
+// across the write deadlocks the whole session.
+func TestSendLargeDoesNotWedge(t *testing.T) {
+	_, s, _, cleanup := newLiveSession(t)
+	defer cleanup()
+
+	// Well past a PTY input buffer, so the write cannot complete at once.
+	big := bytes.Repeat([]byte("x"), 8<<10)
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Send(big)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		// A timeout here is acceptable backpressure; a hang is not.
+		if err != nil {
+			t.Logf("large send reported %v (backpressure, not a wedge)", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("a large send hung instead of returning")
+	}
+
+	// The session has to still work afterwards.
+	waitDone := make(chan error, 1)
+	go func() {
+		_, err := s.Send([]byte("echo AFTER\n"))
+		waitDone <- err
+	}()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("session unusable after a large send: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("session wedged after a large send")
+	}
+	readUntil(t, s, 0, 0, "AFTER", 10*time.Second)
 }
