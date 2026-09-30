@@ -8,10 +8,13 @@ import (
 	"tyd/internal/protocol"
 )
 
-const nonceSize = 32
+// NonceSize is the length of the challenge a daemon sends. The client refuses
+// to sign a challenge of any other length, so a peer cannot turn this key into
+// a signing oracle for messages of its own choosing.
+const NonceSize = 32
 
 func NewNonce() ([]byte, error) {
-	n := make([]byte, nonceSize)
+	n := make([]byte, NonceSize)
 	if _, err := rand.Read(n); err != nil {
 		return nil, err
 	}
@@ -22,24 +25,47 @@ func Sign(priv ed25519.PrivateKey, nonce []byte) []byte {
 	return ed25519.Sign(priv, nonce)
 }
 
+// authDomain separates the login signature from the channel binding signature
+// the same key makes on the relay, so neither can be replayed as the other.
+var authDomain = []byte("tyd-auth-v1\x00")
+
+// AuthPayload is the exact byte string both ends sign when authenticating: the
+// domain, the nonce the daemon challenged with, and the channel binding of this
+// connection. The binding is the TLS exporter wherever a TLS session exists,
+// which no other session derives, so a signature made on one connection does
+// not verify on another and cannot be handed to a third peer instead. It is
+// empty on the unix socket, which has no TLS session to bind to.
+func AuthPayload(nonce, binder []byte) []byte {
+	out := make([]byte, 0, len(authDomain)+len(nonce)+len(binder)+2)
+	out = append(out, authDomain...)
+	out = append(out, byte(len(nonce)>>8), byte(len(nonce)))
+	out = append(out, nonce...)
+	out = append(out, binder...)
+	return out
+}
+
+// SignAuth signs the auth payload. A key of the wrong size signs nothing; the
+// caller reports that as an invalid identity.
+func SignAuth(priv ed25519.PrivateKey, nonce, binder []byte) []byte {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil
+	}
+	return ed25519.Sign(priv, AuthPayload(nonce, binder))
+}
+
 func AuthFrame(priv ed25519.PrivateKey, nonce []byte) protocol.Frame {
 	return AuthFrameBound(priv, nonce, nil)
 }
 
-// AuthFrameBound is AuthFrame with the signature also covering a channel
-// binding. Over a plain transport the binding is nil, which keeps the signed
-// bytes byte-for-byte what they were before. Over the relay it is the inner
-// TLS exporter, so the server can tell that this auth belongs to this
-// connection rather than to one a relay is splicing in from elsewhere.
+// AuthFrameBound is AuthFrame with the channel binding of this connection
+// folded into the signed bytes, so the daemon can tell that the response
+// belongs to the connection it arrived on rather than to one spliced in from
+// elsewhere.
 func AuthFrameBound(priv ed25519.PrivateKey, nonce, binder []byte) protocol.Frame {
-	data := Sign(priv, nonce)
-	if len(binder) > 0 {
-		data = SignBinding(priv, nonce, binder)
-	}
 	return protocol.Frame{
 		Type:      protocol.TypeAuth,
 		PublicKey: priv.Public().(ed25519.PublicKey),
-		Data:      data,
+		Data:      SignAuth(priv, nonce, binder),
 	}
 }
 

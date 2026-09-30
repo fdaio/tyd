@@ -1,13 +1,17 @@
 package transport
 
 import (
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"tyd/internal/auth"
 )
 
 func TestUnixRoundTrip(t *testing.T) {
@@ -123,6 +127,102 @@ func TestTLSRoundTripAndRejectPlain(t *testing.T) {
 		t.Fatal("expected handshake failure with reject verifier")
 	}
 	_ = pc.Close()
+}
+
+func TestChannelBinderFollowsTheSession(t *testing.T) {
+	// A unix socket has no TLS session, so it has nothing to bind to.
+	unixPath := fmt.Sprintf("/tmp/tyd-bind-%d-%d.sock", os.Getpid(), time.Now().UnixNano()%1_000_000)
+	unixLn, err := ListenUnix(unixPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unixLn.Close()
+	t.Cleanup(func() { _ = os.Remove(unixPath) })
+	go func() {
+		c, err := unixLn.Accept()
+		if err == nil {
+			_ = c.Close()
+		}
+	}()
+	unixConn, err := DialUnix(unixPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binder, err := ChannelBinder(unixConn)
+	if binder != nil || err != nil {
+		t.Fatalf("unix binding=%x err=%v", binder, err)
+	}
+	_ = unixConn.Close()
+
+	dir := t.TempDir()
+	cert := filepath.Join(dir, "server.crt")
+	key := filepath.Join(dir, "server.key")
+	ln, _, err := ListenTLS("127.0.0.1:0", cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	// The server side of a TLS handshake only starts when something reads or
+	// writes, so the listener has to keep taking connections and answer them or
+	// the dials below never finish.
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = c.Write([]byte("ok"))
+		}
+	}()
+
+	dial := func() Conn {
+		t.Helper()
+		c, err := DialTLS(ln.Addr().String(), cert)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	first, second := dial(), dial()
+	defer first.Close()
+	defer second.Close()
+
+	firstBinder, err := ChannelBinder(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBinder, err := ChannelBinder(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstBinder) != auth.BindingSize || len(secondBinder) != auth.BindingSize {
+		t.Fatalf("binding lengths %d and %d", len(firstBinder), len(secondBinder))
+	}
+	if bytes.Equal(firstBinder, secondBinder) {
+		t.Fatal("two TLS sessions derived the same binding")
+	}
+
+	// A wrapped conn reports the binding of the session underneath it, so the
+	// value does not depend on who holds the connection.
+	wrapped, err := ChannelBinder(Wrap(first, Info{Transport: KindTLS, TLS: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(wrapped, firstBinder) {
+		t.Fatal("wrapping the connection changed its binding")
+	}
+}
+
+// A connection whose binding cannot be derived must be refused, not
+// authenticated over the bare nonce: that is the signature a peer carries
+// between daemons.
+func TestChannelBinderRefusesAnUnknownConnection(t *testing.T) {
+	mine, peer := net.Pipe()
+	defer mine.Close()
+	defer peer.Close()
+	if binder, err := ChannelBinder(mine); err == nil {
+		t.Fatalf("accepted a connection with no binding: %x", binder)
+	}
 }
 
 func TestDefaultTLSAddr(t *testing.T) {

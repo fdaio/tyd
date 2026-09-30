@@ -79,23 +79,19 @@ func TestBindingSignatureIsNotAnAuthSignature(t *testing.T) {
 	nonce := []byte("challenge-nonce")
 	binder := testBinder()
 
-	bindingSig := SignBinding(priv, nonce, binder)
-	if ed25519.Verify(pub, nonce, bindingSig) {
-		t.Error("binding signature also verifies as a plain auth signature")
+	if ed25519.Verify(pub, AuthPayload(nonce, binder), SignBinding(priv, nonce, binder)) {
+		t.Error("binding signature also verifies as an auth signature")
 	}
-	authSig := Sign(priv, nonce)
-	if ed25519.Verify(pub, BindingPayload(nonce, binder), authSig) {
-		t.Error("plain auth signature also verifies as a binding")
+	if ed25519.Verify(pub, BindingPayload(nonce, binder), SignAuth(priv, nonce, binder)) {
+		t.Error("auth signature also verifies as a binding")
 	}
 }
 
 func TestBindingPayloadIsUnambiguous(t *testing.T) {
 	binder := testBinder()
 	// Length-prefixing the nonce keeps (nonce, binder) from being reshuffled
-	// into a different pair that hashes or signs the same.
-	a := BindingPayload([]byte("ab"), []byte("c"))
-	b := BindingPayload([]byte("a"), []byte("bc"))
-	if bytes.Equal(a, b) {
+	// into a different pair that signs the same.
+	if bytes.Equal(BindingPayload([]byte("ab"), []byte("c")), BindingPayload([]byte("a"), []byte("bc"))) {
 		t.Fatal("nonce and binder are not separated in the signed payload")
 	}
 	if !bytes.Equal(BindingPayload([]byte("n"), binder), BindingPayload([]byte("n"), binder)) {
@@ -103,25 +99,72 @@ func TestBindingPayloadIsUnambiguous(t *testing.T) {
 	}
 }
 
-// Without a binding the auth frame must stay byte-for-byte what it was, or
-// every existing transport (unix, TLS, QUIC) breaks at once.
-func TestAuthFrameWithoutBinderIsUnchanged(t *testing.T) {
-	_, priv := testKey(t)
+func TestAuthPayloadIsUnambiguous(t *testing.T) {
+	binder := testBinder()
+	// Length-prefixing the nonce keeps (nonce, binding) from being reshuffled
+	// into a different pair that signs the same.
+	if bytes.Equal(AuthPayload([]byte("ab"), []byte("c")), AuthPayload([]byte("a"), []byte("bc"))) {
+		t.Fatal("nonce and binding are not separated in the signed payload")
+	}
+	if !bytes.Equal(AuthPayload([]byte("n"), binder), AuthPayload([]byte("n"), binder)) {
+		t.Fatal("auth payload is not deterministic")
+	}
+}
+
+// Every path signs the same shape: a domain label, the nonce, and the channel
+// binding. The binding is empty only where there is no TLS session, and the
+// signature is never a bare one over the nonce.
+func TestAuthFrameCoversLabelNonceAndBinding(t *testing.T) {
+	pub, priv := testKey(t)
 	nonce := []byte("n")
+	binder := testBinder()
+
 	bare := AuthFrame(priv, nonce)
 	bound := AuthFrameBound(priv, nonce, nil)
 	if bare.Type != bound.Type || !bytes.Equal(bare.Data, bound.Data) || !bytes.Equal(bare.PublicKey, bound.PublicKey) {
-		t.Fatal("a nil binder changed the auth frame")
+		t.Fatal("AuthFrame and AuthFrameBound disagree without a binding")
 	}
-	if !ed25519.Verify(priv.Public().(ed25519.PublicKey), nonce, bare.Data) {
-		t.Fatal("auth frame is not a plain signature over the nonce")
+	if !ed25519.Verify(pub, AuthPayload(nonce, nil), bare.Data) {
+		t.Fatal("auth frame does not verify against the auth payload")
+	}
+	if ed25519.Verify(pub, nonce, bare.Data) {
+		t.Fatal("auth frame is a bare signature over the nonce")
 	}
 
-	withBinder := AuthFrameBound(priv, nonce, testBinder())
-	if bytes.Equal(withBinder.Data, bare.Data) {
-		t.Fatal("binder did not change the signature")
+	withBinding := AuthFrameBound(priv, nonce, binder)
+	if bytes.Equal(withBinding.Data, bare.Data) {
+		t.Fatal("binding did not change the signature")
 	}
-	if !ed25519.Verify(priv.Public().(ed25519.PublicKey), BindingPayload(nonce, testBinder()), withBinder.Data) {
-		t.Fatal("bound auth frame does not verify against the binding payload")
+	if !ed25519.Verify(pub, AuthPayload(nonce, binder), withBinding.Data) {
+		t.Fatal("bound auth frame does not verify against the auth payload")
+	}
+}
+
+// A signature made for one TLS session must not authenticate another one, or a
+// peer can take it from the connection it was made on to a different daemon.
+func TestAuthSignatureIsBoundToItsSession(t *testing.T) {
+	priv, store, err := NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := NewNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	session := testBinder()
+	elsewhere := make([]byte, BindingSize)
+	copy(elsewhere, session)
+	elsewhere[0] ^= 0xff
+	sig := SignAuth(priv, nonce, session)
+
+	if _, err := store.AuthenticateBound(nonce, session, pub, sig); err != nil {
+		t.Fatalf("valid session-bound auth rejected: %v", err)
+	}
+	if _, err := store.AuthenticateBound(nonce, elsewhere, pub, sig); err == nil {
+		t.Fatal("auth from another session authenticated")
+	}
+	if _, err := store.AuthenticateBound(nonce, nil, pub, sig); err == nil {
+		t.Fatal("auth accepted without the binding it was made under")
 	}
 }

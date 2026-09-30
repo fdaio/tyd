@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,7 +17,7 @@ func TestSignAndAuthenticate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sig := Sign(priv, nonce)
+	sig := SignAuth(priv, nonce, nil)
 	p, err := store.Authenticate(nonce, priv.Public().(ed25519.PublicKey), sig)
 	if err != nil {
 		t.Fatal(err)
@@ -39,7 +40,7 @@ func TestRejectsUnknownKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce, _ := NewNonce()
-	sig := Sign(other, nonce)
+	sig := SignAuth(other, nonce, nil)
 	if _, err := store.Authenticate(nonce, other.Public().(ed25519.PublicKey), sig); err == nil {
 		t.Fatal("expected untrusted key")
 	}
@@ -51,10 +52,28 @@ func TestRejectsBadSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce, _ := NewNonce()
-	sig := Sign(priv, nonce)
+	sig := SignAuth(priv, nonce, nil)
 	sig[0] ^= 0xff
 	if _, err := store.Authenticate(nonce, priv.Public().(ed25519.PublicKey), sig); err == nil {
 		t.Fatal("expected bad signature")
+	}
+}
+
+// A client from before the auth payload carried a label signed the bare nonce.
+// That signature is the one a peer can carry from one daemon to another, so it
+// must be refused, and the refusal has to name the cause.
+func TestRejectsLegacyNonceSignature(t *testing.T) {
+	priv, store, err := NewAdminStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, _ := NewNonce()
+	_, err = store.Authenticate(nonce, priv.Public().(ed25519.PublicKey), Sign(priv, nonce))
+	if err == nil {
+		t.Fatal("bare-nonce signature accepted")
+	}
+	if !strings.Contains(err.Error(), "older tyd") {
+		t.Fatalf("unhelpful error: %v", err)
 	}
 }
 
@@ -69,7 +88,7 @@ func TestAttachDoesNotImplyWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce, _ := NewNonce()
-	p, err := store.Authenticate(nonce, priv.Public().(ed25519.PublicKey), Sign(priv, nonce))
+	p, err := store.Authenticate(nonce, priv.Public().(ed25519.PublicKey), SignAuth(priv, nonce, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +116,7 @@ func TestGrantOwnerCapsOnSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce, _ := NewNonce()
-	p, err := store.Authenticate(nonce, pub, Sign(priv, nonce))
+	p, err := store.Authenticate(nonce, pub, SignAuth(priv, nonce, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +164,7 @@ func TestTrustFileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce, _ := NewNonce()
-	p, err := store.Authenticate(nonce, pub, Sign(priv, nonce))
+	p, err := store.Authenticate(nonce, pub, SignAuth(priv, nonce, nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +210,10 @@ func TestDropUnlistedPeers(t *testing.T) {
 	store.EnsurePeer("peer", b.Public().(ed25519.PublicKey), AllGlobal)
 	store.DropUnlistedPeers(nil)
 	nonce, _ := NewNonce()
-	if _, err := store.Authenticate(nonce, b.Public().(ed25519.PublicKey), Sign(b, nonce)); err == nil {
+	if _, err := store.Authenticate(nonce, b.Public().(ed25519.PublicKey), SignAuth(b, nonce, nil)); err == nil {
 		t.Fatal("revoked peer still trusted")
 	}
-	if _, err := store.Authenticate(nonce, a.Public().(ed25519.PublicKey), Sign(a, nonce)); err != nil {
+	if _, err := store.Authenticate(nonce, a.Public().(ed25519.PublicKey), SignAuth(a, nonce, nil)); err != nil {
 		t.Fatalf("local principal dropped: %v", err)
 	}
 }

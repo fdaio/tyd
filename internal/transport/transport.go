@@ -1,6 +1,10 @@
 package transport
 
-import "net"
+import (
+	"crypto/tls"
+	"fmt"
+	"net"
+)
 
 type Kind string
 
@@ -53,4 +57,32 @@ func Wrap(c net.Conn, info Info) Conn {
 		info.RemoteAddr = c.RemoteAddr().String()
 	}
 	return &wrapped{Conn: c, info: info}
+}
+
+// ChannelBinder returns the value that ties a signature to this connection: the
+// TLS exporter, which no other session derives. Every transport that carries
+// TLS goes through here, so the auth response is bound to the session it was
+// made on. A unix socket has no TLS session and reports no binding.
+//
+// A connection of an unknown type is an error rather than no binding. Falling
+// back would authenticate such a connection over the bare nonce, which is what
+// a peer needs to carry a login between daemons.
+//
+// On the server side of a TLS listener the handshake has not run yet when
+// Accept returns, so this reports an error until the connection has written
+// something. That is fine for the auth flow, which challenges first.
+func ChannelBinder(conn net.Conn) ([]byte, error) {
+	switch c := conn.(type) {
+	case *wrapped:
+		return ChannelBinder(c.Conn)
+	case *tls.Conn:
+		state := c.ConnectionState()
+		return Binder(&state)
+	case *quicStreamConn:
+		state := c.sess.ConnectionState()
+		return Binder(&state.TLS)
+	case *net.UnixConn:
+		return nil, nil
+	}
+	return nil, fmt.Errorf("no channel binding for a %T connection", conn)
 }

@@ -151,19 +151,23 @@ func (s *Store) Authenticate(nonce, pub, sig []byte) (*Principal, error) {
 	return s.AuthenticateBound(nonce, nil, pub, sig)
 }
 
-// AuthenticateBound verifies an auth response whose signature also covers a
-// channel binding. Over the relay the binding is the inner TLS exporter, so an
-// auth response spliced in from a different connection does not verify here.
-// A nil binding keeps the original plain-nonce signature.
+// AuthenticateBound verifies the auth response that arrived on this connection.
+// The signature must cover the connection's channel binding, so a response
+// taken from another connection does not verify here. That is what stops a
+// peer from taking a challenge away from the daemon it was meant for, getting
+// the client to sign it, and logging in here as the client.
 func (s *Store) AuthenticateBound(nonce, binder, pub, sig []byte) (*Principal, error) {
 	if len(pub) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("untrusted public key")
 	}
-	signed := nonce
-	if len(binder) > 0 {
-		signed = BindingPayload(nonce, binder)
-	}
-	if !ed25519.Verify(ed25519.PublicKey(pub), signed, sig) {
+	if !ed25519.Verify(ed25519.PublicKey(pub), AuthPayload(nonce, binder), sig) {
+		// A tyd older than the domain-separated auth signed the bare nonce.
+		// Recognising that earns an actionable message. It is never accepted:
+		// that signature is the one a peer can carry between daemons.
+		if ed25519.Verify(ed25519.PublicKey(pub), nonce, sig) {
+			return nil, fmt.Errorf("this client signs the auth protocol of an older tyd; " +
+				"upgrade tyd on both ends to the same version")
+		}
 		return nil, fmt.Errorf("authentication failed")
 	}
 	s.mu.Lock()
