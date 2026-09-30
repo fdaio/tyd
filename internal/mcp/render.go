@@ -73,7 +73,11 @@ type sessionRow struct {
 	Recorded string `json:"recorded_state,omitempty"`
 	// State is what the probe read found: running, exited or unknown.
 	State string `json:"state"`
-	// ProbeError is why the probe did not answer.
+	// Probed says whether the state came from the target. It is false when the
+	// target was not asked, which is different from being asked and failing: a
+	// row that was never probed has no state to doubt.
+	Probed bool `json:"probed"`
+	// ProbeError is why the probe did not answer, or why it was not made.
 	ProbeError string `json:"probe_error,omitempty"`
 	// OpenedByUs marks a session this process created, which --close-on-exit
 	// will end.

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,5 +272,65 @@ func TestOpenUnderAnArchivedSessionsNameIsDefined(t *testing.T) {
 	// And the archived row is still there under its own id.
 	if _, ok := loadLocalCatalog(opts).Get(old); !ok {
 		t.Fatal("the archived row must survive losing its name")
+	}
+}
+
+// Two places decide whether a session is hidden: `tyd session list` and this
+// server's session_list. They read the same archive file, and a day will come
+// when one of them grows a rule the other does not, so the two are compared on
+// the same data rather than trusted to agree.
+func TestBothListsHideTheSameSessions(t *testing.T) {
+	const (
+		closed = "1111111111111111"
+		live   = "2222222222222222"
+		peer   = "3333333333333333"
+	)
+	old := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	opts := archiveOpts(t)
+	seedSession(t, opts, closed, peer, session.StateClosed, old)
+	seedSession(t, opts, live, peer, session.StateDetached, old)
+	seedPeer(t, opts, peer, "osaka", old)
+	// Archive by hand rather than by age, so the marks are the only thing that
+	// decides what is hidden.
+	markArchived(t, opts, closed, peer)
+
+	// The CLI's answer.
+	cli := captureStdout(t, func() {
+		captureStderr(t, func() {
+			if err := run(withRest(opts, "session", "list")); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+
+	// This server's answer, over the same file.
+	b := newMCPBackend(opts, testIdentity(t), []mcpTarget{{label: mcpLocalRef}})
+	rows, err := b.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The rows the backend returned are the ones it did not hide.
+	mcpShown := map[string]bool{}
+	for _, r := range rows {
+		mcpShown[r.Session.ID] = true
+	}
+
+	for _, tc := range []struct {
+		id     string
+		hidden bool
+		why    string
+	}{
+		{closed, true, "archived"},
+		{live, false, "in use"},
+	} {
+		if mcpShown[tc.id] == tc.hidden {
+			t.Errorf("session %s: mcp session_list hidden=%v, want %v (%s)",
+				tc.id, !mcpShown[tc.id], tc.hidden, tc.why)
+		}
+		cliHidden := !strings.Contains(cli, tc.id)
+		if cliHidden != tc.hidden {
+			t.Errorf("session %s: tyd session list hidden=%v, want %v (%s)",
+				tc.id, cliHidden, tc.hidden, tc.why)
+		}
 	}
 }

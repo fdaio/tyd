@@ -157,12 +157,9 @@ func (s *server) closeOpened() {
 // the context. A frame this server cannot parse is logged and skipped: one bad
 // frame must not take the connection down.
 func Serve(ctx context.Context, in io.Reader, out io.Writer, b Backend, logw io.Writer, cfg Options) error {
-	// The reader is buffered once here. decode framed a new bufio.Reader per
-	// frame before, which would have dropped anything the client pipelined
-	// behind the frame being read.
 	log := newLogger(logw)
 	srv := newServer(b, log, cfg)
-	conn := &conn{enc: newEncoder(out), log: log, srv: srv, calls: map[string]*callState{}}
+	conn := &conn{enc: newEncoder(out, log), log: log, srv: srv, calls: map[string]*callState{}}
 	// The order matters: stop the calls and wait for them, then end the sessions
 	// they were working on.
 	defer srv.closeOpened()
@@ -171,48 +168,88 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, b Backend, logw io.
 	log.logf("serving peers=%s read_only=%t max_sessions=%d close_on_exit=%t",
 		strings.Join(srv.peerNames(), ","), cfg.ReadOnly, srv.maxSessions, cfg.CloseOnExit)
 
-	// The loop below only sees a cancelled context between frames, and the frame
-	// it is waiting for is a read that no context can interrupt. So a cancelled
-	// context on its own would leave the server blocked on a client that keeps
-	// its input open, which for a terminal means Ctrl-C does not stop it.
+	// The input is read on its own goroutine, because a read cannot be
+	// interrupted and this server has to be stoppable.
 	//
-	// Closing the input is what ends the wait, and the read answers EOF. It is
-	// only done for an input this server can close: an io.Reader that is not a
-	// Closer still has to be shut down by whoever owns it.
-	if closer, ok := in.(io.Closer); ok {
-		stopped := make(chan struct{})
-		defer close(stopped)
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = closer.Close()
-			case <-stopped:
-			}
-		}()
-	}
+	// The loop below can only see a cancelled context between frames, and the
+	// frame it is waiting for is a blocking read. Closing the input on
+	// cancellation does not help: with a real process and a real signal, closing
+	// the file descriptor a goroutine is blocked on leaves that read blocked,
+	// because the kernel still holds the file description open for it. So a
+	// terminal would sit there after Ctrl-C.
+	//
+	// The reader therefore has its own goroutine, and this loop leaves without
+	// waiting for it. A reader parked on a read ends when the input closes or
+	// when the process does, which is the right cost for a command that is on
+	// its way out; an embedder that outlives the call owns closing its input.
+	stop := make(chan struct{})
+	defer close(stop)
 
-	dec := newDecoder(in)
-	for {
-		if ctx.Err() != nil {
-			return nil
+	type incoming struct {
+		msg message
+		err error
+	}
+	frames := make(chan incoming)
+	read := make(chan struct{})
+	go func() {
+		defer close(frames)
+		// The reader is buffered once. decode framed a new bufio.Reader per frame
+		// before, which would have dropped anything the client pipelined behind
+		// the frame being read.
+		dec := newDecoder(in)
+		for {
+			msg, err := dec.next()
+			select {
+			case frames <- incoming{msg: msg, err: err}:
+			case <-stop:
+				return
+			}
+			select {
+			case <-read:
+			case <-stop:
+				return
+			}
+			if err != nil {
+				var bad *frameError
+				if !errors.As(err, &bad) {
+					// End of input, or a read that failed. A frame the decoder
+					// can name is skipped and the conversation continues.
+					return
+				}
+			}
 		}
-		msg, err := dec.next()
-		if err != nil {
-			if errors.Is(err, errEOF) {
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case f, ok := <-frames:
+			if !ok {
 				return nil
 			}
-			// A frame this server cannot read is answered with a protocol error
-			// and then skipped: a client that writes one bad frame still expects
-			// the rest of its conversation to work.
-			var bad *frameError
-			if errors.As(err, &bad) {
-				conn.reply(bad.id, nil, &wireError{Code: bad.code, Message: bad.Error()})
-			} else {
-				log.logf("decode: %v", err)
+			switch {
+			case f.err == nil:
+				conn.handle(ctx, f.msg)
+			case errors.Is(f.err, errEOF):
+				return nil
+			default:
+				// A frame this server cannot read is answered with a protocol
+				// error and then skipped: a client that writes one bad frame
+				// still expects the rest of its conversation to work.
+				var bad *frameError
+				if errors.As(f.err, &bad) {
+					conn.reply(bad.id, nil, &wireError{Code: bad.code, Message: bad.Error()})
+				} else {
+					log.logf("decode: %v", f.err)
+				}
 			}
-			continue
+			select {
+			case read <- struct{}{}:
+			case <-stop:
+				return nil
+			}
 		}
-		conn.handle(ctx, msg)
 	}
 }
 

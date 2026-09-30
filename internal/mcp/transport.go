@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // serverVersion is reported in initialize. It is the module version of this
@@ -151,16 +153,28 @@ func (c *conn) cancelAll() bool {
 // encoder writes frames as newline-delimited JSON. One encoder per output stream
 // keeps the frames of concurrent calls from interleaving.
 type encoder struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu  sync.Mutex
+	w   io.Writer
+	log *logger
 }
 
-func newEncoder(w io.Writer) *encoder { return &encoder{w: w} }
+func newEncoder(w io.Writer, log *logger) *encoder { return &encoder{w: w, log: log} }
 
 func (e *encoder) write(m any) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
+	}
+	// The last gate before the client's decoder. A result is untrusted text that
+	// has been through a cleaner, and a cleaner bug must not be able to take the
+	// connection down with it: a client that cannot decode a frame may drop the
+	// whole session, losing every result at once over one stray byte.
+	//
+	// The note says a repair happened and carries none of the content, because
+	// this is the boundary where the content is least welcome.
+	if !utf8.Valid(b) {
+		e.log.logf("replaced invalid UTF-8 in a %d-byte frame", len(b))
+		b = bytes.ToValidUTF8(b, []byte("\uFFFD"))
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()

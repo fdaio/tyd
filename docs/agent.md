@@ -271,11 +271,14 @@ attached" instead of "the target is broken".
 - **A cancelled `send` is not a finished `send`.** If a call is withdrawn after
   the bytes were written, the next call on that session says so: the keystrokes
   are in and the command may already have run. Read before resending.
-- **A target in `pre` approval mode approves one request at a time.** `send` and
-  `read` are both reviewed, so every call needs its own `tyd session approve
-  <id>` on the target. That is the daemon's rule, not a tyd mcp one; against a
-  `pre` target expect to ask for approval per call, or pair a dedicated identity
-  and use `--approval full` for it.
+- **A target in `pre` approval mode approves one request at a time, and a `send`
+  needs two.** The write is one gated request and the read that reports its
+  output is another, so a single approval buys the keystrokes and leaves the
+  model unable to see what they did. That is the daemon's rule rather than a
+  `tyd mcp` one, and it makes `pre` impractical for a model: pair a dedicated
+  identity and register that daemon `--approval full` instead. `session_list`
+  knows this and stops probing a target that has asked, so a list never spends
+  the approval you gave.
 
 ### Versions
 
@@ -286,6 +289,23 @@ and use a release that contains `send` / `read` — or build both sides from
 
 A model that meets a `send` / `read` it does not recognise is told the target is
 too old and to upgrade, rather than being left to guess.
+
+### Sessions outlive the model, and the target
+
+A session opened here outlives the server, which is what lets a model come back to
+the same shell. It also means shells accumulate on the target: nothing closes
+them by default, and the daemon's `--session-idle-timeout` is off unless someone
+sets it. Two ways to keep the target tidy:
+
+- Set an idle timeout on the target daemon — `--session-idle-timeout 8h` closes
+  sessions nobody is attached to, which is the case a forgotten model's shells
+  fall into.
+- Start the server with `--close-on-exit` when the sessions are for one run. A
+  model that opens a shell to build something and then exits does not leave it
+  running.
+
+Both are the target's settings, not the client's. Which is why `tyd status` on the
+target is worth reading before pointing a model at a machine.
 
 ### Giving an agent its own identity
 
@@ -308,7 +328,8 @@ pairing you use yourself.
 | `session not found` | No such id/alias/recent | `tyd session list`; check the id and `--peer` |
 | `permission denied` | Session exists but this identity lacks the cap | Pair correctly; check `~/.tyd/trusted.json` and `peers.json` |
 | `untrusted public key` / `untrusted server certificate` | AuthN or TLS pin mismatch | Re-pair; or copy the server's `server.crt` and pass `--tls-cert` with `--addr` |
-| `attach pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>`. The approval covers one request, so a model needs one per `send` / `read` |
+| `attach pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>`. The approval covers **one request**, so a model needs one per `read` — and a `send` needs two, because the write and the read that reports it are separate requests |
+| `session_list` rows all say `unknown` on a peer, and the footer names it | The target asked for approval, so this server stopped probing it | Expected. A probe would spend the operator's one approval, so the rows come from the local catalog instead. Approve, then read the session directly; a call that gets through resumes probing |
 | `this machine has no outbound peers` | `tyd mcp` with no `--peer` and no paired peer | Pass `--peer local` for this machine, or `--peer <id|nick>` |
 | `not a paired peer on this machine, and not "local"` | `--peer` named something that is not paired here | `tyd peer list`; pair first, or use `--peer local` |
 | The MCP client reports the server failed to start | A bare `tyd` was not on the client's `PATH` | Use the absolute path: `claude mcp add tyd -- /usr/local/bin/tyd mcp --peer laptop` |

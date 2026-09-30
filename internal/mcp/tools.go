@@ -368,8 +368,10 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 		if s.needsApproval(it.Session.Peer) {
 			row.State = "unknown"
 			row.ProbeError = gatedProbeNote
+			row.Probed = false
 		} else {
 			page, perr := s.probe(ctx, it.Session)
+			row.Probed = true
 			switch {
 			case perr != nil:
 				row.State = "unknown"
@@ -392,8 +394,15 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 		if row.Recorded != "" && !strings.EqualFold(row.Recorded, row.State) {
 			fmt.Fprintf(&b, ", catalog says %s", row.Recorded)
 		}
-		if row.ProbeError != "" {
+		switch {
+		case row.ProbeError == "":
+		case row.Probed:
 			fmt.Fprintf(&b, "\n  probe failed: %s", row.ProbeError)
+		default:
+			// "probe failed" on a row nothing was asked about says the opposite
+			// of what happened, and this text is what a model reads to decide
+			// what to do next.
+			fmt.Fprintf(&b, "\n  not probed: %s", row.ProbeError)
 		}
 		b.WriteString("\n")
 	}

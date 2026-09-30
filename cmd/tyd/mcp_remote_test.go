@@ -59,6 +59,17 @@ const remoteBudget = 60 * time.Second
 // decided by a dotfile.
 const remoteShell = "/bin/sh"
 
+// The daemon gives a live-agent five seconds to publish its socket, and the agent
+// binds it only after its shell has started — a deliberate order, so a daemon that
+// sees the socket can rely on the shell pid file. Under -race, where the agent is
+// this same instrumented binary started once per iteration, that budget is
+// sometimes not enough. So an open is retried, a bounded number of times and only
+// for that one failure; anything else fails at once.
+const (
+	agentStartAttempts = 4
+	agentStartWait     = 5 * time.Second
+)
+
 // remoteFixture is a paired client and server, each with its own state
 // directory, reachable over a real transport.
 type remoteFixture struct {
@@ -592,6 +603,149 @@ func TestRemoteDrivingASessionKeepsItListed(t *testing.T) {
 	}
 }
 
+// The whole reason a list stops probing a target that has asked for approval:
+// the operator's approval is one-shot, and a list that kept probing would spend it
+// on a probe instead of on what the model asked for. This is that sequence end to
+// end — refused list, no more probes, approve once, and the model's own send
+// going through on that one approval.
+func TestRemoteOneApprovalIsSpentByTheModelNotByAList(t *testing.T) {
+	requireShell(t)
+	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalPre)
+	mc := startMCP(t, fx)
+
+	// Two sessions, so a list has more than one row to get wrong.
+	mc.openSession(t, "first")
+	mc.openSession(t, "second")
+	first := sessionIDForAlias(t, fx, "first")
+	second := sessionIDForAlias(t, fx, "second")
+
+	// The first list probes the first row, is refused by the gate, and says which
+	// command unblocks it. The second row is not probed at all: the target has
+	// asked once, and asking again is what spends the approval.
+	listed := mc.tryCall(t, "session_list", map[string]any{})
+	if listed.err != "" {
+		t.Fatalf("a list reports a refused probe as a row, not as a failure: %s", listed.err)
+	}
+	// Which row gets probed is the catalog's order to decide, and the order is not
+	// stable across runs, so the test follows whichever one it was rather than
+	// assuming. The point is that exactly one was.
+	probed := probedSessionID(listed.text)
+	if probed == "" {
+		t.Fatalf("no row reported a probe failure:\n%s", listed.text)
+	}
+	if probed != first && probed != second {
+		t.Fatalf("probed session %s, which is not one of the two", probed)
+	}
+	if !strings.Contains(listed.text, "tyd session approve "+probed) {
+		t.Fatalf("the probed row must name the command that unblocks it:\n%s", listed.text)
+	}
+	if !strings.Contains(listed.text, "would spend the operator") {
+		t.Fatalf("the row after a refusal must say it was not probed:\n%s", listed.text)
+	}
+	if !strings.Contains(listed.text, "no probe on box") {
+		t.Fatalf("the footer must name the target that stopped being probed:\n%s", listed.text)
+	}
+	// One probe, not one per row.
+	if n := strings.Count(listed.text, "probe failed"); n != 1 {
+		t.Fatalf("a list of 2 rows made %d probes, want 1", n)
+	}
+
+	// The operator approves the session that was probed. That is one approval,
+	// and it is for one request.
+	fx.approve(t, probed)
+
+	// A list must not spend it. The target is remembered as gated, so its rows
+	// come from the catalog and say so.
+	after := mc.call(t, "session_list", map[string]any{})
+	if strings.Contains(after.text, "probe failed") {
+		t.Fatalf("a list probed a target that had already asked for approval:\n%s", after.text)
+	}
+	if !strings.Contains(after.text, "no probe on box") {
+		t.Fatalf("the list must say it stopped probing the target:\n%s", after.text)
+	}
+	// Both rows are still there: a model that could not see them would open a
+	// third session on a machine that already has two.
+	for _, name := range []string{"first", "second"} {
+		if !strings.Contains(after.text, name) {
+			t.Fatalf("the gated target's rows must still be listed, %s missing:\n%s", name, after.text)
+		}
+	}
+
+	// The approval is still there, because nothing has spent it. A read is one
+	// gated request, so it is the one a single approval buys.
+	read := mc.tryCall(t, "session_read", map[string]any{
+		"session": probed, "wait": map[string]any{"idle_ms": 400},
+	})
+	if read.err != "" {
+		t.Fatalf("the approval the list left alone was not there for the model's own call: %s", read.err)
+	}
+
+	// And it really was one-shot: the next gated request is refused, and says
+	// which command unblocks it. This is the whole reason a list stops probing.
+	again := mc.tryCall(t, "session_read", map[string]any{
+		"session": probed, "wait": map[string]any{"idle_ms": 400},
+	})
+	if again.err == "" {
+		t.Fatal("a pre approval was expected to be one-shot, and the second read was accepted")
+	}
+	if !strings.Contains(again.text, "tyd session approve "+probed) {
+		t.Fatalf("the second refusal must name the command that unblocks it:\n%s", again.text)
+	}
+}
+
+// probedSessionID pulls the session id out of a row that reported a probe
+// failure, so a test can follow whichever row the catalog put first.
+func probedSessionID(text string) string {
+	const marker = "probe failed: "
+	i := strings.Index(text, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := text[i+len(marker):]
+	end := strings.IndexAny(rest, " .\n")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+// A send on a pre target needs two approvals to be worth anything, and that is
+// worth knowing rather than leaving a model to discover. The write is one gated
+// request and the read that would report its output is another, so the operator's
+// single approval buys the keystrokes and the model still cannot see what they
+// did. It is the honest reason to pair an agent with --approval full rather than
+// pre.
+func TestRemoteSendOnAPreTargetSpendsTheApprovalOnTheWriteAlone(t *testing.T) {
+	requireShell(t)
+	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalPre)
+	mc := startMCP(t, fx)
+
+	mc.openSession(t, "gated")
+	sid := sessionIDForAlias(t, fx, "gated")
+	// One attempt records the request the approval answers.
+	mc.tryCall(t, "session_send", map[string]any{"session": "gated", "data": "echo x\n"})
+	fx.approve(t, sid)
+
+	// The write goes through on that approval.
+	sent := mc.tryCall(t, "session_send", map[string]any{
+		"session": "gated", "data": "echo two-approvals\n",
+	})
+	if !strings.Contains(sent.text, "the keystrokes landed") {
+		t.Fatalf("the write should have been allowed:\n%s", sent.text)
+	}
+	// And the read that would report its output is a separate gated request, so
+	// the model is told to read rather than shown an answer it cannot have.
+	if !strings.Contains(sent.text, "read the session to see what they produced") {
+		t.Fatalf("the result must say the output is behind another approval:\n%s", sent.text)
+	}
+	read := mc.tryCall(t, "session_read", map[string]any{
+		"session": "gated", "wait": map[string]any{"idle_ms": 400},
+	})
+	if read.err == "" {
+		t.Fatal("the read after the write must need its own approval, or the write was not the only gated request")
+	}
+}
+
 func TestRemoteCloseEndsTheSession(t *testing.T) {
 	requireShell(t)
 	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
@@ -906,7 +1060,7 @@ type toolOutcome struct {
 func (mc *mcpClient) openSession(t *testing.T, name string) toolOutcome {
 	t.Helper()
 	var out toolOutcome
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < agentStartAttempts; attempt++ {
 		// tryCall, not call: a failure here is the thing being retried, and call
 		// would end the test before the loop could look at it.
 		out = mc.tryCall(t, "session_open", map[string]any{"name": name, "shell": remoteShell})
@@ -916,14 +1070,19 @@ func (mc *mcpClient) openSession(t *testing.T, name string) toolOutcome {
 		if !strings.Contains(out.text, "wait agent sock") {
 			t.Fatalf("session_open %q failed for a reason that is not the agent's start-up budget: %s", name, out.err)
 		}
-		if attempt == 3 {
+		if attempt == agentStartAttempts-1 {
 			break
 		}
+		// Logged, because a retry that quietly papers over a slow machine is how
+		// a real failure starts being ignored.
+		t.Logf("session_open %q: the live-agent socket did not appear in %s, retrying (attempt %d of %d)",
+			name, agentStartWait, attempt+1, agentStartAttempts)
 		// The previous iteration's agent is still tearing down; give the machine
 		// a moment before starting another.
 		time.Sleep(250 * time.Millisecond)
 	}
-	t.Fatalf("session_open %q did not get a live-agent socket in four attempts: %s", name, out.text)
+	t.Fatalf("session_open %q did not get a live-agent socket in %d attempts: %s",
+		name, agentStartAttempts, out.text)
 	return out
 }
 
