@@ -49,6 +49,8 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session approve", "Approve a PENDING remote session (local unix)"},
 		{"session reject", "Reject a PENDING remote session (local unix)"},
 		{"session close", "Close a session (kept as history)"},
+		{"session rm", "Remove a closed session from the local catalog (--force)"},
+		{"session restore", "Put an archived session back in the list"},
 		{"session alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
@@ -57,7 +59,8 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"peer list", "List paired peers"},
 		{"peer show", "Show peer detail, endpoint, and reachability"},
 		{"peer alias", "Set or clear a peer nickname"},
-		{"revoke", "Revoke a paired peer (either side)"},
+		{"peer restore", "Put an archived peer back in the list"},
+		{"revoke", "Revoke a paired peer, either side (--force)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Pairing:")
@@ -104,6 +107,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--peers PATH", fmt.Sprintf("Paired peers file (default %s)", paths.DefaultPeers())},
 		{"--aliases PATH", fmt.Sprintf("Session aliases file (default %s)", paths.DefaultAliases())},
 		{"--recent PATH", fmt.Sprintf("Recent peer/session file (default %s)", paths.DefaultRecent())},
+		{"--archive PATH", fmt.Sprintf("Archive marks and use clocks (default %s)", paths.Archive())},
 		{"--platform URL", fmt.Sprintf("Control Panel URL (default %s)", paths.DefaultPlatform())},
 	}, color)
 	fmt.Fprintln(w)
@@ -114,6 +118,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--session-idle-timeout D", "up: close sessions idle this long, e.g. 8h (default off)"},
 		{"--session-output-log-max SIZE", "up: per-session output log cap, e.g. 64MB (default 64MB)"},
 		{"--session-send-timeout DURATION", "up: how long one send may wait for the PTY, max 30s (default 5s)"},
+		{"--archive-ttl D", fmt.Sprintf("Hide a peer, or a closed session, unused this long: 7d, 168h, off (default %s; env %s)", formatTTL(DefaultArchiveTTL), ArchiveTTLEnv)},
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
@@ -121,9 +126,10 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--close-on-exit", "mcp: close the sessions this process opened when it stops"},
 		{"--max-sessions N", "mcp: how many sessions one process holds (default 8)"},
 		{"--allow-peer REF", "mcp: serve this peer too; repeat for several (implies tools take a peer)"},
+		{"--all", "peer list / session list: include archived rows"},
 		{"--shell PATH", "session create: shell to run, must be listed in the daemon's /etc/shells"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
-		{"--force", "register: replace existing registration (invalidates peers)"},
+		{"--force", "register: replace registration; revoke / session rm: delete without asking"},
 		{"--fix", "doctor: rebuild a damaged peers.json from the Control Panel"},
 		{"--live PATH", fmt.Sprintf("up/doctor: live-agent state root (default %s)", paths.DefaultLive())},
 	}, color)
@@ -136,6 +142,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  register/invite wait by default; --no-wait skips; Ctrl-C revokes the invite.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (recent.json).")
 	fmt.Fprintln(w, "  Agents: claude mcp add tyd -- tyd mcp --peer laptop")
+	fmt.Fprintln(w, "  Archiving hides a row from the list; it grants and withdraws nothing.")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
@@ -161,6 +168,8 @@ func writeSessionHelp(w io.Writer, color bool) {
 		{"approve", "Approve PENDING session (local unix only)"},
 		{"reject", "Reject PENDING session (local unix only)"},
 		{"close", "Close a session (kept as history)"},
+		{"rm", "Remove a closed session from the local catalog (--force)"},
+		{"restore", "Put an archived session back in the list"},
 		{"alias", "Name a session for later attach/watch/close"},
 	}, color)
 	fmt.Fprintln(w)
@@ -176,12 +185,16 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
+	fmt.Fprintln(w, "  rm [id|alias]             Forgets a CLOSED session here; needs --force.")
+	fmt.Fprintln(w, "  restore [id|alias]        Puts an archived session back in the list.")
 	fmt.Fprintln(w, "  Omit the id to reuse the most recent session (recent.json).")
 	fmt.Fprintln(w, "  --peer <id|nick>          Target a paired peer for dialing commands.")
 	fmt.Fprintln(w, "  tyd <session>.<peer>      Attach shortcut; same as --peer <peer> session attach <session>.")
 	fmt.Fprintln(w, "  session list              Local catalog only (no CP / daemon).")
+	fmt.Fprintln(w, "  list --all                Include sessions archived by --archive-ttl.")
 	fmt.Fprintln(w, "  alias <name>              Name the recent session for later use.")
 	fmt.Fprintln(w, "  alias list | alias rm     List or remove session aliases.")
+	fmt.Fprintln(w, "  An archived session is hidden, not deleted; the daemon is untouched.")
 }
 
 // writeMCPHelp documents the MCP server. It is a stdio protocol, so the tool
@@ -237,7 +250,7 @@ func sessionUsage() string {
 }
 
 func sessionCommands() []string {
-	return []string{"create", "list", "attach", "watch", "approve", "reject", "close", "alias", "help"}
+	return []string{"create", "list", "attach", "watch", "read", "send", "approve", "reject", "close", "rm", "restore", "alias", "help"}
 }
 
 func rootCommands() []string {
@@ -245,7 +258,7 @@ func rootCommands() []string {
 }
 
 func peerCommands() []string {
-	return []string{"list", "show", "alias", "help"}
+	return []string{"list", "show", "alias", "restore", "help"}
 }
 
 func unknownCommandErr(kind, got string, candidates []string, usage string) error {

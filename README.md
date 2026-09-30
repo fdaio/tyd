@@ -202,8 +202,8 @@ rm -f ~/.local/bin/tyd                 # or your PREFIX
 rm -rf ~/.tyd
 ```
 
-Pairing survives on the Control Panel: unpair it there, or run `tyd revoke laptop`
-on the peer first.
+Pairing survives on the Control Panel: unpair it there, or run
+`tyd revoke laptop --force` on the peer first.
 
 ## Documentation
 

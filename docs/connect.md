@@ -65,11 +65,17 @@ tyd session create --peer laptop
 `register` and `invite` wait for the peer by default (with a TTL countdown;
 Ctrl-C revokes the invite); `--no-wait` prints the accept line and exits.
 
-Either side can drop the pair later:
+Either side can drop the pair later. Revoking takes the peer's access away for
+good, so it says what it is about to do and needs `--force`:
 
 ```bash
-tyd revoke laptop
+tyd revoke laptop --force
 ```
+
+Archiving is the softer half and does not touch the pairing: a peer unused for
+`--archive-ttl` (default `7d`) drops out of `peer list` with a footer saying how
+many are hidden, keeps its access, and comes back with `tyd peer restore` or the
+next time you dial it. See [cli.md](cli.md#flags).
 
 ## Connect
 
@@ -104,13 +110,17 @@ seconds, so a long-lived pairing keeps refreshing them only while `tyd up` runs.
 | Follow output only | `tyd session watch` |
 | End the shell, keep the session | `exit` or Ctrl-D inside the shell → `EXITED` |
 | End the session | `tyd session close <id-or-alias>` |
+| Forget a closed session locally | `tyd session rm <id-or-alias> --force` |
 
 Detach is not close, and neither is a shell that exits on its own. `exit`,
 Ctrl-D, a crash, or a kill ends only the shell: the session turns `EXITED` and
 stays attachable, so the next `tyd session attach` replays what that shell printed
 and starts a new one for the same session id. `session close` is the deliberate
 end of a session — it marks the session `CLOSED` in the client catalog, where the
-row remains as history.
+row remains as history. `session rm --force` is how a closed row leaves the
+catalog, and `--archive-ttl` is how closed rows nobody has touched for a week
+drop out of `session list`; both are described in
+[session.md](session.md#removing-and-archiving-a-session).
 
 ## Dual NAT / no public IP
 

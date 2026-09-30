@@ -29,6 +29,7 @@ type options struct {
 	recent             string
 	aliases            string
 	sessions           string
+	archive            string
 	platform           string
 	approval           string
 	fix                bool
@@ -36,6 +37,8 @@ type options struct {
 	sessionIdle        time.Duration
 	outputLogMax       int64
 	sessionSendTimeout time.Duration
+	archiveTTL         time.Duration
+	archiveTTLSet      bool
 	shell              string
 	as                 string
 	cert               string
@@ -46,6 +49,7 @@ type options struct {
 	closeOnExit        bool
 	maxSessions        int
 	allowPeer          []string
+	all                bool
 	verbose            bool
 	force              bool
 	cmd                string
@@ -72,6 +76,8 @@ func parseArgs(args []string) (options, error) {
 		approval:     controlpanel.DefaultApproval,
 		cert:         paths.DefaultServerCert(),
 		key:          paths.DefaultServerKey(),
+		archive:      paths.Archive(),
+		archiveTTL:   DefaultArchiveTTL,
 		outputLogMax: live.DefaultOutputLogMax,
 	}
 	var positional []string
@@ -281,6 +287,32 @@ func parseArgs(args []string) (options, error) {
 				return options{}, fmt.Errorf("--session-send-timeout must not be negative")
 			}
 			opts.sessionSendTimeout = d
+		case a == "--archive":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.archive = args[i]
+		case strings.HasPrefix(a, "--archive="):
+			opts.archive = strings.TrimPrefix(a, "--archive=")
+		case a == "--archive-ttl":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a duration (e.g. 7d) or 'off'", a)
+			}
+			i++
+			d, err := parseArchiveTTL(args[i])
+			if err != nil {
+				return options{}, err
+			}
+			opts.archiveTTL = d
+			opts.archiveTTLSet = true
+		case strings.HasPrefix(a, "--archive-ttl="):
+			d, err := parseArchiveTTL(strings.TrimPrefix(a, "--archive-ttl="))
+			if err != nil {
+				return options{}, err
+			}
+			opts.archiveTTL = d
+			opts.archiveTTLSet = true
 		case a == "--shell":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)
@@ -330,6 +362,8 @@ func parseArgs(args []string) (options, error) {
 					strings.TrimPrefix(a, "--max-sessions="))
 			}
 			opts.maxSessions = n
+		case a == "--all":
+			opts.all = true
 		case a == "--verbose":
 			opts.verbose = true
 		case a == "--force":
@@ -372,6 +406,20 @@ func parseArgs(args []string) (options, error) {
 			return options{}, fmt.Errorf("unknown flag %s", a)
 		default:
 			positional = append(positional, a)
+		}
+	}
+	// Archiving runs on the read paths of every command, so the TTL has to be
+	// settable without passing the flag: a plain `tyd session list` must honour
+	// the host's choice too. archiveTTLSet separates an explicit --archive-ttl
+	// from the default, because zero means both "off" and "not set" and the two
+	// must not collapse. The flag wins, being a decision about this command.
+	if !opts.archiveTTLSet {
+		if v := strings.TrimSpace(os.Getenv(ArchiveTTLEnv)); v != "" {
+			d, err := parseArchiveTTL(v)
+			if err != nil {
+				return options{}, err
+			}
+			opts.archiveTTL = d
 		}
 	}
 	if len(positional) == 0 {

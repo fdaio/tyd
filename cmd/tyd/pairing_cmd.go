@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"golang.org/x/term"
+	"tyd/internal/archive"
 	"tyd/internal/auth"
+	"tyd/internal/catalog"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
 	"tyd/internal/paths"
@@ -424,6 +426,8 @@ func runRevokeInvite(opts options, token string) error {
 	return nil
 }
 
+// runRevoke withdraws a pairing. It is the only command that takes a peer's
+// access away, so it says what it is about to do and refuses without --force.
 func runRevoke(opts options) error {
 	if len(opts.rest) != 1 {
 		return fmt.Errorf("usage: tyd revoke <peer-id|nickname>")
@@ -436,6 +440,17 @@ func runRevoke(opts options) error {
 	if err != nil {
 		return err
 	}
+	owned, err := sessionIDsForPeer(opts, p.ID)
+	if err != nil {
+		return err
+	}
+	if !opts.force {
+		return fmt.Errorf(`%w
+  refusing to revoke peer %s%s
+  the peer loses access to this host now, and this host loses the ability to dial it
+  %s removed with it, and the pairing cannot be restored without pairing again
+  re-run with --force to revoke`, errForceRequired, p.ID, peerSuffix(p), pluralSessions(len(owned)))
+	}
 	if doc.HasRegistration() {
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
@@ -447,6 +462,9 @@ func runRevoke(opts options) error {
 			platform = doc.Platform
 		}
 		cli := cpclient.New(platform)
+		// The Control Panel goes first: it is the half that cannot be redone
+		// locally, and a local file that outlives a failed revoke would be a
+		// peer this host still trusts and the peer no longer expects.
 		if err := cli.RevokePeer(doc.Registration.ID, pub, p.ID); err != nil {
 			return err
 		}
@@ -457,11 +475,64 @@ func runRevoke(opts options) error {
 	if err := peers.Save(opts.peers, doc); err != nil {
 		return err
 	}
+	// paired.json is the trust store, and peers.json is not: leaving the entry
+	// there would keep the peer trusted until the next sync happened to notice.
+	// The daemon prunes it that way, which makes the withdrawal lag a round.
+	paired, err := peers.LoadPaired(pairedPath(opts))
+	if err != nil {
+		return err
+	}
+	if paired.Remove(p.ID) {
+		if err := peers.SavePaired(pairedPath(opts), paired); err != nil {
+			return err
+		}
+	}
+	// Sessions reached through the pairing go with it. A row left behind would
+	// name a peer this host can no longer dial, and its alias would merge the
+	// row straight back.
+	if err := forgetSessions(opts, owned); err != nil {
+		return err
+	}
+	if err := archive.Update(archivePath(opts), func(f *archive.File) bool {
+		return f.ForgetPeer(p.ID)
+	}); err != nil {
+		return err
+	}
 	fmt.Fprintf(os.Stderr, "revoked peer %s\n", p.ID)
 	if !colorEnabled(os.Stdout) || !colorEnabled(os.Stderr) {
 		fmt.Println(p.ID)
 	}
 	return nil
+}
+
+func peerSuffix(p *peers.Peer) string {
+	if p.Nickname == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (%s)", p.Nickname)
+}
+
+func pluralSessions(n int) string {
+	if n == 1 {
+		return "1 local session record is"
+	}
+	return fmt.Sprintf("%d local session records are", n)
+}
+
+// sessionIDsForPeer lists the catalog rows a peer owns, for the risk text and
+// for the removal that follows it.
+func sessionIDsForPeer(opts options, peerID string) ([]string, error) {
+	cat, err := catalog.Load(sessionsPath(opts))
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, rec := range cat.Sessions {
+		if rec.PeerID == peerID {
+			ids = append(ids, rec.ID)
+		}
+	}
+	return ids, nil
 }
 
 func runAccept(opts options) error {

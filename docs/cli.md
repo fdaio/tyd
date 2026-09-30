@@ -15,11 +15,14 @@ the binary. This page is the map plus the defaults.
 | | `session approve` | Approve a PENDING remote session (local unix only) |
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
+| | `session rm` | Forget a **closed** session in the local catalog (`--force`); its aliases go with it |
+| | `session restore` | Put an archived session back in `session list` |
 | | `session alias` | Name a session: `<name>`, `<session_id> <name>`, `set`, `list`, `rm` |
-| Peers | `peer list` | List paired peers (id, alias, direction), newest pairing first |
+| Peers | `peer list` | List paired peers (id, alias, direction), newest pairing first; archived peers are hidden unless `--all` |
 | | `peer show <id\|alias>` | Show peer detail, endpoint, reachability, and whether the pairing record verifies |
 | | `peer alias <id\|nick> <name>` | Set a peer nickname (`peer alias rm <id\|nick>` clears it) |
-| | `revoke` | Revoke a paired peer (either side) |
+| | `peer restore` | Put an archived peer back in `peer list` |
+| | `revoke` | Revoke a paired peer (either side), with `--force` |
 | Pairing | `keygen` | Generate the Ed25519 identity (also created automatically) |
 | | `register` | Register with the Control Panel (`--force` replaces) |
 | | `invite` | Mint an invite, print the accept line, wait (10m TTL); `invite revoke <token>` |
@@ -61,6 +64,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--peers PATH` | Paired peers file | `~/.tyd/peers.json` |
 | `--aliases PATH` | Session aliases file | `~/.tyd/aliases.json` |
 | `--recent PATH` | Recent peer/session file | `~/.tyd/recent.json` |
+| `--archive PATH` | Archive marks and use clocks | `~/.tyd/archive.json` |
 | `--platform URL` | Control Panel URL | `https://app.getfda.dev` |
 
 ### Behavior
@@ -72,12 +76,14 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
+| `--archive-ttl D` | Hide a peer, or a closed session, unused this long: `7d`, `168h`, `off` (default `7d`; env `TYD_ARCHIVE_TTL`) |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--shell PATH` | `session create`: shell to run; must be listed in the **daemon's** `/etc/shells` (default: the daemon's own shell) |
 | `--detach` | `session create`: print the id only |
-| `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr |
-| `--force` | `register`: replace an existing registration (invalidates peers) |
+| `--all` | `peer list` / `session list`: include archived rows |
+| `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr; also reports a prune that could not write |
+| `--force` | `register`: replace an existing registration (invalidates peers); `revoke` / `session rm`: delete without asking |
 | `--fix` | `doctor`: rebuild a damaged `peers.json` from the Control Panel |
 | `--live PATH` | `up` / `doctor`: live-agent state root (default `~/.tyd/live`) |
 
@@ -94,6 +100,7 @@ Everything lives under `~/.tyd`:
 | `aliases.json` | Client-local session names |
 | `recent.json` | Last peer / session used by this client |
 | `sessions.json` | Client-local session catalog read by `session list` |
+| `archive.json` | Which peers and sessions are archived, and when each peer was last dialled. Kept out of `peers.json` on purpose: that file is rebuilt from the Control Panel on every sync, and `doctor --fix` replaces it outright |
 | `live/<id>/` | Per-session live-agent socket, metadata, PID, and sequenced output segments (`output.<seq>`, `0600`; deleted on close) |
 | `audit.log` | Only when `--audit-log` points here |
 | `tyd.log`, `tyd.pid` | Written by the `nohup` install fallback |

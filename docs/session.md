@@ -16,6 +16,8 @@ tyd session list                   # local catalog
 tyd session attach jammy           # interactive; Ctrl-\ detaches
 tyd session watch jammy            # read-only follow / history dump
 tyd session close jammy            # kill the shell; catalog marks CLOSED
+tyd session rm jammy --force       # forget a closed session locally
+tyd session list --all             # include archived sessions
 ```
 
 `create` attaches unless `--detach` is given. Local unix targets start `tyd up` on
@@ -59,6 +61,7 @@ closed ones; newest first inside each group.
 | Client crash or socket drop | Same: the session stays |
 | `exit`, Ctrl-D, shell crash or kill | Shell goes away; session becomes `EXITED`, still attachable |
 | `tyd session close <id>` | Kill the shell; mark `CLOSED` in the local catalog |
+| `tyd session rm <id> --force` | Forget a `CLOSED` session in the local catalog; the daemon is not contacted |
 
 Connect progress is silent by default. `--verbose` prints SSH-style `debug1:`
 lines on stderr (resolve → dial → attach) for `create` / `attach` / `watch`.
@@ -93,6 +96,33 @@ surviving live-agent, and a session whose shell is gone comes back as `EXITED`.
 Retiring a session is therefore a deliberate `tyd session close`; the row stays in
 the client catalog as history, because that catalog is client-local and outlives
 the daemon.
+
+### Removing and archiving a session
+
+`session close` ends a session. Two more commands deal with the row it leaves
+behind.
+
+`tyd session rm <id|alias> --force` forgets a `CLOSED` session in the local
+catalog. The row holds the endpoint, so `rm` refuses a session that is not closed
+— and `--force` does not change that, because the fix is to close it, not to
+delete the address. The daemon keeps the session until it restarts, and any
+alias for the session goes with it, because a leftover alias would merge the row
+straight back into the list.
+
+`--archive-ttl` hides sessions nobody has touched. It defaults to `7d` and takes
+`7d`, `168h`, or `off`; `TYD_ARCHIVE_TTL` sets it for the whole host and
+`--archive-ttl` wins for one command. Only a `CLOSED` session is a candidate, and
+the clock runs from the close — or from a later read, if there was one. A session
+that is `PENDING`, running, or `EXITED` is never archived, because it can still be
+attached.
+
+Archiving is a display state, not a deletion: nothing is removed from
+`sessions.json`, the daemon is untouched, and `tyd session restore` puts the row
+back. `session list` hides archived rows and says how many it hid; `--all` shows
+them, marked `(archived)`. Reading or driving a session puts it back on its own.
+The marks live in `~/.tyd/archive.json` rather than in `sessions.json`, so a
+catalog rebuild cannot drop them, and a prune that cannot write is skipped in
+silence rather than failing the command.
 
 ### Aliases
 
