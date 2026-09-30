@@ -37,10 +37,12 @@ const (
 	// answer either way.
 	interruptIdleMS = 500
 	interruptWaitMS = 3_000
-	// approvalDeadline is how long this side waits for a human to approve a
-	// remote session. The request on the target keeps waiting, so a later retry
-	// can still succeed.
-	approvalDeadline = 30 * time.Second
+	// approvalWindow is how long the target keeps waiting for a person to decide
+	// a pending request. The number is quoted to a model rather than imported:
+	// this package must not depend on the daemon, and a target started with a
+	// different --approval-ttl keeps its own number. A test asserts the two
+	// agree, so a change to the default cannot make the message a lie.
+	approvalWindow = 10 * time.Minute
 	// maxSessions bounds the sessions one process holds.
 	maxSessions = 8
 )
@@ -288,6 +290,7 @@ func (s *server) open(ctx context.Context, a args) (string, any, error) {
 			Reason:       "read_failed",
 			SessionState: stateOf(opened.State),
 			Session:      opened.Session.Label(),
+			Peer:         orLocal(opened.Session.Peer),
 			HumanAttach:  opened.HumanAttach,
 		}, nil
 	}
@@ -472,6 +475,7 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 				Cursor:       sent.Cursor,
 				Written:      &written,
 				Session:      sess.Label(),
+				Peer:         orLocal(sess.Peer),
 			}, nil
 	}
 
@@ -593,6 +597,7 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 			Cursor:       sent.Cursor,
 			Written:      &written,
 			Session:      sess.Label(),
+			Peer:         orLocal(sess.Peer),
 		}, nil
 	}
 	text, res := render(sess, page, sent.Cursor, "")
@@ -650,8 +655,8 @@ func (s *server) close(ctx context.Context, a args) (string, any, error) {
 	}
 	s.forget(sess.Key())
 	s.logf("session_close session=%s", sess.ID)
-	return fmt.Sprintf("closed %s (session %s).", sess.Label(), sess.ID), &result{
-		Reason: "closed", SessionState: "closed", Session: sess.Label(),
+	return fmt.Sprintf("closed %s (session %s) on %s.", sess.Label(), sess.ID, orLocal(sess.Peer)), &result{
+		Reason: "closed", SessionState: "closed", Session: sess.Label(), Peer: orLocal(sess.Peer),
 	}, nil
 }
 

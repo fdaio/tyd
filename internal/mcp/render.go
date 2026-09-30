@@ -54,6 +54,10 @@ type result struct {
 	Written *int `json:"written,omitempty"`
 	// Session is the alias, or the id when the session has no alias.
 	Session string `json:"session,omitempty"`
+	// Peer is the machine the call ran on. It is a field as well as a line in
+	// the footer because a model that cannot read the text still has to know
+	// which of the offered machines it just typed into.
+	Peer string `json:"peer,omitempty"`
 	// HumanAttach is the command that hands the session to a person.
 	HumanAttach string `json:"human_attach,omitempty"`
 	// Sessions is the row list of session_list.
@@ -132,7 +136,11 @@ func render(s Session, p Page, start uint64, humanAttach string) (string, *resul
 		state = "exited"
 	}
 
-	footer := fmt.Sprintf("[tyd: reason=%s state=%s]", orUnknown(p.Reason), state)
+	// The target leads the footer. A result that said only why it returned
+	// would leave a model that serves several machines unable to tell which one
+	// answered, and the operator reading along unable to tell where a command
+	// ran at all.
+	footer := fmt.Sprintf("[tyd: target=%s reason=%s state=%s]", orLocal(s.Peer), orUnknown(p.Reason), state)
 	if truncated {
 		footer += fmt.Sprintf("\n[%d bytes omitted: page them back with "+
 			"session_read {cursor: %d, max_bytes: %d}]", omittedTo-omittedFrom, omittedFrom, outputCap)
@@ -163,6 +171,7 @@ func render(s Session, p Page, start uint64, humanAttach string) (string, *resul
 		OmittedFrom:  omittedFrom,
 		OmittedTo:    omittedTo,
 		Session:      s.Label(),
+		Peer:         orLocal(s.Peer),
 		HumanAttach:  humanAttach,
 	}
 }

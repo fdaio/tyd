@@ -208,7 +208,8 @@ func writeMCPHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Target:")
 	writeHelpRows(w, []helpRow{
-		{"--peer ID|NICK", "Serve this paired peer. Default: the only outbound peer, else the local daemon"},
+		{"--peer ID|NICK", "Serve this paired peer. Default: the only outbound peer, if there is one"},
+		{"--peer local", "Serve the daemon on this machine. Required here: it is never a fallback"},
 		{"--allow-peer REF", "Serve this peer in addition; repeat for several. Required for more than one"},
 	}, color)
 	fmt.Fprintln(w)
@@ -230,7 +231,9 @@ func writeMCPHelp(w io.Writer, color bool) {
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
-	fmt.Fprintln(w, "  claude mcp add tyd -- tyd mcp --peer laptop")
+	fmt.Fprintln(w, "  claude mcp add tyd -- /usr/local/bin/tyd mcp --peer laptop")
+	fmt.Fprintln(w, "  Use an absolute path: MCP clients often do not inherit your shell PATH.")
+	fmt.Fprintln(w, "  Every result names the machine it ran on, in [tyd: target=...].")
 	fmt.Fprintln(w, "  A session is writable from here only while nobody is attached; a person attached wins.")
 	fmt.Fprintln(w, "  Sessions survive this process unless --close-on-exit is given.")
 	fmt.Fprintln(w, "  Take a session over with: tyd session attach <alias>")

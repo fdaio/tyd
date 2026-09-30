@@ -17,9 +17,12 @@ import (
 
 // runMCP serves tyd sessions to a model over MCP on stdio.
 //
-// The target is fixed at startup: --peer, or the only outbound peer, or the
-// local daemon. recent.json is not consulted, because a server that followed
-// the last machine a person typed would drive a target nobody chose for it.
+// The target is fixed at startup: --peer, --allow-peer, or the only outbound
+// peer. recent.json is not consulted, because a server that followed the last
+// machine a person typed would drive a target nobody chose for it. A machine
+// with no outbound peer is an error rather than a silent local target: the
+// daemon on this machine holds the shells the operator is sitting at, so
+// reaching for it has to be written down.
 func runMCP(opts options) error {
 	if len(opts.rest) > 0 {
 		if opts.rest[0] == "help" {
@@ -84,8 +87,11 @@ func mcpModeNote(opts options) string {
 	}
 }
 
+// mcpTargetLabel names a machine for a person reading stderr. A peer given by a
+// name other than its nickname carries both, so the operator can see which of
+// their peers a shorthand meant.
 func mcpTargetLabel(t mcpTarget) string {
-	if t.nickname != "" {
+	if t.nickname != "" && t.nickname != t.label {
 		return fmt.Sprintf("%s (%s)", t.label, t.nickname)
 	}
 	return t.label
@@ -93,10 +99,10 @@ func mcpTargetLabel(t mcpTarget) string {
 
 // mcpPeerLabels are the values a tool call may pass as peer.
 //
-// A local target has no name, so it stays empty and reads as "this machine". An
-// explicit peer keeps the name the command line gave it: a description that
-// listed the second target but not the first would be describing a choice the
-// model cannot express.
+// Every target is named, so the list a model chooses from is the list of real
+// machines and not a mixture of names and blanks. A description that listed the
+// second target but not the first would be describing a choice the model cannot
+// express.
 func mcpPeerLabels(targets []mcpTarget) []string {
 	out := make([]string, 0, len(targets))
 	for _, t := range targets {
@@ -111,49 +117,71 @@ func mcpTargets(opts options) ([]mcpTarget, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := mcpTarget{}
 
 	if len(opts.allowPeer) > 0 {
 		seen := map[string]bool{}
 		out := make([]mcpTarget, 0, len(opts.allowPeer))
 		for _, ref := range opts.allowPeer {
-			p, err := doc.Find(ref)
+			t, err := resolveMCPTarget(doc, ref)
 			if err != nil {
 				return nil, fmt.Errorf("--allow-peer %q: %w", ref, err)
 			}
-			if seen[p.ID] {
-				return nil, fmt.Errorf("--allow-peer names peer %q twice", ref)
+			// Keyed on the machine, not on the spelling: the same peer named
+			// twice is one target offered to a model as two, and the local
+			// daemon is spelled like any other.
+			if seen[t.peerID] {
+				return nil, fmt.Errorf("--allow-peer names %s twice", mcpTargetLabel(t))
 			}
-			seen[p.ID] = true
-			out = append(out, mcpTarget{label: ref, peerID: p.ID, nickname: peerNickname(p)})
+			seen[t.peerID] = true
+			out = append(out, t)
 		}
 		return out, nil
 	}
 
 	if opts.peer != "" {
-		p, err := doc.Find(opts.peer)
+		t, err := resolveMCPTarget(doc, opts.peer)
 		if err != nil {
 			return nil, err
 		}
-		return []mcpTarget{{label: opts.peer, peerID: p.ID, nickname: peerNickname(p)}}, nil
+		return []mcpTarget{t}, nil
 	}
 
+	// A machine with no outbound peer does not mean the local daemon. That
+	// daemon holds the shells the operator is sitting at, and it is not subject
+	// to a pre-approval prompt, so falling back to it would put a model's
+	// keystrokes there while the operator believed the target was elsewhere.
+	// --peer local asks for this machine by name.
 	outbound := doc.Outbound()
 	switch len(outbound) {
 	case 0:
-		return []mcpTarget{local}, nil
+		return nil, fmt.Errorf("this machine has no outbound peers; name the target with --peer <id|nick>, "+
+			"or --peer %s for the daemon on this machine", mcpLocalRef)
 	case 1:
 		p := outbound[0]
 		nick := peerNickname(&p)
-		if nick == "" {
-			nick = p.ID
-		}
 		return []mcpTarget{{label: nick, peerID: p.ID, nickname: nick}}, nil
 	default:
-		return nil, fmt.Errorf("this machine has %d outbound peers (%s); "+
-			"name one with --peer, or list them with --allow-peer",
-			len(outbound), strings.Join(peerRefs(outbound), ", "))
+		return nil, fmt.Errorf("this machine has %d outbound peers (%s); name one with --peer, "+
+			"pass --peer %s for the daemon on this machine, or list them with --allow-peer",
+			len(outbound), strings.Join(peerRefs(outbound), ", "), mcpLocalRef)
 	}
+}
+
+// resolveMCPTarget names a machine: a paired peer, or the daemon on this one.
+//
+// The peer lookup comes first, so a peer that really is called "local" stays
+// reachable by name and the reserved word is only ever a fallback. That is the
+// one ambiguous case here, and it fails safe: the target it picks is a peer, it
+// is named in the startup line, and it is named in every tool result.
+func resolveMCPTarget(doc *peers.File, ref string) (mcpTarget, error) {
+	if p, err := doc.Find(ref); err == nil {
+		return mcpTarget{label: ref, peerID: p.ID, nickname: peerNickname(p)}, nil
+	}
+	if ref == mcpLocalRef {
+		return mcpTarget{label: mcpLocalRef}, nil
+	}
+	return mcpTarget{}, fmt.Errorf("not a paired peer on this machine, and not %q; "+
+		"run tyd peer list, or pass --peer %s for this machine", ref, mcpLocalRef)
 }
 
 func peerNickname(p *peers.Peer) string {

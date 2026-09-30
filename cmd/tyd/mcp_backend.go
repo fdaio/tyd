@@ -19,14 +19,21 @@ import (
 // target unless it was started with --allow-peer, because a model that can
 // choose the machine can also reach the one nobody meant to offer.
 type mcpTarget struct {
-	// label is what a tool call names the target by. It is empty for the local
-	// daemon.
+	// label is what a tool call names the target by. The local daemon's label
+	// is mcpLocalRef, so a target is never nameless: "the model may be typing
+	// into the machine you are sitting at" is the one mistake this command must
+	// not make quietly.
 	label string
 	// peerID is the paired peer behind the label, empty for the local daemon.
 	peerID string
 	// nickname is what a person types for the peer, used in the attach command.
 	nickname string
 }
+
+// mcpLocalRef is the name the daemon on this machine answers to on the command
+// line. It is a word rather than an empty string so that a target is always
+// named, in the startup line and in every tool result.
+const mcpLocalRef = "local"
 
 // mcpBackend drives real daemons.
 //
@@ -189,9 +196,17 @@ func (b *mcpBackend) List(context.Context) ([]mcp.Listed, error) {
 	cat := loadLocalCatalog(b.opts)
 	records := cat.List()
 	adoc, _ := alias.Load(b.opts.aliases)
+	arch := loadArchive(b.opts)
 
 	out := make([]mcp.Listed, 0, len(records))
 	for _, rec := range records {
+		// A session nobody has touched for --archive-ttl stays out of this list,
+		// the same as it stays out of `tyd session list`. The tool has no way to
+		// ask for the hidden ones, so the mark is cleared by using the session
+		// rather than by looking at it.
+		if arch.SessionArchived(rec.ID) {
+			continue
+		}
 		out = append(out, mcp.Listed{
 			Session:  mcp.Session{ID: rec.ID, Alias: aliasNameOf(adoc, rec.ID), Peer: b.labelForRecord(rec)},
 			Recorded: rec.State,
@@ -245,12 +260,28 @@ func (b *mcpBackend) Send(ctx context.Context, s mcp.Session, data []byte) (mcp.
 	// daemon aborts the write, rather than the keystrokes landing after the model
 	// was told they did not.
 	rep, err := client.SendContext(ctx, ep, b.key, s.ID, data)
+	if err != nil {
+		return mcp.Sent{}, err
+	}
+	b.markUsed(t, s.ID)
 	return mcp.Sent{
 		Written:      rep.Written,
 		WrittenKnown: rep.Reported,
 		Cursor:       rep.Cursor,
 		Epoch:        rep.Epoch,
-	}, err
+	}, nil
+}
+
+// markUsed records that a session was driven on a named machine.
+//
+// It is the same bookkeeping the CLI does after a successful attach, read or
+// send, and for the same reason: the session stops being something nobody has
+// touched. A session that was archived out of the list comes back, because a
+// model driving it plainly means it is in use, and hiding a session someone is
+// working in is how a person stops trusting the list.
+func (b *mcpBackend) markUsed(t mcpTarget, sid string) {
+	touchSession(b.opts, sid)
+	markUsed(b.opts, t.peerID, sid)
 }
 
 func (b *mcpBackend) Read(ctx context.Context, req mcp.ReadRequest) (mcp.Page, error) {
@@ -274,6 +305,7 @@ func (b *mcpBackend) Read(ctx context.Context, req mcp.ReadRequest) (mcp.Page, e
 	if err != nil {
 		return mcp.Page{}, err
 	}
+	b.markUsed(t, req.Session.ID)
 	return mcp.Page{
 		Data:        frame.Data,
 		CursorNext:  frame.CursorNext,

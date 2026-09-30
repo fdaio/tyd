@@ -48,8 +48,11 @@ func TestRenderReportsEveryPosition(t *testing.T) {
 	if res.HumanAttach != "tyd session attach build" {
 		t.Fatalf("human_attach = %q", res.HumanAttach)
 	}
-	if !strings.Contains(text, "[tyd: reason=idle state=running]") {
+	if !strings.Contains(text, "[tyd: target=local reason=idle state=running]") {
 		t.Fatalf("text = %q", text)
+	}
+	if res.Peer != "local" {
+		t.Fatalf("peer = %q, want local", res.Peer)
 	}
 	if !strings.Contains(text, "hello") {
 		t.Fatalf("text = %q", text)
@@ -209,5 +212,19 @@ func TestOmittedRangeAddressesTheRawStream(t *testing.T) {
 	}
 	if !bytes.HasSuffix(raw[res.OmittedFrom:], []byte("TAILMARK")) {
 		t.Fatal("the range does not address the stream the cursor is in")
+	}
+}
+
+// A result must name the machine it ran on. A server that offers several peers
+// leaves a model unable to tell which one answered otherwise, and an operator
+// reading along unable to tell where a command went at all.
+func TestRenderNamesTheTarget(t *testing.T) {
+	_, res := render(Session{ID: "s1", Peer: "laptop"}, Page{Reason: "idle"}, 0, "")
+	if res.Peer != "laptop" {
+		t.Fatalf("peer = %q, want laptop", res.Peer)
+	}
+	text, _ := render(Session{ID: "s1", Peer: "laptop"}, Page{Reason: "idle"}, 0, "")
+	if !strings.Contains(text, "target=laptop") {
+		t.Fatalf("text = %q", text)
 	}
 }

@@ -67,10 +67,17 @@ func mapError(err error, s Session) error {
 			"Read the session before sending again, and do not resend bytes that were already written.", s.Label(), msg)
 
 	case strings.Contains(low, "pending approval"):
+		// A pre-mode target spends the approval on the first request that needs
+		// it and reviews every later one, so a model that approves once and then
+		// sends in a loop is refused on every call after the first. Saying so is
+		// the difference between a model that asks again and one that reports a
+		// broken target.
 		return toolErrf("%s is waiting for approval on the target. "+
 			"Ask the operator to run `tyd session approve %s` on that machine. "+
-			"Nothing was sent. The request on the target gives up after %d s, so approve before then "+
-			"or open a new session.", s.ID, s.ID, int(approvalDeadline/time.Second))
+			"Nothing was sent. The target approves one request at a time, so each send and each read "+
+			"needs its own approval while the target is in pre mode, and a request gives up after "+
+			"about %d minutes. Approve again, or open a new session.",
+			s.ID, s.ID, int(approvalWindow/time.Minute))
 
 	case strings.Contains(low, "permission denied"):
 		return toolErrf("this peer is not allowed to do that on %s (%s). "+
