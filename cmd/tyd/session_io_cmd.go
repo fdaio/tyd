@@ -8,58 +8,18 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"tyd/internal/client"
 	"tyd/internal/live"
+	"tyd/internal/strutil"
 )
 
 // exitSessionInUse is returned when a send is refused because someone holds
 // the attach slot. It is distinct so a script can tell "busy" from "broken".
 const exitSessionInUse = 3
-
-// parseSendData expands the escapes a person types on a command line. It
-// never appends a newline: what is sent is what was asked for.
-func parseSendData(s string) ([]byte, error) {
-	var out []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != '\\' {
-			out = append(out, c)
-			continue
-		}
-		i++
-		if i >= len(s) {
-			return nil, fmt.Errorf("trailing backslash")
-		}
-		switch s[i] {
-		case 'n':
-			out = append(out, '\n')
-		case 'r':
-			out = append(out, '\r')
-		case 't':
-			out = append(out, '\t')
-		case '\\':
-			out = append(out, '\\')
-		case 'x':
-			if i+2 >= len(s) {
-				return nil, fmt.Errorf("\\x needs two hex digits")
-			}
-			v, err := strconv.ParseUint(s[i+1:i+3], 16, 8)
-			if err != nil {
-				return nil, fmt.Errorf("bad \\x escape: %w", err)
-			}
-			out = append(out, byte(v))
-			i += 2
-		default:
-			return nil, fmt.Errorf("unknown escape \\%s", string(s[i]))
-		}
-	}
-	return out, nil
-}
 
 // splitFlags moves flags ahead of positional arguments. Go's flag package
 // stops at the first non-flag word, but the documented order here is
@@ -127,7 +87,7 @@ func runSessionSend(opts options) error {
 			return err
 		}
 	case len(rest) > 1:
-		data, err = parseSendData(strings.Join(rest[1:], " "))
+		data, err = strutil.ParseSendData(strings.Join(rest[1:], " "))
 		if err != nil {
 			return fmt.Errorf("bad data: %w", err)
 		}

@@ -42,6 +42,10 @@ type options struct {
 	key                string
 	noWait             bool
 	detach             bool
+	readOnly           bool
+	closeOnExit        bool
+	maxSessions        int
+	allowPeer          []string
 	verbose            bool
 	force              bool
 	cmd                string
@@ -297,6 +301,35 @@ func parseArgs(args []string) (options, error) {
 			opts.noWait = true
 		case a == "--detach":
 			opts.detach = true
+		case a == "--read-only":
+			opts.readOnly = true
+		case a == "--close-on-exit":
+			opts.closeOnExit = true
+		case a == "--allow-peer":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a peer id or nickname", a)
+			}
+			i++
+			opts.allowPeer = append(opts.allowPeer, args[i])
+		case strings.HasPrefix(a, "--allow-peer="):
+			opts.allowPeer = append(opts.allowPeer, strings.TrimPrefix(a, "--allow-peer="))
+		case a == "--max-sessions":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a number", a)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("%s must be a number, got %q", a, args[i])
+			}
+			opts.maxSessions = n
+		case strings.HasPrefix(a, "--max-sessions="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--max-sessions="))
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("--max-sessions must be a number, got %q",
+					strings.TrimPrefix(a, "--max-sessions="))
+			}
+			opts.maxSessions = n
 		case a == "--verbose":
 			opts.verbose = true
 		case a == "--force":

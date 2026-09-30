@@ -68,6 +68,11 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"accept", "Accept a peer invite (token or pasted accept line)"},
 	}, color)
 	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Agents:")
+	writeHelpRows(w, []helpRow{
+		{"mcp", "Serve sessions to a model over MCP on stdio"},
+	}, color)
+	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Daemon:")
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
@@ -112,6 +117,10 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
+		{"--read-only", "mcp: register only session_list and session_read"},
+		{"--close-on-exit", "mcp: close the sessions this process opened when it stops"},
+		{"--max-sessions N", "mcp: how many sessions one process holds (default 8)"},
+		{"--allow-peer REF", "mcp: serve this peer too; repeat for several (implies tools take a peer)"},
 		{"--shell PATH", "session create: shell to run, must be listed in the daemon's /etc/shells"},
 		{"--verbose", "session create/attach/watch: print connect debug (ssh -v style)"},
 		{"--force", "register: replace existing registration (invalidates peers)"},
@@ -126,6 +135,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  session list is local only; it does not use --peer or CP.")
 	fmt.Fprintln(w, "  register/invite wait by default; --no-wait skips; Ctrl-C revokes the invite.")
 	fmt.Fprintln(w, "  Omit session id to reuse the most recent session (recent.json).")
+	fmt.Fprintln(w, "  Agents: claude mcp add tyd -- tyd mcp --peer laptop")
 	fmt.Fprintln(w, "  Pairing: see docs/requirements/control-plane-pairing.md")
 }
 
@@ -174,6 +184,52 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  alias list | alias rm     List or remove session aliases.")
 }
 
+// writeMCPHelp documents the MCP server. It is a stdio protocol, so the tool
+// names matter more than the flags: a person reads this to know what the model
+// can do.
+func writeMCPHelp(w io.Writer, color bool) {
+	fmt.Fprintln(w, "Serve tyd sessions to a model over MCP on stdio.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Usage:")
+	fmt.Fprintln(w, "  tyd mcp [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Target:")
+	writeHelpRows(w, []helpRow{
+		{"--peer ID|NICK", "Serve this paired peer. Default: the only outbound peer, else the local daemon"},
+		{"--allow-peer REF", "Serve this peer in addition; repeat for several. Required for more than one"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Limits:")
+	writeHelpRows(w, []helpRow{
+		{"--read-only", "Register only session_list and session_read"},
+		{"--max-sessions N", "Sessions one process holds (default 8)"},
+		{"--close-on-exit", "Close the sessions this process opened when it stops (default: keep them)"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Tools:")
+	writeHelpRows(w, []helpRow{
+		{"session_open", "Create a session without attaching; returns its first output"},
+		{"session_list", "Catalog rows plus a probe read for each state"},
+		{"session_send", "Type into an unattached session; returns what it printed"},
+		{"session_read", "Read from the last cursor, or re-read from a given one"},
+		{"session_interrupt", "Send Ctrl-C to a running command"},
+		{"session_close", "End a session"},
+	}, color)
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Tips:")
+	fmt.Fprintln(w, "  claude mcp add tyd -- tyd mcp --peer laptop")
+	fmt.Fprintln(w, "  A session is writable from here only while nobody is attached; a person attached wins.")
+	fmt.Fprintln(w, "  Sessions survive this process unless --close-on-exit is given.")
+	fmt.Fprintln(w, "  Take a session over with: tyd session attach <alias>")
+	fmt.Fprintln(w, "  Progress and per-call notes go to stderr; stdout carries the protocol only.")
+}
+
+func mcpUsage() string {
+	var b strings.Builder
+	writeMCPHelp(&b, false)
+	return b.String()
+}
+
 func sessionUsage() string {
 	var b strings.Builder
 	writeSessionHelp(&b, false)
@@ -185,7 +241,7 @@ func sessionCommands() []string {
 }
 
 func rootCommands() []string {
-	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "help"}
+	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "mcp", "help"}
 }
 
 func peerCommands() []string {

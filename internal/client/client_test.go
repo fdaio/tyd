@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tyd/internal/auth"
+	"tyd/internal/live"
 	"tyd/internal/protocol"
 	"tyd/internal/server"
 	"tyd/internal/session"
@@ -642,5 +643,34 @@ func TestDialUnixMissingSocketHint(t *testing.T) {
 	}
 	if !strings.Contains(msg, "tyd up") {
 		t.Fatalf("missing tyd up hint: %q", msg)
+	}
+}
+
+func TestReadContextCancellationEndsAParkedRead(t *testing.T) {
+	ep, key := startTestServer(t)
+	info, err := Create(ep, key, CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir(), Rows: 0, Cols: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = CloseSession(ep, key, info.ID) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		// The wait is far longer than the test lives, so only the cancellation
+		// can end this.
+		_, err := ReadContext(ctx, ep, key, info.ID, 0, 0, time.Hour, live.ReadConditions{})
+		done <- err
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled read must not report success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the parked read did not end when its context was cancelled")
 	}
 }

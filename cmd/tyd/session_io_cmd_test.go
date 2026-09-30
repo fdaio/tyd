@@ -5,45 +5,6 @@ import (
 	"testing"
 )
 
-func TestParseSendData(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{`echo hi\n`, "echo hi\n"},
-		{`a\tb`, "a\tb"},
-		{`a\rb`, "a\rb"},
-		{`\x03`, "\x03"},
-		{`\x1b[A`, "\x1b[A"},
-		{`a\\b`, `a\b`},
-		// No newline is ever added on its own.
-		{`echo hi`, "echo hi"},
-		{``, ""},
-		{`mixed \n and \t and \\`, "mixed \n and \t and \\"},
-	}
-	for _, tc := range cases {
-		got, err := parseSendData(tc.in)
-		if err != nil {
-			t.Fatalf("%q: %v", tc.in, err)
-		}
-		if string(got) != tc.want {
-			t.Fatalf("%q: got %q want %q", tc.in, got, tc.want)
-		}
-	}
-	// Uppercase hex is what a person is most likely to type.
-	if got, err := parseSendData(`\xFF`); err != nil || string(got) != "\xff" {
-		t.Fatalf("\\xFF: %q %v", got, err)
-	}
-}
-
-func TestParseSendDataErrors(t *testing.T) {
-	for _, in := range []string{`trailing\`, `\xZZ`, `\x1`, `\q`} {
-		if _, err := parseSendData(in); err == nil {
-			t.Fatalf("%q: want an error", in)
-		}
-	}
-}
-
 func TestReadFlagsAfterSessionID(t *testing.T) {
 	// The documented order puts the flags after the session id, which the
 	// flag package alone would treat as positional.
