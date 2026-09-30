@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"tyd/internal/alias"
+	"tyd/internal/archive"
 	"tyd/internal/catalog"
 	"tyd/internal/paths"
 	"tyd/internal/recent"
@@ -36,6 +38,12 @@ func sessionsPath(opts options) string {
 	return paths.DefaultSessions()
 }
 
+// loadLocalCatalog is the read every session command goes through. Archiving
+// runs here, at the end, so it sees the same rows the caller will: a prune that
+// ran before the merges would judge rows this read is about to create.
+//
+// It is best effort and reports nothing but its own failures, so it cannot
+// change what the caller sees.
 func loadLocalCatalog(opts options) *catalog.File {
 	path := sessionsPath(opts)
 	f, err := catalog.Load(path)
@@ -63,6 +71,7 @@ func loadLocalCatalog(opts options) *catalog.File {
 	if prunedNames || prunedIDs || len(f.Sessions) != n {
 		_ = catalog.Save(path, f)
 	}
+	pruneArchive(opts)
 	return f
 }
 
@@ -77,8 +86,90 @@ func dropUnusableRecent(opts options, rec *recent.File) bool {
 	return recent.Save(opts.recent, rec) == nil
 }
 
+// rememberSession writes a session record back after a command learned
+// something about it, and stamps the use clock.
+//
+// The stamp lives here because this is the one place a record is written: a
+// caller that forgot to mark a use would leave a session looking untouched, and
+// archiving would then hide it while it is still in use. The record is only
+// written on a path where a command succeeded, so the stamp means what it says.
 func rememberSession(opts options, rec catalog.Record) {
+	rec.LastUsed = time.Now().UTC()
 	_ = catalog.Remember(sessionsPath(opts), rec)
+}
+
+// forgetSessions drops sessions from the local catalog along with everything
+// that would bring them back.
+//
+// The catalog rebuilds a row for any alias or recent entry naming a session id
+// it does not have, so a row removed while either still points at it is a row
+// that is back on the next read. It reads the files raw rather than through
+// loadLocalCatalog, which would merge those very entries back in first.
+func forgetSessions(opts options, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	cat, err := catalog.Load(sessionsPath(opts))
+	if err != nil {
+		return err
+	}
+	dropped := false
+	for _, id := range ids {
+		if cat.Remove(id) {
+			dropped = true
+		}
+	}
+	if dropped {
+		if err := catalog.Save(sessionsPath(opts), cat); err != nil {
+			return err
+		}
+	}
+
+	adoc, err := alias.Load(opts.aliases)
+	if err != nil {
+		return err
+	}
+	dropped = false
+	for _, id := range ids {
+		if adoc.RemoveBySession(id) > 0 {
+			dropped = true
+		}
+	}
+	if dropped {
+		if err := alias.Save(opts.aliases, adoc); err != nil {
+			return err
+		}
+	}
+
+	rec, err := recent.Load(opts.recent)
+	if err != nil {
+		return err
+	}
+	if rec != nil && containsString(ids, rec.SessionID) {
+		rec.SessionID = ""
+		if err := recent.Save(opts.recent, rec); err != nil {
+			return err
+		}
+	}
+
+	return archive.Update(archivePath(opts), func(f *archive.File) bool {
+		changed := false
+		for _, id := range ids {
+			if f.ForgetSession(id) {
+				changed = true
+			}
+		}
+		return changed
+	})
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveSessionRef maps alias → session id, or uses recent session when ref is empty.

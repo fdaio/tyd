@@ -159,6 +159,8 @@ func runSessionSend(opts options) error {
 		}
 		return err
 	}
+	touchSession(opts, sid)
+	markUsed(opts, peerID, sid)
 	if *asJSON {
 		rec := sendRecord{SessionID: sid, Written: rep.Written, Cursor: rep.Cursor, Epoch: rep.Epoch}
 		line, err := json.Marshal(rec)
@@ -257,6 +259,7 @@ func runSessionRead(opts options) error {
 
 	out := os.Stdout
 	cur, epNo := *cursor, *epoch
+	used := false
 	for {
 		if *follow {
 			select {
@@ -269,6 +272,13 @@ func runSessionRead(opts options) error {
 		if err != nil {
 			// A connection error is a failure, not a reason to reconnect.
 			return err
+		}
+		// A follow reads for as long as the caller lets it, so the clock is
+		// stamped on the first page rather than on every one.
+		if !used {
+			used = true
+			touchSession(opts, sid)
+			markUsed(opts, peerID, sid)
 		}
 		if page.Dropped > 0 {
 			fmt.Fprintf(os.Stderr, "tyd: %d bytes before this cursor are gone; resuming at %d\n",

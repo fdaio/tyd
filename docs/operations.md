@@ -292,6 +292,13 @@ stop it.
   receives a record with no usable signature falls back to the relay rather than
   dialling it. The highest sequence already accepted per peer is kept in
   `paired.json`, so a replayed-but-authentic record is refused across restarts.
+- **Archiving hides, it never withdraws.** A peer or a closed session that has
+  been unused past `--archive-ttl` (default `7d`, env `TYD_ARCHIVE_TTL`) drops out
+  of `peer list` and `session list` and is counted in a footer, but it keeps its
+  entry in `peers.json`, its record in `paired.json`, and its access. Dialling an
+  archived peer works and puts it back; `tyd revoke` is what takes a pairing
+  away, and it now needs `--force`. The marks and the peer use clocks live in
+  `archive.json`, because both are lost by a `peers.json` rebuild.
 - **A damaged `peers.json` is set aside, not trusted.** On startup the file is
   renamed to `peers.json.corrupt.<timestamp>` and the registration and peer list
   are pulled back from the Control Panel using this daemon's identity. The daemon
