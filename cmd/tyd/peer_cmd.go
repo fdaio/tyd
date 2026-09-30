@@ -32,6 +32,11 @@ func runPeer(opts options) error {
 		return runPeerShow(opts, args[0])
 	case "alias":
 		return runPeerAlias(opts, args)
+	case "restore":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: tyd peer restore <id|nick>")
+		}
+		return restorePeer(opts, args[0])
 	case "help", "-h", "--help":
 		writePeerHelp(os.Stderr, colorEnabled(os.Stderr))
 		return nil
@@ -42,6 +47,7 @@ func runPeer(opts options) error {
 
 type peerListRow struct {
 	ID, Alias, Direction, Paired string
+	Archived                     bool
 }
 
 func peerListRows(doc *peers.File) []peerListRow {
@@ -49,28 +55,42 @@ func peerListRows(doc *peers.File) []peerListRow {
 	// reads like `tyd session list`.
 	var rows []peerListRow
 	for _, p := range doc.List() {
-		nick := p.Nickname
-		if nick == "" {
-			nick = "-"
-		}
-		dir := p.Direction
-		if dir == "" {
-			dir = "-"
-		}
-		paired := "-"
-		if !p.PairedAt.IsZero() {
-			paired = p.PairedAt.UTC().Format(time.RFC3339)
-		}
-		rows = append(rows, peerListRow{ID: p.ID, Alias: nick, Direction: dir, Paired: paired})
+		rows = append(rows, peerFields(p))
 	}
 	return rows
+}
+
+// peerFields renders one peer for a table. An empty nickname or direction is
+// shown as "-" rather than as a blank cell, so a column is never mistaken for a
+// missing value.
+func peerFields(p peers.Peer) peerListRow {
+	nick := p.Nickname
+	if nick == "" {
+		nick = "-"
+	}
+	dir := p.Direction
+	if dir == "" {
+		dir = "-"
+	}
+	paired := "-"
+	if !p.PairedAt.IsZero() {
+		paired = p.PairedAt.UTC().Format(time.RFC3339)
+	}
+	return peerListRow{ID: p.ID, Alias: nick, Direction: dir, Paired: paired}
 }
 
 func writePeerList(w io.Writer, rows []peerListRow) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tALIAS\tDIRECTION\tPAIRED")
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Alias, r.Direction, r.Paired)
+		dir := r.Direction
+		if r.Archived {
+			// The marker is on the direction, not a column of its own: an
+			// archived peer is still inbound or outbound, and --all must not
+			// change the shape of the table.
+			dir += " (archived)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.ID, r.Alias, dir, r.Paired)
 	}
 	_ = tw.Flush()
 }
@@ -80,7 +100,29 @@ func runPeerList(opts options) error {
 	if err != nil {
 		return err
 	}
-	writePeerList(os.Stdout, peerListRows(doc))
+	pruneArchive(opts)
+	arch := loadArchive(opts)
+	kept := peerListRows(doc)[:0]
+	hidden := 0
+	for _, r := range peerListRows(doc) {
+		if !arch.PeerArchived(r.ID) {
+			kept = append(kept, r)
+			continue
+		}
+		r.Archived = true
+		if !opts.all {
+			hidden++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	writePeerList(os.Stdout, kept)
+	// An archived peer is hidden, not revoked: it keeps its access and stays
+	// dialable. A list that dropped the line without saying so would look like
+	// the peer was gone.
+	if hidden > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d archived peer(s) still trusted; use --all to show them, tyd revoke to remove\n", hidden)
+	}
 	return nil
 }
 
@@ -108,6 +150,11 @@ func runPeerShow(opts options, idOrNick string) error {
 	}
 
 	writePeerShowFields(os.Stdout, p.ID, nick, dir, paired, shortKey(p.PublicKey))
+	if loadArchive(opts).PeerArchived(p.ID) {
+		// A hidden peer that `peer list` does not show still has to be findable,
+		// and the line has to say that hiding it changed nothing else.
+		fmt.Printf("%-12s %s\n", "archived:", "yes (hidden from peer list; still trusted; tyd peer restore to show)")
+	}
 
 	fmt.Println()
 	fmt.Println("Endpoint")
@@ -265,11 +312,15 @@ func writePeerHelp(w io.Writer, color bool) {
 		{"show", "Show peer detail, endpoint, reachability"},
 		{"alias", "Set a peer nickname (alias)"},
 		{"alias rm", "Clear a peer nickname"},
+		{"restore", "Put an archived peer back in the list"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  tyd peer alias <id|nick> <name>  Nickname a peer for --peer targeting.")
 	fmt.Fprintln(w, "  Use --peer <id|nick> on session dial commands (create/attach/watch/close).")
+	fmt.Fprintln(w, "  list --all                 Include peers archived by --archive-ttl.")
+	fmt.Fprintln(w, "  Archiving only hides a peer. It keeps its access and stays dialable;")
+	fmt.Fprintln(w, "  `tyd revoke <id|nick> --force` is what takes the pairing away.")
 }
 
 func peerUsage() string {

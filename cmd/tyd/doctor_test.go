@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"tyd/internal/archive"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
 	"tyd/internal/live"
@@ -186,6 +188,60 @@ func TestDoctorFixRebuildsFromControlPanel(t *testing.T) {
 	}
 	if string(b) != `{"broken` {
 		t.Fatalf("quarantined content = %q", b)
+	}
+}
+
+// Rebuilding peers.json from the Control Panel replaces the file outright, so
+// anything an operator would hate to lose has to live outside it. The archive
+// marks and the peer use clocks do, and this is the check that they survive.
+func TestDoctorFixKeepsArchiveState(t *testing.T) {
+	dir := t.TempDir()
+	opts := doctorOpts(t, dir)
+	opts.fix = true
+	opts.archive = filepath.Join(dir, "archive.json")
+	key, _, err := auth.EnsureIdentity(opts.identity, opts.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
+
+	svc := controlpanel.New()
+	if _, err := svc.Register(controlpanel.RegisterRequest{PublicKey: pub}); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(svc.Handler())
+	defer srv.Close()
+	opts.platform = srv.URL
+
+	marked := time.Now().UTC().Add(-30 * 24 * time.Hour)
+	if err := archive.Update(opts.archive, func(f *archive.File) bool {
+		changed := f.TouchPeer("0123456789abcdef", marked)
+		if f.ArchivePeer("0123456789abcdef", marked) {
+			changed = true
+		}
+		if f.ArchiveSession("fedcba9876543210", marked) {
+			changed = true
+		}
+		return changed
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.peers, []byte(`{"broken`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runDoctor(opts); err != nil {
+		t.Fatalf("doctor --fix: %v", err)
+	}
+
+	f, err := archive.Load(opts.archive)
+	if err != nil {
+		t.Fatalf("archive does not load after doctor --fix: %v", err)
+	}
+	if !f.PeerArchived("0123456789abcdef") || !f.SessionArchived("fedcba9876543210") {
+		t.Fatalf("doctor --fix lost the archive: %+v %+v", f.Peers, f.Sessions)
+	}
+	if got := f.PeerLastUsed("0123456789abcdef"); !got.Equal(marked) {
+		t.Fatalf("doctor --fix lost the dial clock: got %s want %s", got, marked)
 	}
 }
 

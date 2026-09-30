@@ -49,6 +49,14 @@ func DefaultSessions() string {
 	return filepath.Join(DefaultDir(), "sessions.json")
 }
 
+// Archive is the client's own record of which peers and sessions are hidden
+// from the default views, and when each was last used. It is a file of its own
+// because peers.json is rebuilt from the Control Panel on every sync, which
+// would drop both.
+func Archive() string {
+	return filepath.Join(DefaultDir(), "archive.json")
+}
+
 // DefaultAudit is the suggested audit log path for --audit-log.
 func DefaultAudit() string {
 	return filepath.Join(DefaultDir(), "audit.log")

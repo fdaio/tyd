@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"tyd/internal/alias"
 	"tyd/internal/catalog"
@@ -81,6 +83,7 @@ func runSession(opts options) error {
 		}
 		rememberPeerSession(opts, peerID, info.ID)
 		rememberSession(opts, catalog.FromInfo(info, peerID, ep.Address, ep.CertFP, string(ep.Kind), ep.Candidates))
+		markUsed(opts, peerID, info.ID)
 		if info.State == string(session.StatePending) {
 			st.Clear()
 			fmt.Fprintln(os.Stderr, "pending approval")
@@ -131,6 +134,10 @@ func runSession(opts options) error {
 			return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
+		if err == nil {
+			touchSession(opts, sid)
+			markUsed(opts, peerID, sid)
+		}
 		return finishStream(opts, sid, err)
 	case "watch":
 		sid, err := resolveSessionRef(opts, firstArg(args))
@@ -163,6 +170,10 @@ func runSession(opts options) error {
 			return client.Watch(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
+		if err == nil {
+			touchSession(opts, sid)
+			markUsed(opts, peerID, sid)
+		}
 		return finishStream(opts, sid, err)
 	case "close":
 		sid, err := resolveSessionRef(opts, firstArg(args))
@@ -189,9 +200,17 @@ func runSession(opts options) error {
 		}
 		if rec, ok := loadLocalCatalog(opts).Get(sid); ok {
 			rec.State = string(session.StateClosed)
+			// The archive measures from the close, not from the last time the
+			// catalog happened to be written.
+			rec.ClosedAt = time.Now().UTC()
 			rememberSession(opts, rec)
 		}
+		markUsed(opts, peerID, sid)
 		return nil
+	case "rm":
+		return runSessionRemove(opts, firstArg(args))
+	case "restore":
+		return restoreSession(opts, firstArg(args))
 	case "approve":
 		if err := refuseIfInSession("session approve"); err != nil {
 			return err
@@ -279,19 +298,83 @@ func runSessionList(opts options) error {
 	adoc, _ := alias.Load(opts.aliases)
 	names := peerNames(opts.peers)
 	items := cat.List()
+	arch := loadArchive(opts)
 	rows := make([]sessionListRow, 0, len(items))
+	hidden := 0
 	for _, it := range items {
+		archived := arch.SessionArchived(it.ID)
+		if archived && !opts.all {
+			hidden++
+			continue
+		}
 		an := ""
 		if adoc != nil {
 			an = adoc.NameFor(it.ID)
 		}
 		peer := peerLabel(it.PeerID, names)
+		state := it.State
+		if archived {
+			state += " (archived)"
+		}
 		rows = append(rows, sessionListRow{
 			ID: it.ID, Alias: an, Peer: peer,
-			State: it.State, Created: catalog.CreatedDisplay(it),
+			State: state, Created: catalog.CreatedDisplay(it),
 		})
 	}
 	writeSessionList(os.Stdout, rows, colorEnabled(os.Stdout))
+	// A hidden row still exists, and one that is only hidden may still be
+	// attachable. Say how many are out of sight rather than let the list look
+	// complete.
+	if hidden > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d archived session(s) hidden; use --all to show them\n", hidden)
+	}
+	return nil
+}
+
+// errForceRequired marks the refusal that a destructive command returns instead
+// of acting. It is a refusal, not a failure, so callers can tell the two apart.
+var errForceRequired = errors.New("--force required")
+
+// runSessionRemove drops a session from the local catalog.
+//
+// It refuses a session that is not closed, and --force does not change that: the
+// row holds the endpoint, so a row removed while the session is live is a
+// session this host can no longer reach. Closing it is what makes it reachable
+// again, and closing is not something a flag should do behind the operator's
+// back.
+func runSessionRemove(opts options, ref string) error {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return fmt.Errorf("usage: tyd session rm <session_id|alias>")
+	}
+	sid, err := resolveSessionRef(opts, ref)
+	if err != nil {
+		return fmt.Errorf("usage: tyd session rm <session_id|alias>: %w", err)
+	}
+	cat := loadLocalCatalog(opts)
+	rec, ok := cat.Get(sid)
+	if !ok {
+		return fmt.Errorf("unknown session %q (not in local catalog)", ref)
+	}
+	if !strings.EqualFold(rec.State, string(session.StateClosed)) {
+		state := rec.State
+		if strings.TrimSpace(state) == "" {
+			state = "in an unknown state"
+		}
+		return fmt.Errorf("session %s is %s, not closed; close it first: tyd session close %s", sid, state, sid)
+	}
+	if !opts.force {
+		return fmt.Errorf(`%w
+  refusing to remove session %s from the local catalog
+  the daemon keeps the session until it restarts; this only forgets it here
+  any alias for it is removed with it, and the removal cannot be undone
+  re-run with --force to remove it`, errForceRequired, sid)
+	}
+
+	if err := forgetSessions(opts, []string{sid}); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "removed session %s from the local catalog\n", sid)
 	return nil
 }
 

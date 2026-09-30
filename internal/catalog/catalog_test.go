@@ -183,3 +183,62 @@ func TestUpsertStampsCreatedAt(t *testing.T) {
 		t.Fatalf("%+v", f.Sessions[0])
 	}
 }
+
+// Archiving a finished session measures from when it stopped being worth
+// listing, which is the later of the close and the last read. A session closed
+// long ago and read yesterday is still in use.
+func TestArchiveClock(t *testing.T) {
+	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	if got := (Record{ClosedAt: base, LastUsed: base.Add(-time.Hour)}).ArchiveClock(); !got.Equal(base) {
+		t.Fatalf("clock = %s, want the close %s", got, base)
+	}
+	if got := (Record{ClosedAt: base, LastUsed: base.Add(time.Hour)}).ArchiveClock(); !got.Equal(base.Add(time.Hour)) {
+		t.Fatalf("clock = %s, want the later read %s", got, base.Add(time.Hour))
+	}
+	// A row written before closed_at existed falls back to the last write,
+	// which for a closed session is the close.
+	if got := (Record{UpdatedAt: base}).ArchiveClock(); !got.Equal(base) {
+		t.Fatalf("clock = %s, want the fallback %s", got, base)
+	}
+	if got := (Record{}).ArchiveClock(); !got.IsZero() {
+		t.Fatalf("a row with no clock at all must have none, got %s", got)
+	}
+}
+
+// An endpoint refresh rebuilds the record from what the dial knew, and has no
+// opinion on when the session closed or was last read. Losing those would reset
+// the clock archiving measures from.
+func TestUpsertKeepsClosedAtAndLastUsed(t *testing.T) {
+	closed := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	used := closed.Add(time.Hour)
+	f := &File{}
+	f.Upsert(Record{ID: "abc", State: "CLOSED", ClosedAt: closed, LastUsed: used})
+	f.Upsert(Record{ID: "abc", Addr: "10.0.0.1:1"})
+	got, ok := f.Get("abc")
+	if !ok {
+		t.Fatal("record gone")
+	}
+	if !got.ClosedAt.Equal(closed) || !got.LastUsed.Equal(used) {
+		t.Fatalf("closed_at = %s, last_used = %s", got.ClosedAt, got.LastUsed)
+	}
+}
+
+func TestRemoveAndRemoveByPeer(t *testing.T) {
+	f := &File{Sessions: []Record{
+		{ID: "a", PeerID: "p1"},
+		{ID: "b", PeerID: "p2"},
+		{ID: "c", PeerID: "p1"},
+	}}
+	if !f.Remove("b") || f.Remove("b") {
+		t.Fatal("remove must report whether the row was there")
+	}
+	if got := f.RemoveByPeer("p1"); got != 2 {
+		t.Fatalf("removed %d rows for p1, want 2", got)
+	}
+	if len(f.Sessions) != 0 {
+		t.Fatalf("%+v", f.Sessions)
+	}
+	if f.RemoveByPeer("") != 0 {
+		t.Fatal("an empty peer id must remove nothing")
+	}
+}

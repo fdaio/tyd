@@ -28,6 +28,14 @@ type Record struct {
 	Transport  string    `json:"transport,omitempty"`
 	Candidates []string  `json:"candidates,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// ClosedAt is when the session was closed. It is separate from UpdatedAt
+	// because that is the last time the catalog was written, not the last thing
+	// that happened to the session, and archiving a finished session measures
+	// from the close.
+	ClosedAt time.Time `json:"closed_at,omitempty"`
+	// LastUsed is when the client last read or drove the session. A row written
+	// before this field existed falls back to UpdatedAt.
+	LastUsed time.Time `json:"last_used,omitempty"`
 }
 
 type File struct {
@@ -117,6 +125,15 @@ func (f *File) Upsert(rec Record) {
 			if rec.CreatedAt == "" {
 				rec.CreatedAt = cur.CreatedAt
 			}
+			// A caller that only knows the endpoint has no opinion on when the
+			// session was closed or last read, and dropping those would reset
+			// the clock archiving measures from.
+			if rec.ClosedAt.IsZero() {
+				rec.ClosedAt = cur.ClosedAt
+			}
+			if rec.LastUsed.IsZero() {
+				rec.LastUsed = cur.LastUsed
+			}
 			f.Sessions[i] = rec
 			return
 		}
@@ -125,6 +142,53 @@ func (f *File) Upsert(rec Record) {
 		rec.CreatedAt = rec.UpdatedAt.UTC().Format(time.RFC3339)
 	}
 	f.Sessions = append(f.Sessions, rec)
+}
+
+// ArchiveClock is when a finished session stopped being worth listing: the
+// close, or a later read of it. A row written before closed_at existed falls
+// back to the last time the catalog was written, which for a closed session is
+// the close.
+func (r Record) ArchiveClock() time.Time {
+	clock := r.ClosedAt
+	if r.LastUsed.After(clock) {
+		clock = r.LastUsed
+	}
+	if clock.IsZero() {
+		clock = r.UpdatedAt
+	}
+	return clock
+}
+
+// Remove drops a session from the catalog and reports whether it was there.
+func (f *File) Remove(id string) bool {
+	for i, cur := range f.Sessions {
+		if cur.ID == id {
+			f.Sessions = append(f.Sessions[:i], f.Sessions[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveByPeer drops every session belonging to a peer and returns how many
+// went. Revoking a peer takes its sessions with it: they were reached through
+// the trust being withdrawn, and a row left behind would name a peer this host
+// can no longer dial.
+func (f *File) RemoveByPeer(peerID string) int {
+	if peerID == "" {
+		return 0
+	}
+	out := f.Sessions[:0]
+	dropped := 0
+	for _, r := range f.Sessions {
+		if r.PeerID == peerID {
+			dropped++
+			continue
+		}
+		out = append(out, r)
+	}
+	f.Sessions = out
+	return dropped
 }
 
 func CreatedDisplay(r Record) string {

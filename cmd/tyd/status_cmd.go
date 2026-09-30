@@ -36,6 +36,10 @@ func runStatus(opts options) error {
 	if err != nil {
 		return err
 	}
+	// Archiving runs on the read paths so that a host which only ever runs
+	// `status` still honours its TTL. It hides nothing here: status is where an
+	// operator checks what is paired, and an archived peer is still paired.
+	pruneArchive(opts)
 	platform, _ := platformFor(opts)
 	fmt.Println("Control Panel")
 	fmt.Printf("  platform:   %s\n", platform)

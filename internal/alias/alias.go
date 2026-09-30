@@ -132,6 +132,28 @@ func (f *File) Remove(name string) error {
 	return nil
 }
 
+// RemoveBySession drops every alias bound to a session id and returns how many
+// went. Removing a session has to take its names with it: catalog.MergeAliases
+// rebuilds a row for any alias whose session id is missing, so an alias left
+// behind would put the session straight back into the list.
+func (f *File) RemoveBySession(sessionID string) int {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return 0
+	}
+	out := f.Aliases[:0]
+	dropped := 0
+	for _, e := range f.Aliases {
+		if e.SessionID == sessionID {
+			dropped++
+			continue
+		}
+		out = append(out, e)
+	}
+	f.Aliases = out
+	return dropped
+}
+
 // Resolve returns the session id for a name or session id.
 // If ref matches an alias name, returns that session id.
 // If ref matches a known session id that has an alias, still returns ref.
