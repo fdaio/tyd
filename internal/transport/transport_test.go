@@ -213,6 +213,18 @@ func TestChannelBinderFollowsTheSession(t *testing.T) {
 	}
 }
 
+// A connection whose binding cannot be derived must be refused, not
+// authenticated over the bare nonce: that is the signature a peer carries
+// between daemons.
+func TestChannelBinderRefusesAnUnknownConnection(t *testing.T) {
+	mine, peer := net.Pipe()
+	defer mine.Close()
+	defer peer.Close()
+	if binder, err := ChannelBinder(mine); err == nil {
+		t.Fatalf("accepted a connection with no binding: %x", binder)
+	}
+}
+
 func TestDefaultTLSAddr(t *testing.T) {
 	if DefaultTLSAddr != "127.0.0.1:61211" {
 		t.Fatalf("%s", DefaultTLSAddr)

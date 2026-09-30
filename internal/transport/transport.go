@@ -2,6 +2,7 @@ package transport
 
 import (
 	"crypto/tls"
+	"fmt"
 	"net"
 )
 
@@ -63,6 +64,10 @@ func Wrap(c net.Conn, info Info) Conn {
 // TLS goes through here, so the auth response is bound to the session it was
 // made on. A unix socket has no TLS session and reports no binding.
 //
+// A connection of an unknown type is an error rather than no binding. Falling
+// back would authenticate such a connection over the bare nonce, which is what
+// a peer needs to carry a login between daemons.
+//
 // On the server side of a TLS listener the handshake has not run yet when
 // Accept returns, so this reports an error until the connection has written
 // something. That is fine for the auth flow, which challenges first.
@@ -76,6 +81,8 @@ func ChannelBinder(conn net.Conn) ([]byte, error) {
 	case *quicStreamConn:
 		state := c.sess.ConnectionState()
 		return Binder(&state.TLS)
+	case *net.UnixConn:
+		return nil, nil
 	}
-	return nil, nil
+	return nil, fmt.Errorf("no channel binding for a %T connection", conn)
 }
