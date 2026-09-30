@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,6 +19,9 @@ const (
 	maxSendBytes = 2 << 10
 	// maxWaitMS is the daemon's own ceiling on a parked read.
 	maxWaitMS = 30_000
+	// supportedEscapes is named in the error for a bad escape, so a model that
+	// asked for key sequences is told what it may write.
+	supportedEscapes = `\n, \r, \t, \xHH and \\`
 	// maxResultBytes caps a page a caller asks for by its own argument.
 	maxResultBytes = 64 << 10
 	// defaultReadWaitMS is the wait session_read uses when the caller gives
@@ -107,6 +111,12 @@ type sessionState struct {
 	touched bool
 	// openedByUs marks a session this process created.
 	openedByUs bool
+	// pendingNote is a line to put in front of the next result for this session.
+	// It carries what a model cannot recover on its own, which today is the byte
+	// count of a send the client cancelled: the result was lost with the
+	// cancellation, so a model that retries blind would type the same command
+	// twice.
+	pendingNote string
 }
 
 // newServer wires a tool set. log receives one line per call.
@@ -369,7 +379,11 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 		return "", nil, invalidParams("data is required: the text or keys to type, " +
 			"for example \"ls -la\\n\"")
 	}
-	escapes, err := a.boolean("escapes", true)
+	// Escapes are off by default. A JSON string already carries a newline, a
+	// tab or a control character as \n, \t or \u0003, so a second layer of
+	// unescaping only gets in the way of a command that legitimately holds a
+	// backslash: a regex, a sed script, a Windows path.
+	escapes, err := a.boolean("escapes", false)
 	if err != nil {
 		return "", nil, err
 	}
@@ -377,11 +391,13 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 	if escapes {
 		if data, err = strutil.ParseSendData(raw); err != nil {
 			return "", nil, invalidParams("data could not be unescaped: %v. "+
-				"Escapes are \\n, \\r, \\t, \\xHH and \\\\; set escapes=false to send the characters as they are", err)
+				"escapes=true means the argument is read as a key sequence, so only %s are recognized. "+
+				"A command that holds a real backslash should keep escapes=false, or write the backslash as \\\\",
+				err, supportedEscapes)
 		}
 	}
 	if len(data) == 0 {
-		return "", nil, invalidParams("data is empty after unescaping")
+		return "", nil, invalidParams("data is empty")
 	}
 	if len(data) > maxSendBytes {
 		return "", nil, invalidParams("data is %d bytes, over the %d byte limit for one send. "+
@@ -413,6 +429,14 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 	sent, serr := s.backend.Send(ctx, sess, data)
 	s.logf("session_send session=%s bytes=%d written=%d", sess.ID, len(data), sent.Written)
 	if serr != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// The client withdrew the call, so the result it would have read is
+			// gone while some of the bytes may have landed. The next call on this
+			// session says so, because a model that retries without knowing would
+			// type the command a second time.
+			st.pendingNote = cancelledSendNote(sent, len(data))
+			s.logf("session_send cancelled session=%s note=%q", sess.ID, st.pendingNote)
+		}
 		// A send that stopped part way reports how much landed. Without that
 		// number a model resends the whole thing and types it twice.
 		return "", nil, withWritten(mapError(serr, sess), sent.Written, len(data))
@@ -424,11 +448,24 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 	page, rerr := s.readLocked(ctx, st, sess, sent.Cursor, sent.Epoch,
 		time.Duration(w.WaitMS)*time.Millisecond, w, true)
 	if rerr != nil {
+		written := sent.Written
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// The client withdrew the call after the target took the bytes, so
+			// the output is gone and nobody knows yet what those keystrokes did.
+			// Calling that a finished send would tell a model the command ran,
+			// which is a guess. The next call on this session says what is known.
+			st.pendingNote = cancelledSendNote(sent, len(data))
+			s.logf("session_send cancelled after the write session=%s note=%q",
+				sess.ID, st.pendingNote)
+			return "", nil, withWritten(fmt.Errorf(
+				"this call was cancelled after %d of %d bytes were written; what those "+
+					"keystrokes did is not known here, so read the session instead of resending",
+				written, len(data)), written, len(data))
+		}
 		// The bytes are in. Losing the output is not a failed send, so the
 		// result says what landed and lets the model read on.
-		written := sent.Written
-		return fmt.Sprintf("sent %d bytes to %s, but the read that followed failed: %v\n"+
-				"the keystrokes landed; read the session to see what they produced", written, sess.Label(), rerr),
+		return st.withNote(fmt.Sprintf("sent %d bytes to %s, but the read that followed failed: %v\n"+
+				"the keystrokes landed; read the session to see what they produced", written, sess.Label(), rerr)),
 			&result{
 				Reason:       "read_failed",
 				SessionState: stateOf(sent.State),
@@ -442,7 +479,7 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 	written := sent.Written
 	res.Written = &written
 	res.Session = sess.Label()
-	return text, res, nil
+	return st.withNote(text), res, nil
 }
 
 // read pulls output from a session, continuing from where the last read ended.
@@ -508,7 +545,7 @@ func (s *server) read(ctx context.Context, a args) (string, any, error) {
 
 	text, res := render(sess, page, cursor, "")
 	res.Session = sess.Label()
-	return text, res, nil
+	return st.withNote(text), res, nil
 }
 
 // interrupt stops whatever the session is running, then reports what the shell
@@ -536,8 +573,21 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 		interruptWaitMS*time.Millisecond, w, true)
 	if rerr != nil {
 		written := sent.Written
-		return fmt.Sprintf("sent the interrupt to %s, but the read that followed failed: %v",
-			sess.Label(), rerr), &result{
+		if errors.Is(ctx.Err(), context.Canceled) {
+			// The interrupt reached the session but the report on what it stopped
+			// did not come back. Saying it worked would be a guess, so the next
+			// call on this session carries the warning instead.
+			st.pendingNote = fmt.Sprintf(
+				"[tyd: the last session_interrupt on this session sent Ctrl-C and was then cancelled " +
+					"before the reply came back. The command may or may not have stopped. Read the session, " +
+					"and interrupt again only if it is still running.]")
+			s.logf("session_interrupt cancelled after the write session=%s", sess.ID)
+			return "", nil, withWritten(errors.New(
+				"this call was cancelled after the interrupt was written; whether the command stopped "+
+					"is not known here, so read the session"), written, 1)
+		}
+		return st.withNote(fmt.Sprintf("sent the interrupt to %s, but the read that followed failed: %v",
+			sess.Label(), rerr)), &result{
 			Reason:       "read_failed",
 			SessionState: stateOf(sent.State),
 			Cursor:       sent.Cursor,
@@ -547,7 +597,46 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 	}
 	text, res := render(sess, page, sent.Cursor, "")
 	res.Session = sess.Label()
-	return text, res, nil
+	return st.withNote(text), res, nil
+}
+
+// withNote puts what the last cancelled send left behind in front of text, and
+// clears it. The caller holds st.mu.
+//
+// It is cleared on the way out so the warning is read once. Repeating it on
+// every later call would train a model to ignore the line that matters.
+func (st *sessionState) withNote(text string) string {
+	if st.pendingNote == "" {
+		return text
+	}
+	note := st.pendingNote
+	st.pendingNote = ""
+	return note + "\n" + text
+}
+
+// cancelledSendNote describes a send the client cancelled, for the next call to
+// put in front of its result.
+func cancelledSendNote(sent Sent, total int) string {
+	// Written is only a count when the target replied. A cancelled write is cut
+	// off by closing the connection, so usually there is no reply and the count
+	// is unknown rather than zero.
+	if !sent.WrittenKnown {
+		return "[tyd: the last session_send on this session was cancelled while it was still writing; " +
+			"how many bytes landed is unknown. Read the session before sending again, " +
+			"or the command may be typed twice.]"
+	}
+	// The target acknowledged every byte, so the write is done and the only
+	// thing lost is the output. Resending is the dangerous move here, not
+	// reading.
+	if sent.Written >= total {
+		return fmt.Sprintf("[tyd: the last session_send on this session wrote all %d bytes and was then "+
+			"cancelled before its output was read. The keystrokes are in the session and the command may "+
+			"already have run. Read the session to see what it did. Do not send it again.]", total)
+	}
+	// Part of the write landed, so a blind retry would type those bytes twice.
+	return fmt.Sprintf("[tyd: the last session_send on this session was cancelled; %d of %d bytes landed. "+
+		"Read the session before sending again, and do not resend the bytes that already landed. "+
+		"The rest was never written.]", sent.Written, total)
 }
 
 // close ends a session.

@@ -127,11 +127,20 @@ func (s *server) closeOpened() {
 	}
 	s.mu.Unlock()
 
+	// One budget for the whole set, not one per session: a per-session timeout
+	// multiplied by the cap is how an exit turns into a wait a client does not
+	// expect.
+	budget := time.Now().Add(shutdownGrace)
 	for _, st := range states {
 		if st == nil || !st.openedByUs {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		left := time.Until(budget)
+		if left <= 0 {
+			s.logf("close on exit ran out of time with %d session(s) left", len(states))
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), left)
 		err := s.backend.Close(ctx, st.session)
 		cancel()
 		if err != nil {

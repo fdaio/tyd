@@ -39,9 +39,11 @@ func TestOpenThenSend(t *testing.T) {
 		t.Fatalf("human_attach = %q", res.HumanAttach)
 	}
 
+	// The argument holds a real newline, which is what a JSON string carries and
+	// what a shell needs at the end of a command.
 	_, res, err = call(t, s, "session_send", args{
 		"session": "build",
-		"data":    "echo hi\\n",
+		"data":    "echo hi\n",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +141,9 @@ func TestSendEscapesAreExpanded(t *testing.T) {
 	if _, _, err := call(t, s, "session_open", args{}); err != nil {
 		t.Fatal(err)
 	}
-	_, res, err := call(t, s, "session_send", args{"session": "agent-1", "data": `a\tb\x03`})
+	_, res, err := call(t, s, "session_send", args{
+		"session": "agent-1", "data": `a\tb\x03`, "escapes": true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +152,42 @@ func TestSendEscapesAreExpanded(t *testing.T) {
 	}
 }
 
-func TestSendRefusesABadEscape(t *testing.T) {
+func TestSendLeavesABackslashAloneByDefault(t *testing.T) {
 	s := testServer(newFakeBackend(), nil)
 	if _, _, err := call(t, s, "session_open", args{}); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := call(t, s, "session_send", args{"session": "agent-1", "data": `a\qb`})
-	if err == nil || !strings.Contains(err.Error(), "escapes") {
-		t.Fatalf("err = %v, want a message about the escapes", err)
+	// A JSON string already carries a newline, so a second unescape layer would
+	// only misread a command that legitimately holds a backslash.
+	_, _, err := call(t, s, "session_send", args{
+		"session": "agent-1", "data": "sed -E 's/\\t/ /g'\n",
+	})
+	if err != nil {
+		t.Fatalf("a command holding a backslash must go through by default: %v", err)
+	}
+}
+
+func TestSendRefusesABadEscapeOnlyWhenAsked(t *testing.T) {
+	s := testServer(newFakeBackend(), nil)
+	if _, _, err := call(t, s, "session_open", args{}); err != nil {
+		t.Fatal(err)
+	}
+	// escapes=true is a statement that the argument is a key sequence, so an
+	// unknown escape is a typo worth reporting rather than typing silently.
+	_, _, err := call(t, s, "session_send", args{
+		"session": "agent-1", "data": `a\qb`, "escapes": true,
+	})
+	if err == nil {
+		t.Fatal("an unknown escape must stay an error")
+	}
+	for _, want := range []string{`\xHH`, "escapes=false"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err, want)
+		}
+	}
+	// The same argument is fine to type when no unescaping was asked for.
+	if _, _, err := call(t, s, "session_send", args{"session": "agent-1", "data": `a\qb`}); err != nil {
+		t.Fatalf("with escapes off the backslash is just a backslash: %v", err)
 	}
 }
 
@@ -546,5 +578,25 @@ func TestListMarksWhatThisProcessOpened(t *testing.T) {
 	}
 	if byAlias["theirs"] {
 		t.Fatal("a session found in the catalog is not opened by this process")
+	}
+}
+
+func TestCancelledSendNoteNamesTheByteCountWhenTheTargetReportedIt(t *testing.T) {
+	// A target that answers a cut-off write with a count lets the note be exact.
+	// That is the better case, and it must not be rounded down to "unknown".
+	note := cancelledSendNote(Sent{Written: 7, WrittenKnown: true}, 12)
+	if !strings.Contains(note, "7 of 12") {
+		t.Fatalf("note = %q, want the counts named", note)
+	}
+	if strings.Contains(note, "unknown") {
+		t.Fatalf("note = %q, want the counts rather than a guess", note)
+	}
+	// Without a reply the zero is not a count, so it must not be reported as one.
+	note = cancelledSendNote(Sent{Written: 0, WrittenKnown: false}, 12)
+	if !strings.Contains(note, "unknown") {
+		t.Fatalf("note = %q, want the count reported as unknown", note)
+	}
+	if strings.Contains(note, "0 of 12") {
+		t.Fatalf("note = %q, a silent zero would be read as nothing was written", note)
 	}
 }

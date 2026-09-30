@@ -7,11 +7,19 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // serverVersion is reported in initialize. It is the module version of this
 // build, not a protocol number.
 const serverVersion = "0.1.0"
+
+// shutdownGrace is how long the exit sequence waits for a cancelled call to
+// finish. It is longer than a cancelled call should ever need, because the point
+// is to let a read release its slot, and short enough that a call wedged
+// somewhere it cannot be cancelled does not keep the process alive. It is a
+// variable so a test does not have to spend five seconds proving it gives up.
+var shutdownGrace = 5 * time.Second
 
 // conn is one stdio conversation: the frames it writes, the in-flight calls it
 // can cancel, and the tool set behind them.
@@ -104,10 +112,14 @@ func (c *conn) cancelCall(id json.RawMessage) {
 }
 
 // cancelAll stops every in-flight call, which happens when the input ends, and
-// waits for them to finish. The wait matters: a call that is still running
-// holds the session it works on, and closing that session underneath it would
-// leave the call reporting a failure that never happened.
-func (c *conn) cancelAll() {
+// waits a bounded time for them to finish.
+//
+// The wait matters: a call that is still running holds the session it works on,
+// and closing that session underneath it would leave the call reporting a
+// failure that never happened. The bound matters too, because an unbounded wait
+// on a call that ignores its context would keep the process alive forever, and a
+// client that closed its input expects the server to go away.
+func (c *conn) cancelAll() bool {
 	c.mu.Lock()
 	open := c.calls
 	c.calls = map[string]*callState{}
@@ -116,7 +128,24 @@ func (c *conn) cancelAll() {
 		cl.cancel()
 		cl.prog.close()
 	}
-	c.live.Wait()
+	if len(open) == 0 {
+		return true
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.live.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(shutdownGrace):
+		// The remaining calls are left to die with the process. Their sessions
+		// are still closed, so the daemon is not left holding a live shell.
+		c.log.logf("%d call(s) did not stop within %s", len(open), shutdownGrace)
+		return false
+	}
 }
 
 // encoder writes frames as newline-delimited JSON. One encoder per output stream

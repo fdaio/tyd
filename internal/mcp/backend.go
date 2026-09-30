@@ -105,6 +105,10 @@ type Page struct {
 // which is not always all of them.
 type Sent struct {
 	Written int
+	// WrittenKnown says Written is the target's own count rather than a zero
+	// left by a write that was cut off. A caller that resends needs to know
+	// which of the two it has.
+	WrittenKnown bool
 	// Cursor is the output position from before the write, so the read that
 	// follows sees only what these keys produced.
 	Cursor uint64

@@ -552,12 +552,30 @@ type SendReply struct {
 	Written int
 	Cursor  uint64
 	Epoch   uint64
+	// Reported says a reply frame arrived, so Written is the daemon's own count.
+	// Without a frame a zero Written means "we never heard back", which is not
+	// the same as "nothing was written".
+	Reported bool
 }
 
 // Send injects keystrokes without taking the exclusive attach slot. It needs
 // the write capability but not attach. An error means nothing was written.
 func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
-	resp, err := rpc(ep, key, protocol.Frame{
+	return SendContext(context.Background(), ep, key, sessionID, data)
+}
+
+// SendContext sends keystrokes under a caller-supplied context. Cancelling the
+// context closes the connection, so the daemon aborts the write and can report
+// how much landed.
+func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		// Without a deadline a stuck daemon would hold the caller forever, and a
+		// send is bounded by how long the PTY takes to accept the bytes.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, dialAttemptTimeout)
+		defer cancel()
+	}
+	resp, err := rpcContext(ctx, ep, key, protocol.Frame{
 		Type:      protocol.TypeSend,
 		SessionID: sessionID,
 		Data:      data,
@@ -565,7 +583,12 @@ func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (S
 	// A send that timed out or was preempted still reports how many bytes
 	// reached the PTY, so the caller can resume from there instead of
 	// resending what already landed.
-	reply := SendReply{Written: int(resp.CursorNext), Cursor: resp.Cursor, Epoch: resp.Epoch}
+	reply := SendReply{
+		Written:  int(resp.CursorNext),
+		Cursor:   resp.Cursor,
+		Epoch:    resp.Epoch,
+		Reported: resp.Type != "",
+	}
 	if err != nil {
 		return reply, err
 	}

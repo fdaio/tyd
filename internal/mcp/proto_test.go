@@ -683,3 +683,181 @@ func waitForBlocked(t *testing.T, f *fakeBackend) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+func TestACancelledSendIsReportedOnTheNextCall(t *testing.T) {
+	f := newFakeBackend()
+	ex := newExchange(t, f, Options{})
+	defer ex.close(t)
+	ex.request(t, 1, "tools/call", map[string]any{
+		"name": "session_open", "arguments": map[string]any{"name": "build"},
+	})
+
+	f.parkSends()
+	defer f.unparkSends()
+	ex.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{
+		"name":      "session_send",
+		"arguments": map[string]any{"session": "build", "data": "rm -rf build/\\n"},
+	}})
+
+	deadline := time.After(5 * time.Second)
+	for f.sending() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("the send never started")
+		default:
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ex.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled",
+		"params": map[string]any{"requestId": 2, "reason": "the model changed its mind"}})
+	if rep := ex.replyTo(t, 2); rep.Error == nil || rep.Error.Code != codeCancelled {
+		t.Fatalf("error = %+v, want the reserved cancellation code", rep.Error)
+	}
+	f.unparkSends()
+
+	// The result of the cancelled send is gone, so the next call has to say that
+	// the keystrokes may already be in the shell. A model that retries blind
+	// would type the command a second time.
+	rep := ex.request(t, 3, "tools/call", map[string]any{
+		"name":      "session_read",
+		"arguments": map[string]any{"session": "build"},
+	})
+	var res toolResult
+	if err := json.Unmarshal(rep.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Content[0].Text, "cancelled") {
+		t.Fatalf("text = %q, want it to report the cancelled send", res.Content[0].Text)
+	}
+	if !strings.Contains(res.Content[0].Text, "unknown") {
+		t.Fatalf("text = %q, want the byte count reported as unknown", res.Content[0].Text)
+	}
+
+	// The warning is read once, so it does not follow the session around.
+	rep = ex.request(t, 4, "tools/call", map[string]any{
+		"name":      "session_read",
+		"arguments": map[string]any{"session": "build"},
+	})
+	json.Unmarshal(rep.Result, &res)
+	if strings.Contains(res.Content[0].Text, "cancelled") {
+		t.Fatalf("text = %q, want the warning only once", res.Content[0].Text)
+	}
+}
+
+// wedgedBackend parks every read forever and ignores its context, which is the
+// worst case the exit path has to survive. It arms only when told, so the open
+// that sets the test up can still read its first output.
+type wedgedBackend struct {
+	Backend
+	mu      sync.Mutex
+	armed   bool
+	release chan struct{}
+}
+
+func (w *wedgedBackend) wedge() { w.armed = true }
+
+func (w *wedgedBackend) Read(ctx context.Context, req ReadRequest) (Page, error) {
+	w.mu.Lock()
+	armed := w.armed
+	w.mu.Unlock()
+	if !armed {
+		return w.Backend.Read(ctx, req)
+	}
+	<-w.release
+	return Page{}, errors.New("released")
+}
+
+func TestServeExitsEvenWhenACallIgnoresItsContext(t *testing.T) {
+	saved := shutdownGrace
+	shutdownGrace = 200 * time.Millisecond
+	defer func() { shutdownGrace = saved }()
+
+	f := newFakeBackend()
+	w := &wedgedBackend{Backend: f, release: make(chan struct{})}
+	defer close(w.release)
+
+	ex := newExchange(t, w, Options{CloseOnExit: true})
+	ex.request(t, 1, "tools/call", map[string]any{
+		"name": "session_open", "arguments": map[string]any{"name": "build"},
+	})
+	w.wedge()
+	ex.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{
+		"name":      "session_read",
+		"arguments": map[string]any{"session": "build", "wait": map[string]any{"wait_ms": float64(30_000)}},
+	}})
+	time.Sleep(100 * time.Millisecond)
+
+	// The read cannot be stopped, so the exit sequence has to stop waiting for
+	// it. An unbounded wait here would keep the process alive forever, which is
+	// what a client that closed its input does not expect.
+	start := time.Now()
+	go ex.in.Close()
+	select {
+	case <-ex.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return: a call that ignored its context kept the process alive")
+	}
+	if elapsed := time.Since(start); elapsed > shutdownGrace+2*time.Second {
+		t.Fatalf("Serve took %s to give up, want about %s", elapsed, shutdownGrace)
+	}
+}
+
+func TestACancelledSendAfterTheWriteIsNotReportedAsFinished(t *testing.T) {
+	// A real target takes the write and then parks in the follow-up read. A
+	// client that withdraws the call there loses the output but not the bytes, so
+	// the honest answer is a cancellation, not a send that worked.
+	f := newFakeBackend()
+	ex := newExchange(t, f, Options{})
+	defer ex.close(t)
+	ex.request(t, 1, "tools/call", map[string]any{
+		"name": "session_open", "arguments": map[string]any{"name": "build"},
+	})
+
+	f.parkReads()
+	defer f.unparkReads()
+	ex.send(t, map[string]any{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": map[string]any{
+		"name":      "session_send",
+		"arguments": map[string]any{"session": "build", "data": "make build\n"},
+	}})
+
+	deadline := time.After(5 * time.Second)
+	for !f.parked() {
+		select {
+		case <-deadline:
+			t.Fatal("the follow-up read never parked")
+		default:
+		}
+		time.Sleep(time.Millisecond)
+	}
+	ex.send(t, map[string]any{"jsonrpc": "2.0", "method": "notifications/cancelled",
+		"params": map[string]any{"requestId": 2, "reason": "the model changed its mind"}})
+
+	rep := ex.replyTo(t, 2)
+	if rep.Error == nil || rep.Error.Code != codeCancelled {
+		t.Fatalf("error = %+v, want the reserved cancellation code", rep.Error)
+	}
+	if strings.Contains(string(rep.Result), "keystrokes landed") {
+		t.Fatalf("result = %s, want no claim that a withdrawn call finished", rep.Result)
+	}
+	f.unparkReads()
+
+	// The bytes are in and the command may have run, so the next call must warn
+	// against resending rather than describe a half-written command.
+	rep = ex.request(t, 3, "tools/call", map[string]any{
+		"name": "session_read", "arguments": map[string]any{"session": "build"},
+	})
+	var res toolResult
+	if err := json.Unmarshal(rep.Result, &res); err != nil {
+		t.Fatal(err)
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "wrote all 11 bytes") {
+		t.Fatalf("note = %q, want the bytes that were accepted named", text)
+	}
+	if !strings.Contains(text, "may already have run") {
+		t.Fatalf("note = %q, want it to say the command may have run", text)
+	}
+	if !strings.Contains(text, "Do not send it again") {
+		t.Fatalf("note = %q, want it to warn against a blind retry", text)
+	}
+}

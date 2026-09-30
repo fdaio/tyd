@@ -17,6 +17,9 @@ type fakeBackend struct {
 	sessions map[string]*fakeSession
 	// nextID numbers the sessions Open hands out.
 	nextID int
+	// peerSeen records the peer each call resolved against, so a test can check
+	// that a property the schema offers really reaches the target.
+	peerSeen func(peer string)
 	// openErr, sendErr, readErr and closeErr fail the matching call, once.
 	openErr  error
 	sendErr  error
@@ -26,6 +29,9 @@ type fakeBackend struct {
 	alias map[string]string
 	// calls records the order the tools reached the target in.
 	calls []string
+	// sendGate, when set, parks every send until it is closed. A test uses it to
+	// cancel a send that is already writing.
+	sendGate chan struct{}
 	// readGate, when set, parks every read until it is closed. A test uses it to
 	// hold a read open and cancel it.
 	readGate chan struct{}
@@ -38,6 +44,8 @@ type fakeBackend struct {
 	readCond []Wait
 	// blocked reports how many reads are parked right now.
 	blocked int
+	// sending_ reports how many sends are parked right now.
+	sending_ int
 	// peakBlocked is the high-water mark, which is what the serialization test
 	// asserts on: sampling blocked from the test would race.
 	peakBlocked int
@@ -62,6 +70,9 @@ func newFakeBackend() *fakeBackend {
 func (f *fakeBackend) Open(_ context.Context, req OpenRequest) (Opened, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.peerSeen != nil {
+		f.peerSeen(req.Peer)
+	}
 	if f.openErr != nil {
 		return Opened{}, f.openErr
 	}
@@ -80,9 +91,12 @@ func (f *fakeBackend) Open(_ context.Context, req OpenRequest) (Opened, error) {
 	}, nil
 }
 
-func (f *fakeBackend) Resolve(_ context.Context, ref, _ string) (Session, error) {
+func (f *fakeBackend) Resolve(_ context.Context, ref, peer string) (Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.peerSeen != nil {
+		f.peerSeen(peer)
+	}
 	id := f.alias[ref]
 	if id == "" {
 		id = ref
@@ -112,7 +126,28 @@ func (f *fakeBackend) List(context.Context) ([]Listed, error) {
 	return out, nil
 }
 
-func (f *fakeBackend) Send(_ context.Context, s Session, data []byte) (Sent, error) {
+func (f *fakeBackend) Send(ctx context.Context, s Session, data []byte) (Sent, error) {
+	f.mu.Lock()
+	gate := f.sendGate
+	f.mu.Unlock()
+	if gate != nil {
+		// A real target accepts the bytes and then answers, so a send cut off
+		// part way knows it wrote some and not how many.
+		f.mu.Lock()
+		f.sending_++
+		f.mu.Unlock()
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			f.mu.Lock()
+			f.sending_--
+			f.mu.Unlock()
+			return Sent{}, ctx.Err()
+		}
+		f.mu.Lock()
+		f.sending_--
+		f.mu.Unlock()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.sendErr != nil {
@@ -130,7 +165,12 @@ func (f *fakeBackend) Send(_ context.Context, s Session, data []byte) (Sent, err
 	// tell a real echo from nothing.
 	sess.log = append(sess.log, data...)
 	sess.log = append(sess.log, "\r\n$ "...)
-	return Sent{Written: len(data), Cursor: uint64(len(sess.log) - len(data) - 4), Epoch: 1}, nil
+	return Sent{
+		Written:      len(data),
+		WrittenKnown: true,
+		Cursor:       uint64(len(sess.log) - len(data) - 4),
+		Epoch:        1,
+	}, nil
 }
 
 func (f *fakeBackend) Read(ctx context.Context, req ReadRequest) (Page, error) {
@@ -209,6 +249,41 @@ func (f *fakeBackend) Close(_ context.Context, s Session) error {
 	delete(f.sessions, s.ID)
 	f.calls = append(f.calls, "close "+s.ID)
 	return nil
+}
+
+// sending reports how many sends are parked right now.
+func (f *fakeBackend) sending() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sending_
+}
+
+// parked reports how many reads are parked right now, so a test can wait for a
+// follow-up read to be under way before it withdraws the call.
+func (f *fakeBackend) parked() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.blocked > 0
+}
+
+// parkSends makes every later send block until the returned channel is closed,
+// so a test can cancel a send while it is in flight.
+func (f *fakeBackend) parkSends() chan struct{} {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	gate := make(chan struct{})
+	f.sendGate, f.gateOpen = gate, true
+	return gate
+}
+
+// unparkSends releases the sends a parkSends held and lets later sends through.
+func (f *fakeBackend) unparkSends() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.gateOpen {
+		close(f.sendGate)
+	}
+	f.sendGate, f.gateOpen = nil, false
 }
 
 // parkReads makes every later read block until the returned channel is closed.

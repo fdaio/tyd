@@ -1,6 +1,9 @@
 package mcp
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // dispatch runs one tool by name. A name that is not registered is a protocol
 // error: the client asked for a tool this server does not have, which is a
@@ -64,7 +67,7 @@ func (s *server) definitions() []toolDef {
 				sessionProp: s.stringProp("Which session to read, by alias or by id."),
 				"cursor":    s.uintProp("Byte offset to re-read from. Optional: a re-read does not advance the saved cursor.", 0),
 				"max_bytes": s.uintProp("Largest page to return. Optional.", 1),
-				"wait":      s.waitProp(true),
+				"wait":      s.waitProp(fmt.Sprintf(readWaitFallback, defaultReadWaitMS)),
 			}, sessionProp),
 			Annotations: &annotations{ReadOnlyHint: true, OpenWorldHint: true},
 		},
@@ -89,20 +92,27 @@ func (s *server) definitions() []toolDef {
 			Name:  "session_send",
 			Title: "Type into a session",
 			Description: "Type into a session nobody is attached to and return what those keystrokes produced. " +
-				"End a command with \\n. Refused while a person is attached, so a human and a model cannot fight over one session. " +
+				"The command must end with a real newline, as in \"echo hi\\n\", or the shell waits for more input and nothing runs. " +
+				"Refused while a person is attached, so a human and a model cannot fight over one session. " +
 				"Without a wait condition it waits for the output to go quiet; a long run needs session_interrupt.",
 			InputSchema: s.schema(map[string]any{
 				sessionProp: s.stringProp("Which session to type into, by alias or by id."),
 				"data": map[string]any{
-					"type":        "string",
-					"description": "The text or keys to type, for example \"ls -la\\n\". Escapes \\n, \\r, \\t, \\xHH and \\\\ are expanded unless escapes is false. No newline is added on its own.",
+					"type": "string",
+					"description": "The text or keys to type, sent as it stands. " +
+						"End a command with a real newline, as in \"echo hi\\n\"; nothing is added on its own, " +
+						"so a command without one leaves the shell waiting. " +
+						"Stop a running command with session_interrupt rather than by typing a control character.",
 				},
 				"escapes": map[string]any{
-					"type":        "boolean",
-					"description": "Expand escapes in data. Optional, true when absent.",
-					"default":     true,
+					"type": "boolean",
+					"description": "Read data as a key sequence instead of typing it as it stands. " +
+						"Optional, false when absent. When true only \\n, \\r, \\t, \\xHH and \\\\ are recognized and " +
+						"anything else is an error, so leave it off for a command that holds a real backslash, " +
+						"such as a regex, a sed script or a Windows path.",
+					"default": false,
 				},
-				"wait": s.waitProp(true),
+				"wait": s.waitProp(fmt.Sprintf(sendWaitFallback, defaultSendIdleMS, defaultSendWaitMS)),
 			}, sessionProp, "data"),
 			Annotations: &annotations{DestructiveHint: true, OpenWorldHint: true},
 		},
@@ -160,8 +170,19 @@ func (s *server) uintProp(desc string, min float64) map[string]any {
 	return map[string]any{"type": "integer", "minimum": min, "description": desc}
 }
 
-// waitProp is the shape of the wait argument, which read and send share.
-func (s *server) waitProp(allowMatch bool) map[string]any {
+// The two fallbacks differ, so each tool states its own instead of sharing a
+// sentence that would describe the other one.
+const (
+	readWaitFallback = "without a match or an idle rule this call waits %d ms for new output and then returns, " +
+		"empty or not. A session that is still running can be waited on longer with match or idle_ms."
+	sendWaitFallback = "without a match or an idle rule, send waits for the output to go quiet after %d ms " +
+		"and gives up after %d ms."
+)
+
+// waitProp is the shape of the wait argument, which read and send share. They
+// share the properties but not the fallback, so the caller states what happens
+// when it passes no condition at all.
+func (s *server) waitProp(fallback string) map[string]any {
 	props := map[string]any{
 		"idle_ms": map[string]any{
 			"type":        "integer",
@@ -177,22 +198,16 @@ func (s *server) waitProp(allowMatch bool) map[string]any {
 			"type":        "integer",
 			"minimum":     0,
 			"maximum":     maxWaitMS,
-			"description": "Never wait longer than this. A read on a target is parked at most 30000 ms.",
+			"description": fmt.Sprintf("Never wait longer than this. A read on a target is parked at most %d ms.", maxWaitMS),
 		},
 	}
-	if allowMatch {
-		props["match"] = map[string]any{
-			"type": "string",
-			"description": "RE2 pattern to wait for, for example \"[Pp]assword:\" or \"^\\\\S+@\\\\S+$\" for a prompt. " +
-				"Use it instead of idle_ms when the shell is expected to ask something.",
-		}
+	props["match"] = map[string]any{
+		"type": "string",
+		"description": "RE2 pattern to wait for, for example \"[Pp]assword:\" or \"^\\\\S+@\\\\S+$\" for a prompt. " +
+			"Use it instead of idle_ms when the shell is expected to ask something.",
 	}
-	desc := "When to return. Optional: without it the call waits up to 2000 ms for read and 10000 ms for send."
-	if allowMatch {
-		desc = "When to return. Optional: without a match or an idle rule, send waits for the output to go quiet " +
-			"after 1500 ms and gives up after 10000 ms."
-	}
-	return map[string]any{"type": "object", "properties": props, "description": desc}
+	return map[string]any{"type": "object", "properties": props,
+		"description": "When to return. Optional: " + fallback}
 }
 
 func joinNames(names []string) string {
