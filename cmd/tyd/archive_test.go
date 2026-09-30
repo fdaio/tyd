@@ -10,6 +10,7 @@ import (
 
 	"tyd/internal/alias"
 	"tyd/internal/archive"
+	"tyd/internal/auth"
 	"tyd/internal/catalog"
 	"tyd/internal/peers"
 	"tyd/internal/recent"
@@ -22,6 +23,8 @@ func archiveOpts(t *testing.T) options {
 	t.Helper()
 	dir := t.TempDir()
 	return options{
+		identity:   filepath.Join(dir, "id_ed25519"),
+		trust:      filepath.Join(dir, "trusted.json"),
 		peers:      filepath.Join(dir, "peers.json"),
 		paired:     filepath.Join(dir, "paired.json"),
 		sessions:   filepath.Join(dir, "sessions.json"),
@@ -367,6 +370,26 @@ func TestArchivedPeerStillDialsAndComesBack(t *testing.T) {
 func withPeer(opts options, peer string) options {
 	opts.peer = peer
 	return opts
+}
+
+// status is where an operator checks what is paired, so it must not hide a peer
+// that peer list hides. An archived peer is still paired.
+func TestStatusStillListsArchivedPeers(t *testing.T) {
+	opts := archiveOpts(t)
+	seedPeer(t, opts, "0123456789abcdef", "osaka", time.Now().UTC().Add(-30*24*time.Hour))
+	if _, _, err := auth.EnsureIdentity(opts.identity, opts.trust); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	out := captureStdout(t, func() {
+		captureStderr(t, func() { err = run(withRest(opts, "status")) })
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "0123456789abcdef") || !strings.Contains(out, "osaka") {
+		t.Fatalf("status must list an archived peer:\n%s", out)
+	}
 }
 
 func TestRestoreRoundTrip(t *testing.T) {
