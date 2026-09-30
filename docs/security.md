@@ -18,6 +18,7 @@ boundary](#the-local-boundary) first.
 | The Control Panel substituting a peer | Pairing is anchored to a secret it never sees; it may withdraw trust, never grant it |
 | The Control Panel rewriting where a peer lives | Published endpoints are signed by the peer and verified before dialling |
 | A relay reading or altering a session | Inner TLS plus a channel binding over the TLS exporter; a relay that re-terminates TLS is refused |
+| A compromised paired peer logging in as you elsewhere | The login signature covers the channel binding of the connection it was made on, and the client refuses to sign a challenge that is not a nonce |
 | A modified audit record going unnoticed | Records form a hash chain; `tyd audit` checks it and names the break |
 
 ## The local boundary
@@ -65,6 +66,13 @@ Two speed bumps, neither a boundary:
 Both are defeatable: a process can clear the variable, or leave the process tree
 with `setsid` and a double fork. They exist so that the obvious move fails with
 an explanation, not so that a determined one cannot happen.
+
+The `unix` socket is where this shows up in the login signature. Every other
+transport signs the channel binding of its TLS session, so a signature made on
+one connection cannot be presented on another; the socket has no TLS session,
+so its signature covers no binding. That costs nothing here: a process on this
+account already holds the identity key, so a login it can forge buys it
+nothing.
 
 ## The audit log
 

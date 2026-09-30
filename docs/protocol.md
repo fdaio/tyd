@@ -57,12 +57,32 @@ Maximum frame size: 1 MiB.
 On every new connection, before any other command:
 
 ```text
-server → challenge { data: nonce }
-client → auth      { public_key, data: signature(nonce) }
+server → challenge { data: nonce }                 nonce is 32 bytes
+client → auth      { public_key, data: sig }
 server → ok | error
 ```
 
-Server accepts only public keys present in the trust store. Bad signature → `authentication failed`. Unknown key → `untrusted public key`.
+`sig` is `Ed25519(auth payload)` where the auth payload is
+
+```text
+"tyd-auth-v1\0" || len(nonce) as uint16be || nonce || binding
+```
+
+`binding` is the [channel binding](#relay-path-security) of the connection: the
+TLS exporter on every transport that carries TLS (`tls`, `quic`, and the inner
+TLS on `relay`), and empty on `unix`, which has no TLS session. The client
+refuses a challenge that is not exactly 32 bytes rather than signing it.
+
+The label keeps this signature apart from the binding signature the same key
+makes in the `bound` frame, so the two can never be replayed as each other.
+The binding keeps it apart from every *other* connection: a peer that takes a
+challenge from another daemon, gets it signed here, and answers that daemon
+with the result is refused, because the signature covers the session it was
+made on. That is why the client must refuse to sign bytes it did not expect:
+without the length check and the binding, a compromised paired peer could log
+in to any other daemon as this client.
+
+Server accepts only public keys present in the trust store. Bad signature → `authentication failed`. Unknown key → `untrusted public key`. A client that signs the bare nonce, as tyd did before the labelled payload, is reported as an older tyd and refused rather than accepted.
 
 ## Authorization rules
 
@@ -312,6 +332,15 @@ never publishes one. The peer's Ed25519 public key comes from pairing, is
 already the anchor for every other peer, and works here unchanged. A binding
 signature over the exporter also catches a relay that re-originates TLS, which
 a bare certificate pin would not.
+
+**The binding is not only for the relay.** The login signature carries the
+binding of the connection it was made on, on every transport that has TLS, so
+one peer's login cannot be carried to another. Before that, a paired peer that
+was compromised could take a challenge from a second daemon, have the client
+sign it, and log in to the second daemon as this client. The `unix` socket has
+no TLS session and no binding; see [The local
+boundary](security.md#the-local-boundary) for why that is not a boundary
+either.
 
 **Metadata the Control Panel holds** is listed in
 [alternatives.md](alternatives.md#what-a-third-party-can-see).

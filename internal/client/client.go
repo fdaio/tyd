@@ -290,10 +290,15 @@ func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, 
 		return nil, fmt.Errorf("%w (%s)", err, hint)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
+	binder, err := transport.ChannelBinder(nc)
+	if err != nil {
+		_ = c.Close()
+		return nil, err
+	}
 	if dl, ok := attemptCtx.Deadline(); ok {
 		_ = c.SetDeadline(dl)
 	}
-	authErr := c.Authenticate(key)
+	authErr := c.AuthenticateBound(key, binder)
 	_ = c.SetDeadline(time.Time{})
 	if authErr != nil {
 		_ = c.Close()
@@ -315,15 +320,12 @@ func DialUnix(socket string, key ed25519.PrivateKey) (*Conn, error) {
 
 func (c *Conn) Info() transport.Info { return c.info }
 
-// AuthenticateBound is Authenticate with the signature also covering a channel
-// binding. On the relay the binding is the inner TLS exporter, so the server
-// can tell this auth belongs to this connection.
+// AuthenticateBound signs the daemon's challenge together with the channel
+// binding of this connection, so the daemon can tell that the response belongs
+// to the connection it arrived on. The binding is nil only where there is no
+// TLS session to bind to, which is the unix socket.
 func (c *Conn) AuthenticateBound(key ed25519.PrivateKey, binder []byte) error {
 	return c.authenticate(key, binder)
-}
-
-func (c *Conn) Authenticate(key ed25519.PrivateKey) error {
-	return c.authenticate(key, nil)
 }
 
 func (c *Conn) authenticate(key ed25519.PrivateKey, binder []byte) error {
@@ -339,6 +341,13 @@ func (c *Conn) authenticate(key ed25519.PrivateKey, binder []byte) error {
 	}
 	if chal.Type != protocol.TypeChallenge {
 		return fmt.Errorf("expected challenge, got %q", chal.Type)
+	}
+	// Signing whatever the peer sent would make this key a signing oracle: the
+	// peer could take a challenge from a third daemon, have it signed here, and
+	// log in there as this client. A daemon only ever challenges with NonceSize
+	// bytes, so anything else is refused rather than signed.
+	if len(chal.Data) != auth.NonceSize {
+		return fmt.Errorf("challenge must be %d bytes, got %d", auth.NonceSize, len(chal.Data))
 	}
 	if err := c.Send(auth.AuthFrameBound(key, chal.Data, binder)); err != nil {
 		return err

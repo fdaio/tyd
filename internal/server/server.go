@@ -473,9 +473,10 @@ type connState struct {
 	// fromSession marks a connection whose peer process is inside a tyd session
 	// on this host. Such a connection may read but not change anything.
 	fromSession bool
-	// binder is the relay path's inner-TLS channel binding. The auth response
-	// must cover it, or a relay could authenticate one connection on the
-	// client's behalf using a response taken from another.
+	// binder is the channel binding the auth response must cover: the inner
+	// TLS exporter on the relay, and the same exporter derived from the direct
+	// TLS or QUIC session when it is not set here. A response taken from
+	// another connection does not verify against it.
 	binder  []byte
 	info    transport.Info
 	state   string
@@ -600,6 +601,16 @@ func (s *Server) handshake(st *connState) error {
 	if err := st.send(auth.ChallengeFrame(nonce)); err != nil {
 		return err
 	}
+	// The challenge is the first thing written on a direct connection, so a TLS
+	// listener has completed its handshake by the time this returns and the
+	// exporter is available now. The relay hands its binding in with the
+	// connection instead.
+	binder := st.binder
+	if binder == nil {
+		if binder, err = transport.ChannelBinder(st.conn); err != nil {
+			return err
+		}
+	}
 	f, err := protocol.ReadFrame(st.conn)
 	if err != nil {
 		return err
@@ -607,7 +618,7 @@ func (s *Server) handshake(st *connState) error {
 	if f.Type != protocol.TypeAuth {
 		return fmt.Errorf("authentication required")
 	}
-	p, err := s.cfg.Trust.AuthenticateBound(nonce, st.binder, f.PublicKey, f.Data)
+	p, err := s.cfg.Trust.AuthenticateBound(nonce, binder, f.PublicKey, f.Data)
 	if err != nil {
 		return err
 	}
