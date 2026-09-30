@@ -134,6 +134,15 @@ func (b *mcpBackend) Open(_ context.Context, req mcp.OpenRequest) (mcp.Opened, e
 	}, nil
 }
 
+// humanAttachFor is humanAttach for a session this backend is already driving.
+func (b *mcpBackend) humanAttachFor(sid string) string {
+	t, err := b.target("")
+	if err != nil {
+		return ""
+	}
+	return humanAttach(t, aliasNameFor(b.opts, sid), sid)
+}
+
 // humanAttach is the command a person runs to take a session over. It is returned
 // in the tool result so a model can hand it to the user instead of making them
 // work out the peer syntax.
@@ -269,6 +278,7 @@ func (b *mcpBackend) Send(ctx context.Context, s mcp.Session, data []byte) (mcp.
 		WrittenKnown: rep.Reported,
 		Cursor:       rep.Cursor,
 		Epoch:        rep.Epoch,
+		HumanAttach:  b.humanAttachFor(s.ID),
 	}, nil
 }
 
@@ -314,6 +324,7 @@ func (b *mcpBackend) Read(ctx context.Context, req mcp.ReadRequest) (mcp.Page, e
 		CursorAhead: frame.CursorAhead,
 		Exited:      frame.Exited,
 		Reason:      frame.Reason,
+		HumanAttach: b.humanAttachFor(req.Session.ID),
 	}, nil
 }
 

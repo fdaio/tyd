@@ -228,3 +228,25 @@ func TestRenderNamesTheTarget(t *testing.T) {
 		t.Fatalf("text = %q", text)
 	}
 }
+
+// The password warning is the one piece of advice a model cannot work out for
+// itself, and it used to be reachable only from the open. A prompt shows up
+// mid-session, on a read, so the read is the result that has to carry it.
+func TestRenderWarnsAboutAPasswordPromptOnAnyResult(t *testing.T) {
+	attach := "tyd session attach build"
+	body := []byte("sh-3.2$ stty -echo\npassword: ")
+	text, _ := render(Session{ID: "s1", Alias: "build"}, Page{Data: body, Reason: "match"},
+		0, attach)
+	if !strings.Contains(text, "looks like a password prompt") {
+		t.Fatalf("no warning on a result that carries the attach command:\n%s", text)
+	}
+	if !strings.Contains(text, "do not type into it") {
+		t.Fatalf("the warning does not say what to do:\n%s", text)
+	}
+	// Without the command there is nothing to tell the model to run, so the
+	// footer stays the short one rather than pointing at nothing.
+	text, _ = render(Session{ID: "s1", Alias: "build"}, Page{Data: body, Reason: "match"}, 0, "")
+	if strings.Contains(text, "looks like a password prompt") {
+		t.Fatalf("a warning with no command in it is not advice:\n%s", text)
+	}
+}

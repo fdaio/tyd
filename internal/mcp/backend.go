@@ -99,6 +99,10 @@ type Page struct {
 	CursorAhead bool
 	Exited      bool
 	Reason      string
+	// HumanAttach is the command that hands the session to a person. It travels
+	// with the page rather than only with the open, because the result that needs
+	// it most is a read that has just landed on a password prompt.
+	HumanAttach string
 }
 
 // Sent is what a send reports. Written counts the bytes that reached the PTY,
@@ -115,6 +119,9 @@ type Sent struct {
 	Epoch  uint64
 	// State is the session state the target reported, when it reported one.
 	State string
+	// HumanAttach is the command that hands the session to a person, for the same
+	// reason a page carries one.
+	HumanAttach string
 }
 
 // Backend is everything the tools need from tyd. The real implementation lives

@@ -479,7 +479,7 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 			}, nil
 	}
 
-	text, res := render(sess, page, sent.Cursor, "")
+	text, res := render(sess, page, sent.Cursor, sent.HumanAttach)
 	written := sent.Written
 	res.Written = &written
 	res.Session = sess.Label()
@@ -547,7 +547,7 @@ func (s *server) read(ctx context.Context, a args) (string, any, error) {
 		return "", nil, mapError(rerr, sess)
 	}
 
-	text, res := render(sess, page, cursor, "")
+	text, res := render(sess, page, cursor, page.HumanAttach)
 	res.Session = sess.Label()
 	return st.withNote(text), res, nil
 }
@@ -600,7 +600,7 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 			Peer:         orLocal(sess.Peer),
 		}, nil
 	}
-	text, res := render(sess, page, sent.Cursor, "")
+	text, res := render(sess, page, sent.Cursor, sent.HumanAttach)
 	res.Session = sess.Label()
 	return st.withNote(text), res, nil
 }
