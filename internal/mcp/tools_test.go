@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -598,5 +600,193 @@ func TestCancelledSendNoteNamesTheByteCountWhenTheTargetReportedIt(t *testing.T)
 	}
 	if strings.Contains(note, "0 of 12") {
 		t.Fatalf("note = %q, a silent zero would be read as nothing was written", note)
+	}
+}
+
+// pendingApproval is what a target in pre mode answers for a gated read.
+func pendingApproval(id string) error {
+	return errors.New("attach pending approval; ask the operator to run: tyd session approve " + id)
+}
+
+// A target in pre mode refuses every read until it is approved, and the approval
+// is spent by the first read that gets through. A list that probes every session
+// therefore spends the operator's approval on a probe, and the model's own send
+// then needs another one. The catalog already says what the list needs to say, so
+// once a target has asked for approval it is not probed again.
+func TestListDoesNotSpendAnApprovalOnAProbe(t *testing.T) {
+	f := newFakeBackend()
+	s := testServer(f, nil)
+	for _, name := range []string{"a1", "b2", "c3"} {
+		if _, _, err := call(t, s, "session_open", args{"name": name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The target gates every read, the way a pre-mode daemon does.
+	f.readErrFor = func(id string) error { return pendingApproval(id) }
+	_, res, err := call(t, s, "session_list", args{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 3 {
+		t.Fatalf("rows = %d, want 3", len(res.Sessions))
+	}
+	if !strings.Contains(textOf(t, res), "approval") {
+		t.Fatalf("the list must say the target wants approval:\n%s", textOf(t, res))
+	}
+
+	// The operator approves, which is one-shot. The next list is then the next
+	// thing to ask the target for, and it must not be the thing that spends it.
+	f.readErrFor = nil
+	f.resetReads()
+	_, res, err = call(t, s, "session_list", args{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.readCount(); got > 1 {
+		t.Fatalf("a list of 3 rows on a target that requires approval made %d target reads; "+
+			"each one can spend the operator approval", got)
+	}
+	for _, row := range res.Sessions {
+		if row.ProbeError != "" && !strings.Contains(row.ProbeError, "approval") {
+			t.Fatalf("row %s: probe error %q", row.Session, row.ProbeError)
+		}
+	}
+}
+
+func textOf(t *testing.T, res *result) string {
+	t.Helper()
+	if res == nil {
+		return ""
+	}
+	return res.Output
+}
+
+// Once a target has let a call through, it is not gated any more, so a list goes
+// back to probing it. Otherwise a daemon moved out of pre mode would leave the
+// list permanently unprobed for the life of the process.
+func TestAGatedTargetIsProbedAgainOnceACallGetsThrough(t *testing.T) {
+	f := newFakeBackend()
+	s := testServer(f, nil)
+	if _, _, err := call(t, s, "session_open", args{"name": "build"}); err != nil {
+		t.Fatal(err)
+	}
+	f.readErrFor = func(id string) error { return pendingApproval(id) }
+	if _, _, err := call(t, s, "session_list", args{}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.needsApproval("") {
+		t.Fatal("a target that asked for approval must be recorded as gated")
+	}
+
+	// The operator approves; the model's own call goes through.
+	f.readErrFor = nil
+	if _, _, err := call(t, s, "session_send", args{"session": "build", "data": "ls\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.needsApproval("") {
+		t.Fatal("a call that got through must clear the gate")
+	}
+	f.resetReads()
+	_, res, err := call(t, s, "session_list", args{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.readCount() == 0 {
+		t.Fatal("the list must probe again once the target is open")
+	}
+	if res.Sessions[0].State != "running" {
+		t.Fatalf("state = %q, want running from a fresh probe", res.Sessions[0].State)
+	}
+}
+
+// The rows of a gated target are still listed, from the catalog. A model that
+// could not see them at all would open a second session on the same machine.
+func TestAGatedTargetStillListsItsRows(t *testing.T) {
+	f := newFakeBackend()
+	s := testServer(f, nil)
+	for _, name := range []string{"a1", "b2"} {
+		if _, _, err := call(t, s, "session_open", args{"name": name}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.readErrFor = func(id string) error { return pendingApproval(id) }
+	_, res, err := call(t, s, "session_list", args{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Sessions) != 2 {
+		t.Fatalf("rows = %d, want both sessions listed", len(res.Sessions))
+	}
+	for _, row := range res.Sessions {
+		if row.ProbeError == "" {
+			t.Fatalf("row %s must say why it was not probed", row.Session)
+		}
+		if row.Recorded == "" {
+			t.Fatalf("row %s must still carry what the catalog recorded", row.Session)
+		}
+	}
+}
+
+// Zero is the zero value of Options, so it has to mean the default rather than no
+// limit: an embedder that leaves the field unset must get the cap, and a cap
+// that vanishes on a typo is worse than one that gets in the way.
+func TestZeroMaxSessionsIsTheDefaultNotNoLimit(t *testing.T) {
+	f := newFakeBackend()
+	log := newLogger(io.Discard)
+	if got := newServer(f, log, Options{}).maxSessions; got != maxSessions {
+		t.Fatalf("maxSessions = %d, want the default %d", got, maxSessions)
+	}
+	if got := newServer(f, log, Options{MaxSessions: 0}).maxSessions; got != maxSessions {
+		t.Fatalf("maxSessions = %d for an explicit zero, want the default %d", got, maxSessions)
+	}
+	if got := newServer(f, log, Options{MaxSessions: 3}).maxSessions; got != 3 {
+		t.Fatalf("maxSessions = %d, want 3", got)
+	}
+	if got := newServer(f, log, Options{MaxSessions: -1}).maxSessions; got != maxSessions {
+		t.Fatalf("maxSessions = %d for a negative, want the default %d", got, maxSessions)
+	}
+}
+
+// The log is a record of what the tools did, not of what the terminal said. A
+// send writes the operator's keystrokes and reads back whatever the command
+// printed, and both of those are the kind of thing that ends up in a bug report
+// or a log file. A marker is pushed through a session and the log is searched
+// for it, so the invariant is checked rather than asserted in a comment.
+func TestTheLogNeverCarriesTerminalContent(t *testing.T) {
+	const marker = "tyd-log-canary-4f21ab"
+	f := newFakeBackend()
+	var logBuf strings.Builder
+	s := testServerWithLog(f, &logBuf)
+	if _, _, err := call(t, s, "session_open", args{"name": "build"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := call(t, s, "session_send", args{
+		"session": "build", "data": "echo " + marker + "\n",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A read that fails takes an error path of its own, and that path logs too.
+	f.readErrFor = func(string) error { return errors.New("target said: " + marker) }
+	if _, _, err := call(t, s, "session_list", args{}); err != nil {
+		t.Fatal(err)
+	}
+	f.readErrFor = nil
+	if _, _, err := call(t, s, "session_read", args{"session": "build"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := logBuf.String()
+	if got == "" {
+		t.Fatal("the test proved nothing: the log is empty")
+	}
+	if strings.Contains(got, marker) {
+		t.Fatalf("terminal content reached the log:\n%s", got)
+	}
+	// It is still useful: the tool, the session and the byte count are there.
+	for _, want := range []string{"session_send", "session_open"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("the log lost %q, which is what it is for:\n%s", want, got)
+		}
 	}
 }

@@ -171,6 +171,26 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer, b Backend, logw io.
 	log.logf("serving peers=%s read_only=%t max_sessions=%d close_on_exit=%t",
 		strings.Join(srv.peerNames(), ","), cfg.ReadOnly, srv.maxSessions, cfg.CloseOnExit)
 
+	// The loop below only sees a cancelled context between frames, and the frame
+	// it is waiting for is a read that no context can interrupt. So a cancelled
+	// context on its own would leave the server blocked on a client that keeps
+	// its input open, which for a terminal means Ctrl-C does not stop it.
+	//
+	// Closing the input is what ends the wait, and the read answers EOF. It is
+	// only done for an input this server can close: an io.Reader that is not a
+	// Closer still has to be shut down by whoever owns it.
+	if closer, ok := in.(io.Closer); ok {
+		stopped := make(chan struct{})
+		defer close(stopped)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = closer.Close()
+			case <-stopped:
+			}
+		}()
+	}
+
 	dec := newDecoder(in)
 	for {
 		if ctx.Err() != nil {

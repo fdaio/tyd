@@ -79,7 +79,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--archive-ttl D` | Hide a peer, or a closed session, unused this long: `7d`, `168h`, `off` (default `7d`; env `TYD_ARCHIVE_TTL`) |
 | `--read-only` | `mcp`: register only `session_list` and `session_read`. Not a permission boundary — the daemon's capability check is |
-| `--max-sessions N` | `mcp`: sessions one process holds (default 8) |
+| `--max-sessions N` | `mcp`: sessions one process holds; `0` means the default, not no limit (default 8) |
 | `--close-on-exit` | `mcp`: close the sessions this process opened when it stops (default: they survive) |
 | `--allow-peer REF` | `mcp`: serve this peer too; repeat for several. Required before the tools take a `peer` argument. `local` is accepted here as well |
 | `--as NAME` | Peer nickname when accepting an invite |

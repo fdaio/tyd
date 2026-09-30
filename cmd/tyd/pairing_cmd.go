@@ -539,6 +539,13 @@ func runAccept(opts options) error {
 	if len(opts.rest) != 1 {
 		return fmt.Errorf("usage: tyd accept <invite-token> [--as nickname]")
 	}
+	// Checked before the Control Panel is told anything, so a reserved nickname
+	// cannot reach the pairing record and then have to be unpicked.
+	if opts.as != "" {
+		if err := peers.ValidateNickname(opts.as); err != nil {
+			return fmt.Errorf("accept --as: %w", err)
+		}
+	}
 	// Accept takes either the bare token or the whole pasted line, which is
 	// what the inviter printed and what the install script hands over.
 	raw := parseInviteToken(opts.rest[0])

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,6 +91,36 @@ type server struct {
 	// aliases maps a requested alias to its session key, so a name cannot be
 	// handed to two sessions this process opened.
 	aliases map[string]string
+	// gated holds the targets that have refused a read pending approval. A target
+	// in pre mode spends the operator's approval on the first read that gets
+	// through, so a list must not keep handing it reads to spend: once a target
+	// has asked, this process stops probing it and says why. A call that gets
+	// through clears the mark, because that is the target saying the gate is open.
+	gated map[string]bool
+}
+
+// needsApproval reports whether this target has refused a read pending approval.
+func (s *server) needsApproval(peer string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gated[peer]
+}
+
+// markGated records that a target refused a read pending approval.
+func (s *server) markGated(peer string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gated == nil {
+		s.gated = make(map[string]bool)
+	}
+	s.gated[peer] = true
+}
+
+// ungate records that a target let a call through, so it is not gated after all.
+func (s *server) ungate(peer string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.gated, peer)
 }
 
 type sessionState struct {
@@ -216,7 +247,7 @@ func (s *server) peerNames() []string {
 }
 
 // resolve maps the session argument to a session on a served target.
-func (s *server) resolve(a args) (Session, error) {
+func (s *server) resolve(ctx context.Context, a args) (Session, error) {
 	ref, err := a.str("session")
 	if err != nil {
 		return Session{}, err
@@ -229,7 +260,9 @@ func (s *server) resolve(a args) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	return s.backend.Resolve(context.Background(), ref, peer)
+	// The call's own context, not a fresh Background: a backend that has to wait
+	// for something must be able to be cancelled with the call that asked.
+	return s.backend.Resolve(ctx, ref, peer)
 }
 
 // open creates a session without attaching to it.
@@ -326,18 +359,29 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 			Created:    it.Created,
 		}
 		// A probe is a read with no wait: one round trip, no parked read. It
-		// still goes through the target's approval gate, so on a remote target
-		// in pre mode it can come back asking for approval. That is reported and
-		// the remaining rows are still listed.
-		page, perr := s.probe(ctx, it.Session)
-		switch {
-		case perr != nil:
+		// still goes through the target's approval gate, and on a target in pre
+		// mode the operator's approval is spent by the first read that gets
+		// through. So a target that has already asked for approval is not asked
+		// again: the row says what the catalog recorded and why it was not
+		// probed, which is more use to a model than a second request the operator
+		// has to answer.
+		if s.needsApproval(it.Session.Peer) {
 			row.State = "unknown"
-			row.ProbeError = mapError(perr, it.Session).Error()
-		case page.Exited:
-			row.State = "exited"
-		default:
-			row.State = "running"
+			row.ProbeError = gatedProbeNote
+		} else {
+			page, perr := s.probe(ctx, it.Session)
+			switch {
+			case perr != nil:
+				row.State = "unknown"
+				row.ProbeError = mapError(perr, it.Session).Error()
+				if isPendingApproval(perr) {
+					s.markGated(it.Session.Peer)
+				}
+			case page.Exited:
+				row.State = "exited"
+			default:
+				row.State = "running"
+			}
 		}
 		out = append(out, row)
 
@@ -355,8 +399,38 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 	}
 
 	s.logf("session_list count=%d", len(out))
-	return fence(b.String()) + "\n[tyd: rows are from the local catalog; each state is from a probe read]",
+	footer := "[tyd: rows are from the local catalog; each state is from a probe read"
+	if gated := s.gatedTargets(); len(gated) > 0 {
+		footer += "; no probe on " + strings.Join(gated, ", ") + ", which needs approval on the target"
+	}
+	return fence(b.String()) + "\n" + footer + "]",
 		&result{Output: b.String(), Reason: "catalog", SessionState: "catalog", Sessions: out}, nil
+}
+
+// gatedProbeNote is why a row was not probed. It names the cause rather than
+// repeating the daemon's message, because the daemon's message asks for an
+// approval this process has decided not to spend on a probe.
+const gatedProbeNote = "not probed: this target requires approval, and a probe would spend the " +
+	"operator's single approval. Approve and then read the session directly."
+
+// gatedTargets lists the targets this process has stopped probing.
+func (s *server) gatedTargets() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.gated) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.gated))
+	for peer := range s.gated {
+		out = append(out, orLocal(peer))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isPendingApproval reports whether an error is the target asking for approval.
+func isPendingApproval(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "pending approval")
 }
 
 // probe asks a session for its state without waiting and without touching the
@@ -370,7 +444,7 @@ func (s *server) probe(ctx context.Context, sess Session) (Page, error) {
 
 // send types into a session, then reads what those keystrokes produced.
 func (s *server) send(ctx context.Context, a args) (string, any, error) {
-	sess, err := s.resolve(a)
+	sess, err := s.resolve(ctx, a)
 	if err != nil {
 		return "", nil, err
 	}
@@ -479,6 +553,9 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 			}, nil
 	}
 
+	// The write got through, so the target's gate is open. A list that had given
+	// up on this target can probe it again.
+	s.ungate(sess.Peer)
 	text, res := render(sess, page, sent.Cursor, sent.HumanAttach)
 	written := sent.Written
 	res.Written = &written
@@ -488,7 +565,7 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 
 // read pulls output from a session, continuing from where the last read ended.
 func (s *server) read(ctx context.Context, a args) (string, any, error) {
-	sess, err := s.resolve(a)
+	sess, err := s.resolve(ctx, a)
 	if err != nil {
 		return "", nil, err
 	}
@@ -547,6 +624,7 @@ func (s *server) read(ctx context.Context, a args) (string, any, error) {
 		return "", nil, mapError(rerr, sess)
 	}
 
+	s.ungate(sess.Peer)
 	text, res := render(sess, page, cursor, page.HumanAttach)
 	res.Session = sess.Label()
 	return st.withNote(text), res, nil
@@ -555,7 +633,7 @@ func (s *server) read(ctx context.Context, a args) (string, any, error) {
 // interrupt stops whatever the session is running, then reports what the shell
 // said about it.
 func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
-	sess, err := s.resolve(a)
+	sess, err := s.resolve(ctx, a)
 	if err != nil {
 		return "", nil, err
 	}
@@ -646,7 +724,7 @@ func cancelledSendNote(sent Sent, total int) string {
 
 // close ends a session.
 func (s *server) close(ctx context.Context, a args) (string, any, error) {
-	sess, err := s.resolve(a)
+	sess, err := s.resolve(ctx, a)
 	if err != nil {
 		return "", nil, err
 	}

@@ -186,12 +186,13 @@ it printed, stop a command, close it.
 ### Install — one line
 
 ```bash
-claude mcp add tyd -- /usr/local/bin/tyd mcp --peer laptop
+claude mcp add tyd -- "$(command -v tyd)" mcp --peer laptop
 ```
 
-**Use the absolute path to `tyd`.** Many MCP clients launch the command without
-a login shell, so `~/.local/bin` is not on `PATH` and a bare `tyd` is not found.
-That shows up as the client reporting the server failed to start.
+**Use the absolute path `command -v tyd` prints.** Many MCP clients launch the
+command without a login shell, so `~/.local/bin` is not on `PATH` and a bare
+`tyd` is not found. That shows up as the client reporting the server failed to
+start. Substitute your own path; `/usr/local/bin/tyd` is not where tyd has to be.
 
 The same thing in the JSON most clients read:
 
@@ -199,7 +200,7 @@ The same thing in the JSON most clients read:
 {
   "mcpServers": {
     "tyd": {
-      "command": "/usr/local/bin/tyd",
+      "command": "/usr/local/bin/tyd",   // whatever `command -v tyd` prints
       "args": ["mcp", "--peer", "laptop"]
     }
   }

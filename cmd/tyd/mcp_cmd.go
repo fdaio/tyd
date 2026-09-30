@@ -167,18 +167,32 @@ func mcpTargets(opts options) ([]mcpTarget, error) {
 	}
 }
 
-// resolveMCPTarget names a machine: a paired peer, or the daemon on this one.
+// resolveMCPTarget names a machine: the daemon on this one, or a paired peer.
 //
-// The peer lookup comes first, so a peer that really is called "local" stays
-// reachable by name and the reserved word is only ever a fallback. That is the
-// one ambiguous case here, and it fails safe: the target it picks is a peer, it
-// is named in the startup line, and it is named in every tool result.
+// The reserved word is resolved first, so a peer that somehow holds the name
+// cannot answer for the machine the word names. That ordering is the whole
+// point of the reservation: an operator who wrote --peer local was choosing this
+// machine, and a peer stealing the name would send a model's commands somewhere
+// else while the label kept saying local. A peer with that nickname is still
+// reachable, by its id, and the error says so rather than leaving the operator
+// to work out why a name they can see in peer list does not resolve.
 func resolveMCPTarget(doc *peers.File, ref string) (mcpTarget, error) {
-	if p, err := doc.Find(ref); err == nil {
-		return mcpTarget{label: ref, peerID: p.ID, nickname: peerNickname(p)}, nil
+	// --allow-peer= and --allow-peer "" both arrive here as an empty name, which
+	// is not a target anybody can dial. Saying so beats letting it fall through
+	// to the lookup and report that "" is not a peer.
+	if strings.TrimSpace(ref) == "" {
+		return mcpTarget{}, fmt.Errorf("empty target name; pass a peer id, a nickname, or %s", mcpLocalRef)
 	}
 	if ref == mcpLocalRef {
+		if p, err := doc.Find(ref); err == nil {
+			return mcpTarget{}, fmt.Errorf("--peer %s is this machine's own daemon, and a paired peer "+
+				"(%s) answers to that name too; address the peer by its id, or give it another "+
+				"nickname with tyd peer alias", mcpLocalRef, p.ID)
+		}
 		return mcpTarget{label: mcpLocalRef}, nil
+	}
+	if p, err := doc.Find(ref); err == nil {
+		return mcpTarget{label: ref, peerID: p.ID, nickname: peerNickname(p)}, nil
 	}
 	return mcpTarget{}, fmt.Errorf("not a paired peer on this machine, and not %q; "+
 		"run tyd peer list, or pass --peer %s for this machine", ref, mcpLocalRef)

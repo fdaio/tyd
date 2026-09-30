@@ -182,12 +182,22 @@ func startRemote(t *testing.T, kind transport.Kind, approvalMode string) *remote
 	// The data plane is the transport under test, so only that one is enabled.
 	// A daemon with both would answer on whichever came first, and the test
 	// would stop being a statement about the transport it names.
+	// Every live-agent this fixture starts is killed at the end of the test.
+	// An agent runs in its own session, so closing the server leaves it running:
+	// that is what lets a session outlive a daemon restart in production, and it
+	// means a test that does not kill them leaves a process per session behind.
+	// Hundreds of them make the machine slow enough that the daemon's own
+	// five-second budget for an agent socket starts to expire, which is a test
+	// failing for a reason that has nothing to do with what it checks.
+	liveRoot := filepath.Join(srvDir, "live")
+	t.Cleanup(func() { killLiveAgents(liveRoot) })
+
 	mgr := session.NewManager()
 	// A session's shell lives in its own process, or it cannot be read after the
 	// client that opened it goes away. A daemon starts one by re-executing
 	// itself with __live-agent; TestMain makes this binary answer to that, so the
 	// starter is the production one and only the binary differs.
-	mgr.ConfigureLive(filepath.Join(srvDir, "live"), os.Args[0])
+	mgr.ConfigureLive(liveRoot, os.Args[0])
 	mgr.SetStarter(testLiveStarter)
 
 	cfg := server.Config{
@@ -284,6 +294,35 @@ func startRemote(t *testing.T, kind transport.Kind, approvalMode string) *remote
 	}
 }
 
+// killLiveAgents ends every agent under a live root, then waits briefly for them
+// to go: a shell that outlives its agent would keep the temp dir's removal from
+// finishing and would still be running after the test is over.
+func killLiveAgents(root string) {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		live.KillAgent(filepath.Join(root, e.Name()))
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		alive := false
+		for _, e := range entries {
+			if e.IsDir() && live.Alive(filepath.Join(root, e.Name())) {
+				alive = true
+			}
+		}
+		if !alive {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 // testLiveStarter starts a live-agent from this test binary.
 //
 // The default starter runs `<execPath> __live-agent --dir <dir>`, and in a test
@@ -369,7 +408,7 @@ func TestRemoteSessionRoundTrip(t *testing.T) {
 	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
 	mc := startMCP(t, fx)
 
-	opened := mc.call(t, "session_open", map[string]any{"name": "build", "shell": remoteShell})
+	opened := mc.openSession(t, "build")
 	if got := opened.result.Session; got != "build" {
 		t.Fatalf("session = %q, want build", got)
 	}
@@ -406,7 +445,7 @@ func TestRemoteSendIsRefusedWhileAPersonIsAttached(t *testing.T) {
 	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
 	mc := startMCP(t, fx)
 
-	mc.call(t, "session_open", map[string]any{"name": "held", "shell": remoteShell})
+	mc.openSession(t, "held")
 	// A real connection, authenticated and attaching, held open for the test.
 	holder := attachAndHold(t, fx)
 	defer holder.Close()
@@ -511,7 +550,7 @@ func TestRemoteInterruptStopsARunningCommand(t *testing.T) {
 	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
 	mc := startMCP(t, fx)
 
-	mc.call(t, "session_open", map[string]any{"name": "slow", "shell": remoteShell})
+	mc.openSession(t, "slow")
 	// The marker proves the shell is back at a prompt afterwards, which is what
 	// tells the interrupt did something rather than being swallowed.
 	mc.tryCall(t, "session_send", map[string]any{"session": "slow", "data": "sleep 30\n"})
@@ -526,12 +565,39 @@ func TestRemoteInterruptStopsARunningCommand(t *testing.T) {
 	}
 }
 
+// A successful send has to reach the archive, not just the helper. The
+// bookkeeping is one line in the backend and this is what proves it is called:
+// without it a session a model is actively driving would drop out of the list
+// after --archive-ttl, and nobody would look for it there.
+func TestRemoteDrivingASessionKeepsItListed(t *testing.T) {
+	requireShell(t)
+	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
+	mc := startMCP(t, fx)
+
+	mc.openSession(t, "kept")
+	mc.call(t, "session_send", map[string]any{
+		"session": "kept", "data": "echo kept-1180\n",
+		"wait": map[string]any{"match": "kept-1180"},
+	})
+
+	// The session is not hidden, and it is not carrying an archive mark.
+	arch := loadArchive(fx.opts)
+	sid := sessionIDForAlias(t, fx, "kept")
+	if arch.SessionArchived(sid) {
+		t.Fatal("a session the model just drove must not be archived")
+	}
+	listed := mc.call(t, "session_list", map[string]any{})
+	if !strings.Contains(listed.text, "kept") {
+		t.Fatalf("a driven session must still be listed:\n%s", listed.text)
+	}
+}
+
 func TestRemoteCloseEndsTheSession(t *testing.T) {
 	requireShell(t)
 	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
 	mc := startMCP(t, fx)
 
-	mc.call(t, "session_open", map[string]any{"name": "done", "shell": remoteShell})
+	mc.openSession(t, "done")
 	mc.call(t, "session_close", map[string]any{"session": "done"})
 	if res := mc.tryCall(t, "session_send", map[string]any{"session": "done", "data": "echo after\n"}); res.err == "" {
 		t.Fatal("a closed session must not accept a send")
@@ -549,7 +615,7 @@ func TestRemoteRoundTripOverQUIC(t *testing.T) {
 	fx := startRemote(t, transport.KindQUIC, controlpanel.ApprovalFull)
 	mc := startMCP(t, fx)
 
-	mc.call(t, "session_open", map[string]any{"name": "quic", "shell": remoteShell})
+	mc.openSession(t, "quic")
 	res := mc.call(t, "session_send", map[string]any{
 		"session": "quic", "data": "echo quic-5501\n",
 		"wait": map[string]any{"match": "quic-5501"},
@@ -694,13 +760,35 @@ func firstCatalogSession(t *testing.T, fx *remoteFixture) string {
 // wrote a request before reading would deadlock against a progress notification
 // the server was in the middle of writing: neither side would be reading.
 type mcpClient struct {
-	t    *testing.T
-	logs *strings.Builder
-	in   *io.PipeWriter
-	enc  *json.Encoder
-	ans  chan rpcResponse
+	t   *testing.T
+	log *lockedBuffer
+	in  *io.PipeWriter
+	enc *json.Encoder
+	ans chan rpcResponse
+
 	mu   sync.Mutex
 	next int
+}
+
+// lockedBuffer collects the server's stderr so a failed call can show it. The
+// server writes from its own goroutine while the test reads, so the buffer needs
+// its own lock; a plain strings.Builder races and the race detector is right to
+// say so.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // startMCP runs the real server over a pipe and returns a client for it.
@@ -712,11 +800,11 @@ func startMCP(t *testing.T, fx *remoteFixture) *mcpClient {
 	serverIn, clientToServer := io.Pipe()
 	clientIn, serverOut := io.Pipe()
 
-	var errBuf strings.Builder
+	errBuf := &lockedBuffer{}
 	done := make(chan error, 1)
 	go func() {
 		err := mcp.Serve(ctx, serverIn, serverOut,
-			newMCPBackend(fx.opts, fx.key, fx.targets), &errBuf, mcp.Options{
+			newMCPBackend(fx.opts, fx.key, fx.targets), errBuf, mcp.Options{
 				MaxSessions: 4,
 				Peers:       mcpPeerLabels(fx.targets),
 			})
@@ -734,11 +822,11 @@ func startMCP(t *testing.T, fx *remoteFixture) *mcpClient {
 	})
 
 	mc := &mcpClient{
-		t:    t,
-		logs: &errBuf,
-		in:   clientToServer,
-		enc:  json.NewEncoder(clientToServer),
-		ans:  make(chan rpcResponse, 64),
+		t:   t,
+		log: errBuf,
+		in:  clientToServer,
+		enc: json.NewEncoder(clientToServer),
+		ans: make(chan rpcResponse, 64),
 	}
 	// Serve checks its context between frames, and the frame it is waiting for is
 	// a read that a cancelled context cannot interrupt. Closing this end is what
@@ -804,6 +892,41 @@ type toolOutcome struct {
 	err    string
 }
 
+// openSession opens a session, retrying only the one failure that is about this
+// machine rather than about the code.
+//
+// The daemon gives a live-agent five seconds to publish its socket, and the agent
+// binds that socket only after its shell has started — a deliberate order, so a
+// daemon that sees the socket can rely on the shell pid file. So the budget has
+// to cover forking an agent and running a login shell inside it, and under
+// -race, where the agent is this same instrumented binary started once per
+// iteration, five seconds is sometimes not enough. Retrying the open keeps the
+// assertion about the tools rather than about that budget, and it retries
+// nothing else: a failure with any other cause fails the test at once.
+func (mc *mcpClient) openSession(t *testing.T, name string) toolOutcome {
+	t.Helper()
+	var out toolOutcome
+	for attempt := 0; attempt < 4; attempt++ {
+		// tryCall, not call: a failure here is the thing being retried, and call
+		// would end the test before the loop could look at it.
+		out = mc.tryCall(t, "session_open", map[string]any{"name": name, "shell": remoteShell})
+		if out.err == "" {
+			return out
+		}
+		if !strings.Contains(out.text, "wait agent sock") {
+			t.Fatalf("session_open %q failed for a reason that is not the agent's start-up budget: %s", name, out.err)
+		}
+		if attempt == 3 {
+			break
+		}
+		// The previous iteration's agent is still tearing down; give the machine
+		// a moment before starting another.
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("session_open %q did not get a live-agent socket in four attempts: %s", name, out.text)
+	return out
+}
+
 // call runs a tool and fails the test if the call itself was refused. A tool
 // that reports a failure answers with isError, not a protocol error, so this
 // only catches a broken call.
@@ -811,7 +934,7 @@ func (c *mcpClient) call(t *testing.T, name string, args map[string]any) toolOut
 	t.Helper()
 	out := c.tryCall(t, name, args)
 	if out.err != "" {
-		t.Fatalf("%s failed: %s\nmcp stderr:\n%s", name, out.err, c.logs.String())
+		t.Fatalf("%s failed: %s\nmcp stderr:\n%s", name, out.err, c.log.String())
 	}
 	return out
 }

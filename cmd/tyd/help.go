@@ -216,7 +216,7 @@ func writeMCPHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Limits:")
 	writeHelpRows(w, []helpRow{
 		{"--read-only", "Register only session_list and session_read"},
-		{"--max-sessions N", "Sessions one process holds (default 8)"},
+		{"--max-sessions N", "Sessions one process holds; 0 means the default (8)"},
 		{"--close-on-exit", "Close the sessions this process opened when it stops (default: keep them)"},
 	}, color)
 	fmt.Fprintln(w)
@@ -231,8 +231,9 @@ func writeMCPHelp(w io.Writer, color bool) {
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
-	fmt.Fprintln(w, "  claude mcp add tyd -- /usr/local/bin/tyd mcp --peer laptop")
-	fmt.Fprintln(w, "  Use an absolute path: MCP clients often do not inherit your shell PATH.")
+	fmt.Fprintln(w, "  claude mcp add tyd -- $(command -v tyd) mcp --peer laptop")
+	fmt.Fprintln(w, "  Use the absolute path from `command -v tyd`: MCP clients often do not")
+	fmt.Fprintln(w, "  inherit your shell PATH, so a bare `tyd` is not found.")
 	fmt.Fprintln(w, "  Every result names the machine it ran on, in [tyd: target=...].")
 	fmt.Fprintln(w, "  A session is writable from here only while nobody is attached; a person attached wins.")
 	fmt.Fprintln(w, "  Sessions survive this process unless --close-on-exit is given.")

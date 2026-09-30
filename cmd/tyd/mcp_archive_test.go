@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"tyd/internal/alias"
 	"tyd/internal/archive"
+	"tyd/internal/catalog"
 	"tyd/internal/session"
 )
 
@@ -62,7 +64,8 @@ func TestDrivingAnArchivedSessionBringsItBack(t *testing.T) {
 	b := newMCPBackend(opts, testIdentity(t), []mcpTarget{{label: mcpLocalRef}})
 
 	// The same bookkeeping a successful send or read does, without standing up a
-	// daemon: the point under test is that the list follows the use.
+	// daemon. The wiring itself — that a real call reaches this — is proved in the
+	// remote tests, where a session is driven over a real transport.
 	b.markUsed(mcpTarget{label: mcpLocalRef}, sid)
 
 	f, err := archive.Load(opts.archive)
@@ -100,14 +103,42 @@ func TestTheArchiveTTLAppliesToThisServer(t *testing.T) {
 	if len(rows) != 1 || rows[0].Session.ID != "2222222222222222" {
 		t.Fatalf("rows = %+v, want only the running session", rows)
 	}
-	// The peer clock moves on use, so the target this server drives is not
-	// archived while the model is using it.
 	f, err := archive.Load(opts.archive)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !f.SessionArchived("1111111111111111") {
+		t.Fatal("the closed session past the TTL must be archived by this server's read")
+	}
 	if f.SessionArchived("2222222222222222") {
 		t.Fatal("a running session must not be archived")
+	}
+}
+
+// A peer's use clock lives beside its archive mark rather than in peers.json,
+// because peers.json is rebuilt from the Control Panel and a clock lost there
+// would archive a peer in daily use on the strength of its pairing date. A
+// server that drives a peer has to move that clock, or the peer is archived
+// while the model is typing into it.
+func TestDrivingAPeerStopsItBeingArchived(t *testing.T) {
+	opts := archiveOpts(t)
+	const id = "0123456789abcdef"
+	seedPeer(t, opts, id, "box", time.Now().UTC().Add(-30*24*time.Hour))
+	pruneArchive(opts)
+	if len(archivedPeers(t, opts)) != 1 {
+		t.Fatal("a peer paired 30 days ago and never dialled must be archived")
+	}
+
+	// What a successful send or read on that target does.
+	markUsed(opts, id, "")
+
+	if got := archivedPeers(t, opts); len(got) != 0 {
+		t.Fatalf("dialling a peer must put it back, still archived: %v", got)
+	}
+	// And the clock is what keeps it out, so the next prune leaves it alone.
+	pruneArchive(opts)
+	if got := archivedPeers(t, opts); len(got) != 0 {
+		t.Fatalf("a peer in use was archived again at once: %v", got)
 	}
 }
 
@@ -139,4 +170,106 @@ func testIdentity(t *testing.T) ed25519.PrivateKey {
 		t.Fatal(err)
 	}
 	return key
+}
+
+// The archive hides a session from the list. It does not make the session
+// unreachable, and the CLI is where that has to hold: hiding a row an operator
+// then cannot attach to would be a way to lose a session. The catalog still
+// holds the record and the endpoint, so every command that takes a reference
+// resolves it exactly as before.
+func TestAnArchivedSessionIsStillReachableByTheDialCommands(t *testing.T) {
+	const sid = "0123456789abcdef"
+	for _, tc := range []struct {
+		name string
+		ref  string
+	}{
+		{"by id", sid},
+		{"by alias", "work"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := archiveOpts(t)
+			// Seeded with an endpoint, because the endpoint is what a dial
+			// command needs and what hiding a row must not take away.
+			cat, err := catalog.Load(opts.sessions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cat.Sessions = append(cat.Sessions, catalog.Record{
+				ID: sid, State: string(session.StateDetached), Addr: "127.0.0.1:61211",
+				Transport: "tls", UpdatedAt: time.Now().UTC(),
+			})
+			if err := catalog.Save(opts.sessions, cat); err != nil {
+				t.Fatal(err)
+			}
+			adoc := &alias.File{}
+			if err := adoc.Set("work", sid, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := alias.Save(opts.aliases, adoc); err != nil {
+				t.Fatal(err)
+			}
+			markArchived(t, opts, sid)
+
+			// The catalog read every dial command goes through still resolves the
+			// reference and still yields the record.
+			got, err := resolveSessionRef(opts, tc.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != sid {
+				t.Fatalf("resolveSessionRef = %q, want %q", got, sid)
+			}
+			rec, ok := loadLocalCatalog(opts).Get(got)
+			if !ok {
+				t.Fatal("an archived session is gone from the catalog")
+			}
+			if rec.Addr == "" {
+				t.Fatal("an archived session lost the endpoint the dial commands need")
+			}
+			if ep, ok := endpointFromRecord(rec); !ok || ep.Address != rec.Addr {
+				t.Fatalf("the dial endpoint is gone: %+v", rec)
+			}
+		})
+	}
+}
+
+// Opening under a name an archived session already holds moves the name, and the
+// archived row keeps its id. That is the same rule as opening under the name of
+// a live session, so it is defined rather than accidental: one name, one
+// session, and the older row still reachable by id.
+func TestOpenUnderAnArchivedSessionsNameIsDefined(t *testing.T) {
+	const (
+		old   = "1111111111111111"
+		fresh = "2222222222222222"
+	)
+	opts := archiveOpts(t)
+	seedSession(t, opts, old, "", session.StateClosed, time.Now().UTC().Add(-30*24*time.Hour))
+	adoc := &alias.File{}
+	if err := adoc.Set("build", old, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := alias.Save(opts.aliases, adoc); err != nil {
+		t.Fatal(err)
+	}
+	markArchived(t, opts, old)
+
+	// What the alias file does when a new session claims the name.
+	again := &alias.File{}
+	if err := again.Set("build", fresh, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := alias.Save(opts.aliases, again); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveSessionRef(opts, "build")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != fresh {
+		t.Fatalf("the alias points at %q, want the session that claimed it", got)
+	}
+	// And the archived row is still there under its own id.
+	if _, ok := loadLocalCatalog(opts).Get(old); !ok {
+		t.Fatal("the archived row must survive losing its name")
+	}
 }

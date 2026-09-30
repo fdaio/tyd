@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"time"
 )
@@ -25,6 +26,13 @@ type fakeBackend struct {
 	sendErr  error
 	readErr  error
 	closeErr error
+	// readErrFor fails a read for one session, every time. A target in pre mode
+	// refuses every read until it is approved, which readErr's one-shot cannot
+	// express.
+	readErrFor func(sessionID string) error
+	// reads counts every read that reached the target, so a test can assert a
+	// list did not spend an approval on a probe.
+	reads int
 	// alias maps a reference to a session id, like the local alias file.
 	alias map[string]string
 	// calls records the order the tools reached the target in.
@@ -185,6 +193,13 @@ func (f *fakeBackend) Read(ctx context.Context, req ReadRequest) (Page, error) {
 		f.mu.Unlock()
 		return Page{}, errors.New("unknown session " + req.Session.ID)
 	}
+	f.reads++
+	if f.readErrFor != nil {
+		if err := f.readErrFor(req.Session.ID); err != nil {
+			f.mu.Unlock()
+			return Page{}, err
+		}
+	}
 	log := append([]byte(nil), sess.log...)
 	exited := sess.exited
 	gate := f.readGate
@@ -338,4 +353,25 @@ func testServer(b Backend, mutate func(*Options)) *server {
 		mutate(&opts)
 	}
 	return newServer(b, &logger{}, opts)
+}
+
+// testServerWithLog is testServer with somewhere for the log to go, so a test can
+// read what the tools wrote about themselves.
+func testServerWithLog(b Backend, w io.Writer) *server {
+	return newServer(b, newLogger(w), Options{MaxSessions: 4})
+}
+
+// readCount is how many reads have reached the target.
+func (f *fakeBackend) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+// resetReads starts the count again, so a test can measure one call rather than
+// everything before it.
+func (f *fakeBackend) resetReads() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads = 0
 }

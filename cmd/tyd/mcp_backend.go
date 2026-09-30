@@ -11,6 +11,7 @@ import (
 	"tyd/internal/client"
 	"tyd/internal/live"
 	"tyd/internal/mcp"
+	"tyd/internal/peers"
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
@@ -32,8 +33,10 @@ type mcpTarget struct {
 
 // mcpLocalRef is the name the daemon on this machine answers to on the command
 // line. It is a word rather than an empty string so that a target is always
-// named, in the startup line and in every tool result.
-const mcpLocalRef = "local"
+// named, in the startup line and in every tool result. It is reserved: a peer
+// may not hold it, and it is resolved before any peer, so an older peers.json
+// that has one cannot take this name away from the machine it names.
+const mcpLocalRef = peers.ReservedNickname
 
 // mcpBackend drives real daemons.
 //

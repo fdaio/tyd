@@ -94,20 +94,6 @@ func TestPeerLocalIsThisMachinesDaemon(t *testing.T) {
 	}
 }
 
-// A peer that really is called "local" keeps its name: the peer lookup comes
-// first, so the reserved word is only a fallback. It fails safe, because the
-// target it picks is named in the startup line and in every result.
-func TestAPeerNamedLocalIsNotTheLocalDaemon(t *testing.T) {
-	path := writePeers(t, &peers.File{Peers: []peers.Peer{{ID: "p1", Nickname: mcpLocalRef, Direction: "outbound"}}})
-	targets, err := mcpTargets(options{peers: path, peer: mcpLocalRef})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(targets) != 1 || targets[0].peerID != "p1" {
-		t.Fatalf("targets = %+v, want the paired peer named local", targets)
-	}
-}
-
 func TestUnknownPeerSaysWhatToDoInstead(t *testing.T) {
 	path := writePeers(t, &peers.File{})
 	_, err := mcpTargets(options{peers: path, peer: "nas"})
@@ -151,5 +137,64 @@ func TestTargetLabelDoesNotRepeatTheSameName(t *testing.T) {
 	}
 	if got := mcpTargetLabel(mcpTarget{label: mcpLocalRef}); got != mcpLocalRef {
 		t.Fatalf("label = %q, want the local target named", got)
+	}
+}
+
+// `local` names this machine's daemon, so a peer may not answer to it. An
+// operator who wrote --peer local was choosing this machine, and a peer
+// stealing the name would send a model's commands elsewhere while the label
+// still said local.
+func TestALocalNicknameIsRefusedAtPairingTime(t *testing.T) {
+	err := peers.ValidateNickname(mcpLocalRef)
+	if err == nil {
+		t.Fatal("a peer must not be able to take the reserved nickname")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("the error must say the name is reserved: %v", err)
+	}
+	// A nickname that merely contains it is fine.
+	if err := peers.ValidateNickname("localhost-build"); err != nil {
+		t.Fatalf("a nickname containing the reserved word is not the reserved word: %v", err)
+	}
+}
+
+// The reserved word is resolved before any peer, so an older peers.json holding
+// the name cannot take this machine's name away. The peer stays reachable by id
+// and the error says so, because an operator can see that nickname in
+// `tyd peer list` and would otherwise conclude the list was wrong.
+func TestAPeerHoldingTheReservedNameDoesNotStealIt(t *testing.T) {
+	path := writePeers(t, &peers.File{Peers: []peers.Peer{
+		{ID: "0123456789abcdef", Nickname: mcpLocalRef, Direction: "outbound"},
+	}})
+	_, err := mcpTargets(options{peers: path, peer: mcpLocalRef})
+	if err == nil {
+		t.Fatal("a peer holding the reserved name must not answer for this machine")
+	}
+	for _, want := range []string{"own daemon", "0123456789abcdef", "peer alias"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("the error must mention %q so the peer is still reachable: %v", want, err)
+		}
+	}
+	// The same peer under its id resolves normally.
+	targets, err := mcpTargets(options{peers: path, peer: "0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 1 || targets[0].peerID != "0123456789abcdef" {
+		t.Fatalf("targets = %+v, want the peer by id", targets)
+	}
+}
+
+// An empty --allow-peer is a target nobody can name. The space-separated form
+// was already refused by the peer lookup; the = form reaches the same place, and
+// the error should say what is wrong rather than that the name is unknown.
+func TestAllowPeerRefusesAnEmptyName(t *testing.T) {
+	path := writePeers(t, &peers.File{})
+	_, err := mcpTargets(options{peers: path, allowPeer: []string{""}})
+	if err == nil {
+		t.Fatal("--allow-peer with an empty name must be refused")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("the error must say the name is empty: %v", err)
 	}
 }

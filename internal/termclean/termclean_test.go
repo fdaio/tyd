@@ -3,6 +3,7 @@ package termclean
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestCleanRemovesColourCodes(t *testing.T) {
@@ -147,5 +148,48 @@ func TestLastWindow(t *testing.T) {
 	// A cursor before the start is clamped.
 	if w := LastWindow(b, -5); len(w) != MatchWindow {
 		t.Fatalf("negative cursor = %d", len(w))
+	}
+}
+
+// Cleaning must never turn valid text into invalid text. An escape sequence that
+// swallowed the first byte of a multi-byte rune, or a backspace that dropped one
+// byte of it, would leave the rest of the rune behind as a broken sequence — and
+// every caller hands the result to something that has to decode it.
+//
+// Bytes that were already invalid are not this package's business: it removes
+// escapes, and a caller that needs valid UTF-8 replaces undecodable bytes before
+// it gets here. The invariant is one-directional on purpose.
+func TestCleaningNeverBreaksAValidRune(t *testing.T) {
+	for _, in := range []string{
+		"\x1b\ufffd",     // an escape, then a replacement character
+		"\x1b\x1b\ufffd", // an escape, another escape, a replacement character
+		"before\x1bé",    // a rune split by an escape
+		"\x1bé",          // a real character straight after an escape
+		"\x1b]0;t\ufffd", // an OSC that never ends, then a replacement character
+		"é\x08",          // a backspace over a multi-byte character
+		"aé\x08\x08z",    // two backspaces, the second one past the start
+		"\ufffd\ufffd",   // two replacement characters
+		"éèê",            // multi-byte characters on their own
+	} {
+		if !utf8.ValidString(in) {
+			t.Fatalf("test input %q is not valid to begin with", in)
+		}
+		out := CleanString([]byte(in))
+		if !utf8.ValidString(out) {
+			t.Errorf("CleanString(%q) = %q, which is not valid UTF-8", in, out)
+		}
+	}
+	// The text is kept: dropping the escape must not swallow the character after
+	// it, or output in a non-ASCII locale would go missing.
+	if got := CleanString([]byte("\x1bé")); got != "é" {
+		t.Errorf("CleanString = %q, want %q", got, "é")
+	}
+	// And a backspace takes the whole character with it, the way a terminal's
+	// cursor moves back over a column.
+	if got := CleanString([]byte("é\x08")); got != "" {
+		t.Errorf("CleanString = %q, want the character erased", got)
+	}
+	if got := CleanString([]byte("aé\x08")); got != "a" {
+		t.Errorf("CleanString = %q, want %q", got, "a")
 	}
 }
