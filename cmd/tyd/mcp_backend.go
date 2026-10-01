@@ -281,7 +281,7 @@ func aliasNameOf(adoc *alias.File, sid string) string {
 	return adoc.NameFor(sid)
 }
 
-func (b *mcpBackend) Send(ctx context.Context, s mcp.Session, data []byte) (mcp.Sent, error) {
+func (b *mcpBackend) Send(ctx context.Context, s mcp.Session, data []byte, secret bool) (mcp.Sent, error) {
 	t, err := b.target(s.Peer)
 	if err != nil {
 		return mcp.Sent{}, err
@@ -293,7 +293,7 @@ func (b *mcpBackend) Send(ctx context.Context, s mcp.Session, data []byte) (mcp.
 	// The context is passed so a cancelled send closes the connection and the
 	// daemon aborts the write, rather than the keystrokes landing after the model
 	// was told they did not.
-	rep, err := client.SendContext(ctx, ep, b.key, s.ID, data)
+	rep, err := client.SendContext(ctx, ep, b.key, s.ID, data, secret)
 	if err != nil {
 		return mcp.Sent{}, err
 	}

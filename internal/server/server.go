@@ -1017,7 +1017,10 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID); err != nil {
 			return err
 		}
-		rep, err := sess.Send(f.Data)
+		// The flag is forwarded, not interpreted here. The far agent holds the
+		// PTY, so it is the only place the terminal state can be read, and a
+		// proxy that dropped this would turn a refusal into a silent write.
+		rep, err := sess.Send(f.Data, f.Secret)
 		if err != nil {
 			return err
 		}

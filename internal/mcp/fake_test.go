@@ -7,6 +7,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"tyd/internal/ttyutil"
 )
 
 // fakeBackend is a scripted tyd for the tool tests. It holds the sessions in
@@ -40,6 +42,9 @@ type fakeBackend struct {
 	// sendGate, when set, parks every send until it is closed. A test uses it to
 	// cancel a send that is already writing.
 	sendGate chan struct{}
+	// echoState is the line discipline this fake terminal reports, so a test can
+	// make the refusal paths reachable. Nil means the default.
+	echoState *fakeEcho
 	// readGate, when set, parks every read until it is closed. A test uses it to
 	// hold a read open and cancel it.
 	readGate chan struct{}
@@ -134,10 +139,20 @@ func (f *fakeBackend) List(context.Context) ([]Listed, error) {
 	return out, nil
 }
 
-func (f *fakeBackend) Send(ctx context.Context, s Session, data []byte) (Sent, error) {
+func (f *fakeBackend) Send(ctx context.Context, s Session, data []byte, secret bool) (Sent, error) {
+	// A fake terminal is never a password prompt, so it echoes. That makes it the
+	// right shape for a refusal test and the wrong shape for a happy path, so the
+	// state is a field rather than a constant.
 	f.mu.Lock()
 	gate := f.sendGate
+	echoState := f.echoState
 	f.mu.Unlock()
+	if secret && echoState != nil {
+		st := ttyutil.EchoState{Echo: echoState.echo, Icanon: echoState.icanon}
+		if st.InputMode() == ttyutil.InputEcho {
+			return Sent{}, errors.New("refused: the terminal is echoing")
+		}
+	}
 	if gate != nil {
 		// A real target accepts the bytes and then answers, so a send cut off
 		// part way knows it wrote some and not how many.
@@ -374,4 +389,15 @@ func (f *fakeBackend) resetReads() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reads = 0
+}
+
+// fakeEcho is a line-discipline state a test sets on the fake terminal.
+type fakeEcho struct{ echo, icanon bool }
+
+// setEchoState makes the fake terminal report this state, which is what makes a
+// refusal reachable without a real program asking for a secret.
+func (f *fakeBackend) setEchoState(echo, icanon bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.echoState = &fakeEcho{echo: echo, icanon: icanon}
 }

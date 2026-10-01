@@ -665,7 +665,10 @@ var ErrSessionInUse = fmt.Errorf("session in use: attached elsewhere")
 // Send injects keystrokes without taking the exclusive attach slot. It never
 // starts a shell: an exited or pending session is an error, so a send cannot
 // run a command the caller did not ask for.
-func (s *Session) Send(p []byte) (live.SendReply, error) {
+// Send writes to the session's terminal. secret asks the agent to refuse the
+// write unless the terminal is not echoing, which it decides where the PTY is
+// held; see internal/live.
+func (s *Session) Send(p []byte, secret bool) (live.SendReply, error) {
 	if len(p) == 0 {
 		return live.SendReply{}, fmt.Errorf("send requires data")
 	}
@@ -691,7 +694,7 @@ func (s *Session) Send(p []byte) (live.SendReply, error) {
 	if dir == "" {
 		return live.SendReply{}, ErrSendUnsupported
 	}
-	return live.SendSession(dir, p)
+	return live.SendSession(dir, p, secret)
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {

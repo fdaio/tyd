@@ -119,6 +119,12 @@ type Sent struct {
 	Epoch  uint64
 	// State is the session state the target reported, when it reported one.
 	State string
+	// Echo and Icanon are the target terminal's line-discipline bits as of this
+	// page, which is the state a prompt on that page was asking in. Nil means the
+	// target did not report them, which is not the same as reporting them off: a
+	// caller must not read unknown as safe.
+	Echo   *bool
+	Icanon *bool
 	// HumanAttach is the command that hands the session to a person, for the same
 	// reason a page carries one.
 	HumanAttach string
@@ -135,7 +141,10 @@ type Backend interface {
 	// only and never opens a connection.
 	List(ctx context.Context) ([]Listed, error)
 	// Send injects bytes into a session nobody is attached to.
-	Send(ctx context.Context, s Session, data []byte) (Sent, error)
+	// Send writes to the session's terminal. secret asks that the write be refused
+	// unless the terminal is not echoing; the refusal is decided where the PTY is
+	// held, which is the target's agent, not here.
+	Send(ctx context.Context, s Session, data []byte, secret bool) (Sent, error)
 	// Read pulls one page of output.
 	Read(ctx context.Context, req ReadRequest) (Page, error)
 	// Close ends a session.

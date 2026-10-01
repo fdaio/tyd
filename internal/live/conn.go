@@ -189,6 +189,8 @@ func DialRead(dir string, cursor, epoch uint64, waitMS, idleMS uint32, pattern s
 		CursorAhead: f.CursorAhead,
 		Exited:      f.Exited,
 		Reason:      f.Reason,
+		Echo:        f.Echo,
+		Icanon:      f.Icanon,
 	}, nil
 }
 
@@ -201,13 +203,13 @@ type SendReply struct {
 }
 
 // DialSend injects keystrokes without taking the attach slot.
-func DialSend(dir string, data []byte) (SendReply, error) {
+func DialSend(dir string, data []byte, secret bool) (SendReply, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
 		return SendReply{}, err
 	}
 	defer nc.Close()
-	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data}); err != nil {
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data, Secret: secret}); err != nil {
 		return SendReply{}, err
 	}
 	f, err := protocol.ReadFrame(nc)

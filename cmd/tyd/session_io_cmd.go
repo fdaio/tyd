@@ -111,7 +111,7 @@ func runSessionSend(opts options) error {
 	}
 	rememberPeerSession(opts, peerID, sid)
 	_ = fromCatalog
-	rep, err := client.Send(ep, key, sid, data)
+	rep, err := client.Send(ep, key, sid, data, false)
 	if err != nil {
 		if strings.Contains(err.Error(), "session in use") {
 			fmt.Fprintf(os.Stderr, "tyd: %s\n", err)

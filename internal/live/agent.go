@@ -15,6 +15,7 @@ import (
 	"github.com/creack/pty"
 
 	"tyd/internal/protocol"
+	"tyd/internal/ttyutil"
 )
 
 const ringMax = 64 << 10
@@ -377,7 +378,12 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 	} else {
 		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
 	}
-	_ = protocol.WriteFrame(conn, protocol.Frame{
+	// Read here rather than inside the stream reader, because this is the state of
+	// the terminal at the moment the page was taken, which is the state a prompt
+	// on that page was asking in. One read for both bits: two reads could straddle
+	// a program that changes them and report a combination that never existed.
+	echo := a.echoState()
+	reply := protocol.Frame{
 		Type:        protocol.TypeReadResult,
 		Data:        res.Data,
 		CursorNext:  res.CursorNext,
@@ -387,7 +393,14 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 		CursorAhead: res.CursorAhead,
 		Exited:      res.Exited,
 		Reason:      res.Reason,
-	})
+	}
+	// No terminal means no bits, which is reported as absent rather than as off.
+	// A shell that has exited is the ordinary way to get here.
+	if echo != nil {
+		reply.Echo = boolPtr(echo.Echo)
+		reply.Icanon = boolPtr(echo.Icanon)
+	}
+	_ = protocol.WriteFrame(conn, reply)
 }
 
 // maxReadWaiters bounds the reads parked on one session. Each holds a
@@ -434,6 +447,11 @@ type sendJob struct {
 	data      []byte
 	done      chan struct{}
 	abandoned atomic.Bool
+	// secret asks that the write be refused unless the terminal is not echoing.
+	secret bool
+	// refuse carries why the job was not written. The writer sets it before it
+	// closes done, so the reader in awaitSend has it before the close returns.
+	refuse error
 }
 
 // Send errors. The first two carry a written count, so a caller can retry
@@ -481,7 +499,7 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 	cursor, epoch := a.outCursor()
 	a.mu.Unlock()
 
-	written, err := a.awaitSend(f.Data)
+	written, err := a.awaitSend(f.Data, f.Secret)
 	if err != nil {
 		_ = protocol.WriteFrame(conn, protocol.Frame{
 			Type:       protocol.TypeError,
@@ -504,6 +522,15 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 func (a *agent) sendWriter() {
 	for job := range a.sendQueue {
 		gen := a.sendGen.Load()
+		if job.secret {
+			// Before the chunk loop, so nothing has been counted as written and
+			// nothing has reached the PTY.
+			if err := a.checkSecret(); err != nil {
+				job.refuse = err
+				close(job.done)
+				continue
+			}
+		}
 		for len(job.data) > 0 {
 			if a.sendGen.Load() != gen || job.abandoned.Load() {
 				break
@@ -527,11 +554,79 @@ func (a *agent) sendWriter() {
 	}
 }
 
+// Secret-write refusals. They are three distinct errors rather than one, because
+// the answer differs: a terminal that echoes means the bytes would be recorded, a
+// nested terminal means the state cannot be seen from here at all, and an
+// unreadable terminal means the same thing about something that should have been
+// readable.
+var (
+	errEchoOn = errors.New("refused: the terminal is echoing, so these bytes would be recorded " +
+		"in the session's scrollback and output log. Send without secret, or hand the session " +
+		"to a person")
+
+	errNestedTerminal = errors.New("refused: this session's terminal is in raw mode, which is what a " +
+		"full-screen program or a nested terminal produces. Whether anything echoes on the far " +
+		"end cannot be seen from here, so a secret cannot be promised. Hand the session to a person")
+
+	errEchoUnknown = errors.New("refused: the session's terminal state could not be read, so it is " +
+		"unknown whether these bytes would echo. Hand the session to a person")
+)
+
+// checkSecret reports whether a write asked to be secret may go ahead.
+//
+// It is called from the writer, at the last point before bytes reach the PTY and
+// under the single-send slot, so there is nothing between the check and the write.
+// Reading it earlier would leave a window in which the program changes the mode:
+// a prompt that times out and restores echo between a model's read and its send
+// would be written in the clear.
+//
+// Unknown is a refusal. A caller that read "could not tell" as "not echoing"
+// would promise something it cannot verify, and the whole point of asking is that
+// the promise is checkable.
+func (a *agent) checkSecret() error {
+	st := a.echoState()
+	if st == nil {
+		return errEchoUnknown
+	}
+	switch st.InputMode() {
+	case ttyutil.InputSecretLikely:
+		return nil
+	case ttyutil.InputEcho:
+		return errEchoOn
+	default:
+		return errNestedTerminal
+	}
+}
+
 // awaitSend owns the whole send: the single-send slot, the cancellation an
 // attach uses, and the wait. The caller's reply is produced by its own
 // deadline, so a PTY that will not accept input delays the writer, never the
 // caller and never an attach.
-func (a *agent) awaitSend(data []byte) (written int, err error) {
+func boolPtr(b bool) *bool { return &b }
+
+// echoState reads the line discipline of the session's terminal. The agent holds
+// the PTY master and no one else can: the daemon reaches it over this socket, so
+// this is the only place the state can be read, and the only place a write can be
+// refused with nothing between the check and the write.
+//
+// A terminal that cannot be read reports nil, meaning unknown. Callers must treat
+// unknown as refusal: a caller that read it as "not echoing" would allow a secret
+// it cannot verify.
+func (a *agent) echoState() *ttyutil.EchoState {
+	a.mu.Lock()
+	ptmx := a.pty
+	a.mu.Unlock()
+	if ptmx == nil {
+		return nil
+	}
+	st, err := ttyutil.ReadEchoState(int(ptmx.Fd()))
+	if err != nil {
+		return nil
+	}
+	return &st
+}
+
+func (a *agent) awaitSend(data []byte, secret bool) (written int, err error) {
 	if len(data) > sendQueueMax {
 		return 0, errSendTooLarge
 	}
@@ -553,7 +648,7 @@ func (a *agent) awaitSend(data []byte) (written int, err error) {
 		a.sendMu.Unlock()
 	}()
 
-	job := &sendJob{data: data, done: make(chan struct{})}
+	job := &sendJob{data: data, done: make(chan struct{}), secret: secret}
 	a.sent.Store(0)
 	select {
 	case a.sendQueue <- job:
@@ -564,6 +659,9 @@ func (a *agent) awaitSend(data []byte) (written int, err error) {
 	defer timer.Stop()
 	select {
 	case <-job.done:
+		if job.refuse != nil {
+			return 0, job.refuse
+		}
 	case <-timer.C:
 		err = errSendTimeout
 	case <-cancel:
