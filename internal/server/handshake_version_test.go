@@ -1,7 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +81,12 @@ func TestDaemonRefusesAClientItCannotSpeakBeforeVerifying(t *testing.T) {
 			if !hasKind(getAudits(), audit.KindDenied) {
 				t.Error("a refused handshake left no record of the denial")
 			}
+			// The operator reads the audit, not the client's error, so the
+			// version has to be in the record too.
+			if !auditReasonNamesVersion(getAudits(), tc.version) {
+				t.Errorf("the audit does not record the refused version %d: %+v",
+					tc.version, getAudits())
+			}
 		})
 	}
 }
@@ -113,6 +121,20 @@ func TestDaemonStillRefusesAnUnauthenticatedFrame(t *testing.T) {
 func hasKind(events []audit.Event, kind audit.Kind) bool {
 	for _, e := range events {
 		if e.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// auditReasonNamesVersion reports whether a denial recorded the version it
+// refused, which is the number the operator needs to know what to upgrade.
+func auditReasonNamesVersion(events []audit.Event, version int) bool {
+	for _, e := range events {
+		if e.Kind != audit.KindDenied {
+			continue
+		}
+		if strings.Contains(e.Reason, fmt.Sprintf("version %d", version)) {
 			return true
 		}
 	}
