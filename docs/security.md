@@ -155,6 +155,23 @@ that asks in other words, and it fires on a prompt that was never going to
 receive input. The reliable answer is to hand the session to a person with the
 attach command the result prints.
 
+### A name is rendered into a command a person is asked to run
+
+`tyd mcp` puts a takeover command in every result that needs one — *"ask the user
+to run `tyd session attach build`"* — and a peer nickname becomes part of the same
+command. So an alias or nickname is not a label, it is text that will land in
+somebody's shell.
+
+Both accept letters and digits in any script, plus `-`, `_` and `.`, and refuse
+everything else. A backtick or `$( )` is one word to a shell's parser and still
+substitutes, so allowing them would let anything that can influence the model's
+choice of name — which includes anything whose output the model reads — reach a
+person's terminal as something to paste. Refusing whitespace and `/` alone is not
+enough: `id`, `whoami` and `env` need neither.
+
+The rule is one function, `strutil.ShellSafe`, because it is a security rule and
+two copies of one drift.
+
 ## Deployment tiers
 
 | Tier | What it contains | What it stops |

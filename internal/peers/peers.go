@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tyd/internal/safefile"
+	"tyd/internal/strutil"
 )
 
 type File struct {
@@ -191,6 +192,12 @@ func ValidateNickname(name string) error {
 	}
 	if len(name) > 64 {
 		return fmt.Errorf("nickname too long")
+	}
+	// A nickname is rendered into `tyd <alias>.<nickname>`, which tyd asks a
+	// person to run, so it has to be one inert shell word.
+	if !strutil.ShellSafe(name) {
+		return fmt.Errorf("nickname may only contain letters, digits, '-', '_' and '.': it is " +
+			"rendered into a command a person is asked to run")
 	}
 	return nil
 }
