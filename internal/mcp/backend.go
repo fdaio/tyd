@@ -99,6 +99,12 @@ type Page struct {
 	CursorAhead bool
 	Exited      bool
 	Reason      string
+	// Echo and Icanon are the target terminal's line-discipline bits as of this
+	// page, which is the state a prompt on that page was asking in. Nil means the
+	// target did not report them, which is not the same as reporting them off: a
+	// caller must not read unknown as safe.
+	Echo   *bool
+	Icanon *bool
 	// HumanAttach is the command that hands the session to a person. It travels
 	// with the page rather than only with the open, because the result that needs
 	// it most is a read that has just landed on a password prompt.
@@ -119,12 +125,6 @@ type Sent struct {
 	Epoch  uint64
 	// State is the session state the target reported, when it reported one.
 	State string
-	// Echo and Icanon are the target terminal's line-discipline bits as of this
-	// page, which is the state a prompt on that page was asking in. Nil means the
-	// target did not report them, which is not the same as reporting them off: a
-	// caller must not read unknown as safe.
-	Echo   *bool
-	Icanon *bool
 	// HumanAttach is the command that hands the session to a person, for the same
 	// reason a page carries one.
 	HumanAttach string

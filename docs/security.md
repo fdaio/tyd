@@ -155,6 +155,45 @@ that asks in other words, and it fires on a prompt that was never going to
 receive input. The reliable answer is to hand the session to a person with the
 attach command the result prints.
 
+### A secret only stays secret if the write is refused, not warned about
+
+The PTY echoes whatever is written to it unless the program in front turned echo
+off. So a secret typed into a session reaches the terminal, the shell's scrollback
+and the session's output log — and the output log cannot be redacted afterwards,
+because an echoed byte and ordinary program output are indistinguishable.
+
+`session_send` therefore takes `secret: true`, and the **target** decides: the write
+is refused unless the terminal is not echoing at the moment the bytes go in. The
+refusal is the point. A warning would leave the model holding a promise it cannot
+check, and the one thing a caller must never infer from a terminal it could not
+read is that it is safe.
+
+There are three refusals, because the answers differ:
+
+| State | What it means | What to do |
+|---|---|---|
+| echo on | the bytes would be recorded | do not send it as a model |
+| raw mode | a full-screen program or a nested terminal; the far end cannot be seen | hand the session to a person |
+| unreadable | the state could not be read at all | hand the session to a person |
+
+Raw mode is the common case on a real shell rather than an edge: a non-interactive
+`/bin/sh` reading commands from a PTY disables echo outright, so `secret: true` is
+refused against one. That is the accepted cost — the alternative is promising
+something unverifiable.
+
+`session_read` reports `tty: {echo, icanon}` and the `input_mode` derived from
+them. Both bits are reported raw as well as derived, so that a derivation found
+wrong is a change of derivation and not a change of contract. Where the target
+reported nothing, the result says so rather than carrying two false bits, which
+would read as "not echoing".
+
+**The write is refused unless the agent is known to honour the request.** The
+dataplane between a daemon and a live agent has no handshake, and an agent older
+than this flag would ignore it rather than refuse — so the bytes would land in the
+clear. The agent stamps its version on what it sends, and a `secret: true` write is
+refused until a reply has shown an agent new enough. An ordinary keystroke is never
+gated on this, so a rolling upgrade does not stop models typing at all.
+
 ### A name is rendered into a command a person is asked to run
 
 `tyd mcp` puts a takeover command in every result that needs one — *"ask the user

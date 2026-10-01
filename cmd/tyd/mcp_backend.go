@@ -349,6 +349,8 @@ func (b *mcpBackend) Read(ctx context.Context, req mcp.ReadRequest) (mcp.Page, e
 		CursorAhead: frame.CursorAhead,
 		Exited:      frame.Exited,
 		Reason:      frame.Reason,
+		Echo:        frame.Echo,
+		Icanon:      frame.Icanon,
 		HumanAttach: b.humanAttachFor(req.Session.ID),
 	}, nil
 }

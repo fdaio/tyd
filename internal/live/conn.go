@@ -181,16 +181,17 @@ func DialRead(dir string, cursor, epoch uint64, waitMS, idleMS uint32, pattern s
 		return ReadResult{}, fmt.Errorf("unexpected read reply %q", f.Type)
 	}
 	return ReadResult{
-		Data:        append([]byte(nil), f.Data...),
-		CursorNext:  f.CursorNext,
-		Dropped:     f.Dropped,
-		AtEnd:       f.AtEnd,
-		Epoch:       f.Epoch,
-		CursorAhead: f.CursorAhead,
-		Exited:      f.Exited,
-		Reason:      f.Reason,
-		Echo:        f.Echo,
-		Icanon:      f.Icanon,
+		Data:         append([]byte(nil), f.Data...),
+		CursorNext:   f.CursorNext,
+		Dropped:      f.Dropped,
+		AtEnd:        f.AtEnd,
+		Epoch:        f.Epoch,
+		CursorAhead:  f.CursorAhead,
+		Exited:       f.Exited,
+		Reason:       f.Reason,
+		Echo:         f.Echo,
+		Icanon:       f.Icanon,
+		AgentVersion: f.AgentVersion,
 	}, nil
 }
 
@@ -200,6 +201,9 @@ type SendReply struct {
 	Written int
 	Cursor  uint64
 	Epoch   uint64
+	// AgentVersion is what build the agent is. Zero means it did not say, which is
+	// an agent older than the field existed.
+	AgentVersion int
 }
 
 // DialSend injects keystrokes without taking the attach slot.

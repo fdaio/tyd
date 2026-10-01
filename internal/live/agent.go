@@ -384,15 +384,16 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 	// a program that changes them and report a combination that never existed.
 	echo := a.echoState()
 	reply := protocol.Frame{
-		Type:        protocol.TypeReadResult,
-		Data:        res.Data,
-		CursorNext:  res.CursorNext,
-		Dropped:     res.Dropped,
-		AtEnd:       res.AtEnd,
-		Epoch:       res.Epoch,
-		CursorAhead: res.CursorAhead,
-		Exited:      res.Exited,
-		Reason:      res.Reason,
+		Type:         protocol.TypeReadResult,
+		Data:         res.Data,
+		CursorNext:   res.CursorNext,
+		Dropped:      res.Dropped,
+		AtEnd:        res.AtEnd,
+		Epoch:        res.Epoch,
+		CursorAhead:  res.CursorAhead,
+		Exited:       res.Exited,
+		Reason:       res.Reason,
+		AgentVersion: AgentVersion,
 	}
 	// No terminal means no bits, which is reported as absent rather than as off.
 	// A shell that has exited is the ordinary way to get here.
@@ -509,10 +510,11 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 		return
 	}
 	_ = protocol.WriteFrame(conn, protocol.Frame{
-		Type:       protocol.TypeOK,
-		CursorNext: uint64(written),
-		Cursor:     cursor,
-		Epoch:      epoch,
+		Type:         protocol.TypeOK,
+		CursorNext:   uint64(written),
+		Cursor:       cursor,
+		Epoch:        epoch,
+		AgentVersion: AgentVersion,
 	})
 }
 

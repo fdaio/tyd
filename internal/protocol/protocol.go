@@ -106,6 +106,13 @@ type Frame struct {
 	// them, which is different from reporting them as off.
 	Echo   *bool `json:"echo,omitempty"`
 	Icanon *bool `json:"icanon,omitempty"`
+
+	// AgentVersion is what build the agent that sent this frame is. It is not the
+	// auth handshake's Version: that one travels daemon to client, and this one
+	// travels daemon to agent over a socket with no handshake. It is absent on an
+	// agent older than this field, which is what makes a secret write refusable
+	// rather than silently ignored.
+	AgentVersion int `json:"agent_version,omitempty"`
 }
 
 type ConnInfo struct {

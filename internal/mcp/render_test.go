@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"tyd/internal/ttyutil"
 )
 
 func TestFenceOutrunsAnyRunInTheOutput(t *testing.T) {
@@ -275,5 +277,50 @@ func TestTheTakeoverInstructionCarriesNothingExecutable(t *testing.T) {
 			t.Errorf("alias %q left %d backticks inside the instruction, so the command is not one token: %q",
 				alias, n, seg)
 		}
+	}
+}
+
+// The terminal state is the one thing here that came from measurement rather than
+// from a guess over the text, so the rendering of it is pinned: a model has to be
+// able to tell a real report from an absent one, and must not read two false bits
+// as "safe to type a password".
+func TestTheTerminalStateIsReportedAndUnknownIsSpelledOut(t *testing.T) {
+	echo, icanon := false, true
+	out, res := render(Session{ID: "s1", Peer: "local"},
+		Page{Data: []byte("Password: "), Echo: &echo, Icanon: &icanon},
+		0, "tyd session attach s1")
+
+	if res.Tty == nil {
+		t.Fatal("no terminal state in the result")
+	}
+	if res.Tty.InputMode != string(ttyutil.InputSecretLikely) {
+		t.Errorf("input_mode is %q, want secret_likely", res.Tty.InputMode)
+	}
+	if res.Tty.Echo || !res.Tty.Icanon {
+		t.Errorf("raw bits are echo=%v icanon=%v, want false/true", res.Tty.Echo, res.Tty.Icanon)
+	}
+	if !strings.Contains(out, "not echoing") {
+		t.Errorf("the text does not tell the model the terminal is not echoing:\n%s", out)
+	}
+
+	// A target that says nothing must not come out as two false bits.
+	out, res = render(Session{ID: "s1", Peer: "local"},
+		Page{Data: []byte("$ ")}, 0, "")
+	if res.Tty == nil || res.Tty.Why == "" {
+		t.Fatalf("an unreported state is not marked unknown: %+v", res.Tty)
+	}
+	if res.Tty.InputMode != "" {
+		t.Errorf("an unknown state derived a mode, %q", res.Tty.InputMode)
+	}
+	if strings.Contains(out, "not echoing") {
+		t.Errorf("an unknown state was reported as a fact:\n%s", out)
+	}
+
+	// And an echoing terminal is reported as such, without the hint.
+	echo, icanon = true, true
+	_, res = render(Session{ID: "s1", Peer: "local"},
+		Page{Data: []byte("$ "), Echo: &echo, Icanon: &icanon}, 0, "")
+	if res.Tty.InputMode != string(ttyutil.InputEcho) {
+		t.Errorf("input_mode is %q, want echo", res.Tty.InputMode)
 	}
 }

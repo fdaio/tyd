@@ -53,6 +53,9 @@ type ReadResult struct {
 	// did not report them, which is not the same as reporting them off.
 	Echo   *bool
 	Icanon *bool
+	// AgentVersion is what build the agent is. Zero means it did not say, which is
+	// an agent older than the field existed.
+	AgentVersion int
 }
 
 type outputSeg struct {

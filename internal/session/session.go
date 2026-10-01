@@ -310,9 +310,13 @@ type Session struct {
 	idleSince  time.Time // when the session became unattended; zero while attached
 	onClosed   func(ClosedInfo)
 	liveDir    string
-	agentCmd   *exec.Cmd
-	ownerPub   string
-	opts       CreateOpts // retained so an exited shell can be respawned on attach
+	// agentVersion is what build the agent on this session reported. Zero means it
+	// has not said, which is either an agent older than the field existed or no
+	// reply seen yet — both refuse a secret write.
+	agentVersion int
+	agentCmd     *exec.Cmd
+	ownerPub     string
+	opts         CreateOpts // retained so an exited shell can be respawned on attach
 	// agentSpawn starts a replacement live-agent for this session. Set for
 	// live sessions only; nil means there is nothing to respawn.
 	agentSpawn func() (string, *exec.Cmd, error)
@@ -651,7 +655,12 @@ func (s *Session) Read(cursor, epoch uint64, wait time.Duration, cond live.ReadC
 	if dir == "" {
 		return live.ReadResult{}, ErrReadUnsupported
 	}
-	return live.ReadSession(dir, cursor, epoch, wait, cond)
+	res, err := live.ReadSession(dir, cursor, epoch, wait, cond)
+	// Recorded from every read, including a failed one: the agent stamps its build
+	// on the reply either way, and a version learned from an error is as true as
+	// one learned from a page.
+	s.noteAgentVersion(res.AgentVersion)
+	return res, err
 }
 
 // ErrSendUnsupported is returned when a process-in-PTY session (tests, no
@@ -665,12 +674,61 @@ var ErrSessionInUse = fmt.Errorf("session in use: attached elsewhere")
 // Send injects keystrokes without taking the exclusive attach slot. It never
 // starts a shell: an exited or pending session is an error, so a send cannot
 // run a command the caller did not ask for.
+// checkSecretPossible refuses a write asked to be secret when this session's agent
+// cannot be relied on to honour it.
+//
+// An agent older than the secret flag ignores the flag rather than refusing the
+// write, so the bytes would reach the PTY in the clear and the promise would be
+// false. There is no handshake on this socket to ask the agent's version first, so
+// what is known is what a reply has said. Unknown is therefore a refusal, and the
+// way out is a read: the model has to read anyway to have seen the prompt.
+//
+// This is the same rule as the gated-target mark in the MCP layer, for the same
+// reason and in the other direction. There, the mark is deliberately not persisted
+// because a stale "waiting for approval" is worse than a spent one. Here it is
+// deliberately not cached beyond the session, because a stale "agent understands
+// this" would promise a check that is not there.
+func (s *Session) checkSecretPossible() error {
+	s.mu.Lock()
+	v := s.agentVersion
+	s.mu.Unlock()
+	if v >= live.MinSecretVersion {
+		return nil
+	}
+	if v == 0 {
+		return fmt.Errorf("refused: this session's agent has not said what build it is, " +
+			"so it cannot be told whether these bytes would echo. Read the session first, " +
+			"which is how a prompt gets seen at all, and try again on an up-to-date agent")
+	}
+	return fmt.Errorf("refused: this session's agent speaks dataplane version %d and cannot check "+
+		"whether these bytes would echo; upgrade the agent to %d or newer, or hand the session "+
+		"to a person", v, live.MinSecretVersion)
+}
+
+// noteAgentVersion records what build answered, so a later secret write knows
+// whether the flag can be trusted.
+func (s *Session) noteAgentVersion(v int) {
+	if v <= 0 {
+		return
+	}
+	s.mu.Lock()
+	if v > s.agentVersion {
+		s.agentVersion = v
+	}
+	s.mu.Unlock()
+}
+
 // Send writes to the session's terminal. secret asks the agent to refuse the
 // write unless the terminal is not echoing, which it decides where the PTY is
 // held; see internal/live.
 func (s *Session) Send(p []byte, secret bool) (live.SendReply, error) {
 	if len(p) == 0 {
 		return live.SendReply{}, fmt.Errorf("send requires data")
+	}
+	if secret {
+		if err := s.checkSecretPossible(); err != nil {
+			return live.SendReply{}, err
+		}
 	}
 	s.mu.Lock()
 	dir := s.liveDir
@@ -694,7 +752,9 @@ func (s *Session) Send(p []byte, secret bool) (live.SendReply, error) {
 	if dir == "" {
 		return live.SendReply{}, ErrSendUnsupported
 	}
-	return live.SendSession(dir, p, secret)
+	rep, err := live.SendSession(dir, p, secret)
+	s.noteAgentVersion(rep.AgentVersion)
+	return rep, err
 }
 
 func (a *Attachment) Write(p []byte) (int, error) {

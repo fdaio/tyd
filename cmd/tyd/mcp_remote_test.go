@@ -1159,3 +1159,55 @@ func (c *mcpClient) request(method string, params map[string]any) json.RawMessag
 		}
 	}
 }
+
+// A secret write to a remote target crosses two hops: this daemon to the target's
+// daemon, and the target's daemon to the agent holding the PTY. A proxy that
+// dropped the flag would turn a refusal into a silent write in the clear, which is
+// the failure the whole feature exists to prevent — and it would look like the
+// feature working, because the write succeeds.
+func TestTheSecretFlagSurvivesBothHops(t *testing.T) {
+	fx := startRemote(t, transport.KindTLS, controlpanel.ApprovalFull)
+	mc := startMCP(t, fx)
+
+	mc.openSession(t, "gated")
+	// A read first, so the model has seen the prompt — and, on the way, learned
+	// what build the far agent is.
+	mc.call(t, "session_read", map[string]any{
+		"session": "gated", "wait": map[string]any{"idle_ms": 300},
+	})
+
+	// An ordinary prompt echoes, so this is the refusal that means "these bytes
+	// would be recorded". It can only arrive if the flag reached the agent.
+	out := mc.tryCall(t, "session_send", map[string]any{
+		"session": "gated", "data": "echo should-not-land\n", "secret": true,
+	})
+	if out.err == "" {
+		t.Fatal("a secret write was accepted through both hops")
+	}
+	// Which of the three refusals comes back depends on the line discipline of the
+	// target's terminal at that instant, which is the thing the feature measures
+	// rather than controls. What must be true is that the refusal came from the
+	// agent's own check, so all three are accepted and the version gate is not:
+	// the version gate firing would mean the flag never arrived.
+	fromAgent := false
+	for _, phrase := range []string{"the terminal is echoing", "in raw mode", "could not be read"} {
+		if strings.Contains(out.text, phrase) {
+			fromAgent = true
+			t.Logf("refused by the agent's check: %s", phrase)
+		}
+	}
+	if strings.Contains(out.text, "has not said what build it is") {
+		t.Fatalf("the version gate fired, so the flag never reached the agent: %s", out.text)
+	}
+	if !fromAgent {
+		t.Fatalf("the refusal did not come from the agent's echo check: %s", out.text)
+	}
+
+	// And the shell must not have received it.
+	after := mc.call(t, "session_read", map[string]any{
+		"session": "gated", "wait": map[string]any{"idle_ms": 300},
+	})
+	if strings.Contains(after.text, "should-not-land") {
+		t.Fatalf("the refused bytes reached the shell:\n%s", after.text)
+	}
+}
