@@ -1,0 +1,113 @@
+[
+  {
+    "program": "getpass",
+    "argv": [
+      "python3",
+      "-c",
+      "import getpass; getpass.getpass('Password: '); print('done')"
+    ],
+    "echo": false,
+    "icanon": true,
+    "expect_secret": true,
+    "note": "the reference case: the program turns echo off and reads the line itself"
+  },
+  {
+    "program": "bash read -s",
+    "argv": [
+      "bash",
+      "--norc",
+      "--noprofile",
+      "-c",
+      "read -rs -p 'Password: ' x; echo done"
+    ],
+    "echo": false,
+    "icanon": true,
+    "expect_secret": true
+  },
+  {
+    "program": "zsh read -s",
+    "argv": [
+      "zsh",
+      "-f",
+      "-c",
+      "read -rs 'Password: ' x; echo done"
+    ],
+    "echo": false,
+    "icanon": true,
+    "expect_secret": true
+  },
+  {
+    "program": "sudo password",
+    "argv": [
+      "sudo",
+      "-k",
+      "-S",
+      "true"
+    ],
+    "echo": false,
+    "icanon": true,
+    "expect_secret": true,
+    "note": "the password is wrong on purpose; the prompt state is reached before it is checked"
+  },
+  {
+    "program": "bash plain read",
+    "argv": [
+      "bash",
+      "--norc",
+      "--noprofile",
+      "-c",
+      "read -r -p 'Name: ' x; echo done"
+    ],
+    "echo": true,
+    "icanon": true,
+    "expect_secret": false,
+    "note": "the counter-case: a prompt that looks the same and is not a secret"
+  },
+  {
+    "program": "raw pty",
+    "argv": [
+      "sh",
+      "-c",
+      "stty raw -echo; cat"
+    ],
+    "echo": false,
+    "icanon": false,
+    "expect_secret": false,
+    "note": "what a full-screen program and a nested terminal produce: app_managed, and why a secret cannot be sent through one"
+  },
+  {
+    "program": "vim full screen",
+    "argv": [
+      "vim",
+      "-u",
+      "NONE",
+      "-n"
+    ],
+    "echo": false,
+    "icanon": false,
+    "expect_secret": false
+  },
+  {
+    "program": "nothing running",
+    "argv": [
+      "cat"
+    ],
+    "echo": true,
+    "icanon": true,
+    "expect_secret": false,
+    "note": "the default a freshly created pty starts in"
+  },
+  {
+    "program": "ssh password",
+    "argv": [
+      "ssh",
+      "-o",
+      "PreferredAuthentications=password",
+      "-o",
+      "PubkeyAuthentication=no",
+      "root@127.0.0.1"
+    ],
+    "expect_secret": true,
+    "needs": "a host that offers password authentication; a refused connection never reaches the prompt"
+  }
+]
