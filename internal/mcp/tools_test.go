@@ -675,7 +675,7 @@ func TestAGatedTargetIsProbedAgainOnceACallGetsThrough(t *testing.T) {
 	if _, _, err := call(t, s, "session_list", args{}); err != nil {
 		t.Fatal(err)
 	}
-	if !s.needsApproval("") {
+	if _, gated := s.needsApproval(""); !gated {
 		t.Fatal("a target that asked for approval must be recorded as gated")
 	}
 
@@ -684,7 +684,7 @@ func TestAGatedTargetIsProbedAgainOnceACallGetsThrough(t *testing.T) {
 	if _, _, err := call(t, s, "session_send", args{"session": "build", "data": "ls\n"}); err != nil {
 		t.Fatal(err)
 	}
-	if s.needsApproval("") {
+	if _, gated := s.needsApproval(""); gated {
 		t.Fatal("a call that got through must clear the gate")
 	}
 	f.resetReads()

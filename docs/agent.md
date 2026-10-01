@@ -280,6 +280,25 @@ attached" instead of "the target is broken".
   knows this and stops probing a target that has asked, so a list never spends
   the approval you gave.
 
+  **Which rows a list gives up on is a choice.** The rows come back ordered most
+  recently active first, and that is the order they are probed in — so the first
+  row you read is the first one that was probed, and the rest came from the local
+  catalog. Ordering them by recent activity is a decision, not the catalog's
+  write order.
+
+  A row that was not probed says so, and says which of the two reasons applies:
+  the target is waiting for approval, and how long it has been, or another list is
+  already asking it. Those are different problems — one waits for a person, the
+  other waits for a moment — and the row does not conflate them.
+
+  **The mark that stops the probing is per process, on purpose.** Restarting
+  `tyd mcp` forgets it, so the first list afterwards probes once more. That is
+  deliberate: the alternative is a remembered block after the operator has already
+  approved, which sends a model waiting for a gate that has closed. Spending one
+  approval again is cheaper than a stale refusal. Only one probe per target is ever
+  in flight, so eight lists running at once still cost the operator one approval
+  and not eight.
+
 ### Versions
 
 The **target's daemon** has to be new enough too: `send` and `read` are daemon

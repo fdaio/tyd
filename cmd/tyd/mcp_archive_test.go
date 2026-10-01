@@ -334,3 +334,65 @@ func TestBothListsHideTheSameSessions(t *testing.T) {
 		}
 	}
 }
+
+// The rows are ordered most recently active first, and that order is also the
+// order they are probed in. Which rows are read from the catalog instead of probed
+// is a choice this makes deliberately, so it cannot depend on how the catalog
+// happened to be written.
+func TestSessionListProbesTheMostRecentlyActiveFirst(t *testing.T) {
+	old := time.Now().UTC().Add(-72 * time.Hour)
+	opts := archiveOpts(t)
+	seedSession(t, opts, "1111111111111111", "", session.StateDetached, old)
+	seedSession(t, opts, "2222222222222222", "", session.StateDetached, old)
+
+	b := newMCPBackend(opts, testIdentity(t), []mcpTarget{{label: mcpLocalRef}})
+
+	// One session was driven today; the other has not been touched at all. Both
+	// were created at the same moment, so nothing about creation can separate them
+	// and only recent activity can.
+	setLastUsed(t, opts, "1111111111111111", time.Now().UTC().Add(-time.Hour))
+	setLastUsed(t, opts, "2222222222222222", time.Now().UTC().Add(-72*time.Hour))
+
+	rows, err := b.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows", len(rows))
+	}
+	if rows[0].Session.ID != "1111111111111111" {
+		t.Errorf("the most recently active session is second, so the first row is not the first probed: %+v", rows)
+	}
+	if rows[0].LastUsed.IsZero() {
+		t.Error("the most recently active row carries no last-used time, so the order cannot be checked")
+	}
+
+	// Drive the other one and it must come first, which is what makes the order a
+	// policy rather than a coincidence of ids.
+	setLastUsed(t, opts, "2222222222222222", time.Now().UTC())
+	rows, err = b.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].Session.ID != "2222222222222222" {
+		t.Errorf("the order did not follow recent activity: %+v", rows)
+	}
+}
+
+// setLastUsed writes a session's last-used time straight into the catalog, so a
+// test controls what "recently active" means instead of waiting for it.
+func setLastUsed(t *testing.T, opts options, id string, when time.Time) {
+	t.Helper()
+	cat, err := catalog.Load(opts.sessions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range cat.Sessions {
+		if cat.Sessions[i].ID == id {
+			cat.Sessions[i].LastUsed = when
+		}
+	}
+	if err := catalog.Save(opts.sessions, cat); err != nil {
+		t.Fatal(err)
+	}
+}
