@@ -204,3 +204,22 @@ func TestListDoesNotMutateFile(t *testing.T) {
 		t.Fatal("List returned the live slice, not a copy")
 	}
 }
+
+// A nickname is rendered into `tyd <alias>.<nickname>`, which tyd asks a person to
+// run, so the same rule as an alias applies.
+func TestValidateNicknameRefusesAnythingExecutable(t *testing.T) {
+	for _, name := range []string{"a`id`", "a$(id)", "a$IFS", "a;id", "a|id", "a>x", "*", "a@b", "a:1"} {
+		if err := ValidateNickname(name); err == nil {
+			t.Errorf("accepted %q, which substitutes when pasted into a shell", name)
+		}
+	}
+	for _, name := range []string{"laptop", "web-01", "东京", "a.b_c-d"} {
+		if err := ValidateNickname(name); err != nil {
+			t.Errorf("refused %q: %v", name, err)
+		}
+	}
+	// The reserved name stays reserved.
+	if err := ValidateNickname(ReservedNickname); err == nil {
+		t.Error("the reserved nickname was accepted")
+	}
+}

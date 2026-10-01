@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tyd/internal/safefile"
+	"tyd/internal/strutil"
 )
 
 // File maps alias name -> session id (and optional peer for display).
@@ -65,6 +66,13 @@ func ValidateName(name string) error {
 	}
 	if len(name) > 64 {
 		return fmt.Errorf("alias name too long")
+	}
+	// An alias is rendered into a command tyd asks a person to run, so it has to
+	// be one inert shell word. Whitespace and '/' were not enough: `a$(id)` and
+	// a`id` carry neither and still substitute when pasted.
+	if !strutil.ShellSafe(name) {
+		return fmt.Errorf("alias name may only contain letters, digits, '-', '_' and '.': it is " +
+			"rendered into a command a person is asked to run")
 	}
 	return nil
 }

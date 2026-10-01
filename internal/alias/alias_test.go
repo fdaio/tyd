@@ -91,3 +91,34 @@ func TestDropCorrupt(t *testing.T) {
 		t.Fatal("second drop should be no-op")
 	}
 }
+
+// An alias is rendered into a command tyd asks a person to run, so one carrying a
+// shell metacharacter is not a cosmetic problem: pasted into a shell, it
+// substitutes. Whitespace and '/' were already refused, which is not enough.
+func TestValidateNameRefusesAnythingExecutable(t *testing.T) {
+	for _, name := range []string{
+		"a`id`",
+		"a$(id)",
+		"a$IFS",
+		"a;id",
+		"a|id",
+		"a&&id",
+		"a'id'",
+		`a"id"`,
+		"a>x",
+		"*",
+		"~",
+		"a@b",
+		"a:1",
+	} {
+		if err := ValidateName(name); err == nil {
+			t.Errorf("accepted %q, which substitutes when pasted into a shell", name)
+		}
+	}
+	// Names people actually use still work, including a non-Latin one.
+	for _, name := range []string{"build", "web-01", "session2", "构建", "a.b_c-d"} {
+		if err := ValidateName(name); err != nil {
+			t.Errorf("refused %q: %v", name, err)
+		}
+	}
+}

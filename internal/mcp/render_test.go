@@ -250,3 +250,30 @@ func TestRenderWarnsAboutAPasswordPromptOnAnyResult(t *testing.T) {
 		t.Fatalf("a warning with no command in it is not advice:\n%s", text)
 	}
 }
+
+// The password-prompt footer tells a person which command to run, so the alias in
+// that command has to be one inert shell word. It is model-supplied, and the page
+// above it is attacker-influenced, so this is the point where untrusted output
+// could otherwise reach a human's terminal as something to paste.
+func TestTheTakeoverInstructionCarriesNothingExecutable(t *testing.T) {
+	// Only names the validators accept reach this far: the refusal happens where
+	// the name is stored, and this layer composes what it is given.
+	for _, alias := range []string{"build", "web-01", "session2", "构建"} {
+		cmd := "tyd session attach " + alias
+		out, _ := render(Session{ID: "s1", Alias: alias, Peer: "local"},
+			Page{Data: []byte("Password: "), HumanAttach: cmd}, 0, cmd)
+		if !strings.Contains(out, "Ask the user to run") {
+			t.Fatalf("alias %q produced no takeover instruction:\n%s", alias, out)
+		}
+		// The instruction delimits the command with a backtick pair. Exactly two
+		// inside the instruction means the alias did not break the quoting, which
+		// is what a payload riding in the alias would do: `a`id`` leaves four
+		// there, and the command is no longer one delimited token.
+		rest := out[strings.Index(out, "Ask the user to run")+len("Ask the user to run"):]
+		seg := rest[:strings.Index(rest, " and take the session over")]
+		if n := strings.Count(seg, "`"); n != 2 {
+			t.Errorf("alias %q left %d backticks inside the instruction, so the command is not one token: %q",
+				alias, n, seg)
+		}
+	}
+}

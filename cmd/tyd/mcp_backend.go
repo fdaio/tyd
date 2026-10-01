@@ -107,6 +107,16 @@ func (b *mcpBackend) Open(_ context.Context, req mcp.OpenRequest) (mcp.Opened, e
 		return mcp.Opened{}, err
 	}
 
+	// The alias is checked before anything is created, because it is the one part
+	// of this call a model controls and it can be refused. Creating first would
+	// leave a session on the target that nobody can reach, for a request that was
+	// never going to succeed.
+	if req.Name != "" {
+		if err := alias.ValidateName(req.Name); err != nil {
+			return mcp.Opened{}, err
+		}
+	}
+
 	// client.Create creates without attaching. Attaching here would take the
 	// exclusive write slot, and the first send after that would be refused.
 	info, err := client.Create(ep, b.key, client.CreateOpts{Shell: req.Shell})
@@ -118,15 +128,13 @@ func (b *mcpBackend) Open(_ context.Context, req mcp.OpenRequest) (mcp.Opened, e
 
 	// Record the alias so a person can reach the session from a terminal. The
 	// model is the writer, but a human still needs a way in.
+	//
+	// The session exists by now, so a failure from here on has to take it with it.
+	// Otherwise the model is told the open failed while a shell it cannot reach
+	// keeps running on the target.
 	if req.Name != "" {
-		adoc, err := alias.Load(b.opts.aliases)
-		if err != nil {
-			return mcp.Opened{}, err
-		}
-		if err := adoc.Set(req.Name, info.ID, t.peerID); err != nil {
-			return mcp.Opened{}, err
-		}
-		if err := alias.Save(b.opts.aliases, adoc); err != nil {
+		if err := recordAlias(b.opts, req.Name, info.ID, t.peerID); err != nil {
+			_ = client.CloseSession(ep, b.key, info.ID)
 			return mcp.Opened{}, err
 		}
 	}
@@ -135,6 +143,20 @@ func (b *mcpBackend) Open(_ context.Context, req mcp.OpenRequest) (mcp.Opened, e
 		HumanAttach: humanAttach(t, req.Name, info.ID),
 		State:       info.State,
 	}, nil
+}
+
+// recordAlias binds an alias to a session so a person can reach it from a
+// terminal. It is separate from Open because the session already exists when it
+// runs, and the caller has to be able to undo the open if it fails.
+func recordAlias(opts options, name, sessionID, peerID string) error {
+	adoc, err := alias.Load(opts.aliases)
+	if err != nil {
+		return err
+	}
+	if err := adoc.Set(name, sessionID, peerID); err != nil {
+		return err
+	}
+	return alias.Save(opts.aliases, adoc)
 }
 
 // humanAttachFor is humanAttach for a session this backend is already driving.
