@@ -313,6 +313,21 @@ stop it.
 If the Control Panel is also unreachable, the daemon keeps serving local sessions
 and tells you to run `tyd doctor --fix` once the disk is healthy.
 
+### A peer that takes a long time to answer
+
+A peer publishes several addresses — a LAN address, a tunnel endpoint, a stale one
+from another network — and they are tried **staggered, about 250ms apart**, rather
+than one after another. A dead candidate therefore costs a fraction of a second
+instead of its whole connect timeout, and the address that answers is the one used.
+
+Candidates are connected and their identity checked in parallel, but **only the
+winner logs in.** A login is visible to the target, which can ask for an approval,
+rate limit, or count it against a policy, so racing the whole dial would put several
+logins in front of one connection.
+
+`connected <address>` in the dial log names the winner. That is usually the whole
+diagnosis: a peer behind NAT answers on one address and not the others.
+
 ### "sends no handshake version" or "speaks handshake version"
 
 The two ends are not the same build. The handshake carries a protocol version

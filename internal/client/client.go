@@ -100,27 +100,12 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 		return nil, fmt.Errorf("dial: empty address")
 	}
 
-	var errs []string
-	for _, addr := range addrs {
-		if err := ctx.Err(); err != nil {
-			return nil, errInterrupted
-		}
-		if ep.OnDial != nil {
-			ep.OnDial(addr)
-		}
-		try := ep
-		try.Address = addr
-		try.Candidates = nil
-		try.RelayURL = "" // direct only in this loop
-		try.RelayURLs = nil
-		c, err := dialOnce(ctx, try, key)
-		if err == nil {
-			return c, nil
-		}
-		if ctx.Err() != nil || errors.Is(err, errInterrupted) {
-			return nil, errInterrupted
-		}
-		errs = append(errs, err.Error())
+	c, errs, err := dialCandidates(ctx, ep, key, addrs)
+	if err == nil {
+		return c, nil
+	}
+	if ctx.Err() != nil || errors.Is(err, errInterrupted) {
+		return nil, errInterrupted
 	}
 
 	peerID := strings.TrimSpace(ep.PeerID)
@@ -254,7 +239,25 @@ func verifyRelayBinding(conn net.Conn, ep Endpoint, binder []byte) error {
 	return transport.VerifyPeerBinding(ep.PeerPublic, nil, binder, f.Data)
 }
 
-func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+// dialStagger is how long after one candidate starts before the next does.
+//
+// Staggered rather than simultaneous, following Happy Eyeballs (RFC 8305): firing
+// every candidate at once spends handshakes on addresses that were never going to
+// win, and looks like a port scan to whatever is on the far end. The delay is
+// short enough that a dead first candidate costs one interval rather than a
+// connect timeout.
+const dialStagger = 250 * time.Millisecond
+
+// connectVerified completes a connection and checks the peer identity: the
+// certificate or fingerprint, on every transport that carries one. It stops there.
+//
+// The split is the point. AuthenticateBound sends the login, and a login is not
+// free: the target can ask for an approval, rate limit, or count it against a
+// policy. So candidates may only race as far as "this address answers and is who
+// it claims to be", and exactly one winner then logs in. Racing the whole dial
+// would put N logins in front of one connection and the peer would see N attempts
+// for one request.
+func connectVerified(ctx context.Context, ep Endpoint) (*Conn, []byte, error) {
 	attemptCtx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
 	defer cancel()
 
@@ -273,43 +276,63 @@ func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, 
 		}
 	case transport.KindQUIC:
 		if ep.CertFP == "" {
-			return nil, fmt.Errorf("quic requires certificate fingerprint")
+			return nil, nil, fmt.Errorf("quic requires certificate fingerprint")
 		}
 		nc, err = transport.DialQUICFingerprintContext(attemptCtx, ep.Address, ep.CertFP)
 	default:
-		return nil, fmt.Errorf("unknown transport %q", ep.Kind)
+		return nil, nil, fmt.Errorf("unknown transport %q", ep.Kind)
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+			return nil, nil, err
 		}
 		hint := "is 'tyd up' running?"
 		if ep.Kind == transport.KindTLS || ep.Kind == transport.KindQUIC {
 			hint = "is 'tyd up' running on the peer?"
 		}
-		return nil, fmt.Errorf("%w (%s)", err, hint)
+		return nil, nil, fmt.Errorf("%w (%s)", err, hint)
 	}
 	c := &Conn{nc: nc, info: nc.Info()}
 	binder, err := transport.ChannelBinder(nc)
 	if err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, nil, err
 	}
+	return c, binder, nil
+}
+
+// login authenticates a verified connection, and is the only place a login happens —
+// whether the address was the first candidate or the fortieth.
+func login(ctx context.Context, c *Conn, binder []byte, ep Endpoint, key ed25519.PrivateKey) error {
+	attemptCtx, cancel := context.WithTimeout(ctx, dialAttemptTimeout)
+	defer cancel()
 	if dl, ok := attemptCtx.Deadline(); ok {
 		_ = c.SetDeadline(dl)
 	}
-	authErr := c.AuthenticateBound(key, binder)
+	err := c.AuthenticateBound(key, binder)
 	_ = c.SetDeadline(time.Time{})
-	if authErr != nil {
-		_ = c.Close()
-		if errors.Is(authErr, context.Canceled) || errors.Is(authErr, context.DeadlineExceeded) {
-			return nil, authErr
-		}
-		// net timeouts from SetDeadline surface as os.ErrDeadlineExceeded / net timeout
-		if ne, ok := authErr.(net.Error); ok && ne.Timeout() {
-			return nil, fmt.Errorf("auth %s: %w", ep, authErr)
-		}
-		return nil, authErr
+	if err == nil {
+		return nil
+	}
+	_ = c.Close()
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	// net timeouts from SetDeadline surface as os.ErrDeadlineExceeded / net timeout
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return fmt.Errorf("auth %s: %w", ep, err)
+	}
+	return err
+}
+
+// dialOnce is the single-address path: connect, verify, then log in.
+func dialOnce(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
+	c, binder, err := connectVerified(ctx, ep)
+	if err != nil {
+		return nil, err
+	}
+	if err := login(ctx, c, binder, ep, key); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
@@ -1067,4 +1090,146 @@ func WaitReady(ep Endpoint, timeout time.Duration) error {
 // WaitSocket keeps the old helper for unix-only tests.
 func WaitSocket(socket string, timeout time.Duration) error {
 	return WaitReady(Endpoint{Kind: transport.KindUnix, Address: socket}, timeout)
+}
+
+// verify and doLogin are the two steps, behind a seam so a test can drive the
+// schedule without sockets. Production always takes the real one.
+func verify(ctx context.Context, ep Endpoint) (*Conn, []byte, error) {
+	if verifyForTest != nil {
+		return verifyForTest(ctx, ep)
+	}
+	return connectVerified(ctx, ep)
+}
+
+func doLogin(ctx context.Context, c *Conn, binder []byte, ep Endpoint, key ed25519.PrivateKey) error {
+	if loginForTest != nil {
+		return loginForTest(ctx, c, binder, ep, key)
+	}
+	return login(ctx, c, binder, ep, key)
+}
+
+// verifyForTest is the transport step dialCandidates performs, replaced by tests so
+// the schedule can be checked without real sockets or real timeouts. It has the
+// same contract as connectVerified: a connection that answers and is who it claims
+// to be.
+var verifyForTest func(ctx context.Context, ep Endpoint) (*Conn, []byte, error)
+
+// loginForTest is the login step, replaced for the same reason. A test counts how
+// many logins happened, because "one login per dial" is the property that matters
+// and cannot be observed from the outside.
+var loginForTest func(ctx context.Context, c *Conn, binder []byte, ep Endpoint, key ed25519.PrivateKey) error
+
+// dialCandidates races the addresses against each other, staggered, and logs in
+// exactly once.
+//
+// Three things have to hold, and each is easy to get wrong:
+//
+//   - Only one login. Every candidate is connected and its identity checked in
+//     parallel, but the login happens after the race, on the winner alone. A login
+//     is visible to the target, which can ask for an approval, rate limit, or count
+//     it; racing the whole dial would send N of them for one connection.
+//   - No leaked connection. An attempt that finishes after the race is closed. A
+//     connected TLS session left open is a socket and a key that outlive the call.
+//   - The losers are failures worth reporting. A candidate that fails says why, so
+//     "could not reach the peer" names the address that did not answer rather than
+//     leaving it to be guessed at from a timeout.
+func dialCandidates(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, addrs []string) (*Conn, []string, error) {
+	// One candidate keeps the serial behaviour: there is nothing to race against,
+	// and a goroutine to coordinate a single dial would only add ways to be wrong.
+	if len(addrs) == 1 {
+		try := ep
+		try.Candidates = nil
+		try.RelayURL = "" // direct only in this loop
+		try.RelayURLs = nil
+		try.Address = addrs[0]
+		if ep.OnDial != nil {
+			ep.OnDial(addrs[0])
+		}
+		// The same two steps as the race, so a single candidate behaves the same
+		// way a winning one does and there is only one path to reason about.
+		c, binder, err := verify(ctx, try)
+		if err != nil {
+			return nil, []string{err.Error()}, err
+		}
+		if err := doLogin(ctx, c, binder, try, key); err != nil {
+			// Reported like any other candidate failure. A login refused because the
+			// key is not trusted is the answer to "why cannot I reach the peer", and
+			// dropping it would leave the caller with an empty list of attempts.
+			msg := fmt.Sprintf("%s connected but would not log in: %v", addrs[0], err)
+			return nil, []string{msg}, errors.New(msg)
+		}
+		return c, nil, nil
+	}
+
+	type outcome struct {
+		conn   *Conn
+		binder []byte
+		addr   string
+		err    error
+	}
+
+	// Cancelling this is what stops the attempts still in flight.
+	raceCtx, cancelRace := context.WithCancel(ctx)
+	defer cancelRace()
+
+	results := make(chan outcome, len(addrs))
+	for i, addr := range addrs {
+		go func(i int, addr string) {
+			// Staggered start: see dialStagger.
+			if i > 0 {
+				timer := time.NewTimer(time.Duration(i) * dialStagger)
+				select {
+				case <-timer.C:
+				case <-raceCtx.Done():
+					timer.Stop()
+					results <- outcome{addr: addr, err: errInterrupted}
+					return
+				}
+				timer.Stop()
+			}
+			if ep.OnDial != nil {
+				ep.OnDial(addr)
+			}
+			try := ep
+			try.Address = addr
+			try.Candidates = nil
+			try.RelayURL = "" // direct only in this loop
+			try.RelayURLs = nil
+			c, binder, err := verify(raceCtx, try)
+			results <- outcome{conn: c, binder: binder, addr: addr, err: err}
+		}(i, addr)
+	}
+
+	var errs []string
+	for i := 0; i < len(addrs); i++ {
+		r := <-results
+		if r.err != nil {
+			errs = append(errs, r.err.Error())
+			continue
+		}
+
+		// A winner. Stop the attempts still running, and close whatever they
+		// produce — every attempt sends exactly once, so the remaining count is
+		// known and nothing has to wait for a channel to close.
+		cancelRace()
+		go func(remaining int) {
+			for j := 0; j < remaining; j++ {
+				if late := <-results; late.conn != nil {
+					_ = late.conn.Close()
+				}
+			}
+		}(len(addrs) - i - 1)
+
+		if err := doLogin(ctx, r.conn, r.binder, ep, key); err != nil {
+			msg := fmt.Sprintf("%s connected but would not log in: %v", r.addr, err)
+			return nil, append(errs, msg), errors.New(msg)
+		}
+		// The winner is worth naming: a peer behind NAT answers on one address, and
+		// knowing which one is most of the diagnosis when the others time out.
+		if ep.OnDial != nil {
+			ep.OnDial("connected " + r.addr)
+		}
+		return r.conn, errs, nil
+	}
+	return nil, errs, fmt.Errorf("every candidate address failed")
 }
