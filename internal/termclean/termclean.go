@@ -61,9 +61,7 @@ func (c *Cleaner) Feed(b []byte) []byte {
 			c.endLine()
 			i++
 		case ch == '\b':
-			if len(c.line) > 0 {
-				c.line = c.line[:len(c.line)-1]
-			}
+			c.line = backspace(c.line)
 			i++
 		case ch < 0x20 || ch == 0x7f:
 			// Other control bytes carry no text.
@@ -79,6 +77,29 @@ func (c *Cleaner) Feed(b []byte) []byte {
 		}
 	}
 	return c.Text()
+}
+
+// backspace undoes the last character on the line.
+//
+// A terminal moves the cursor back one column, so a character is what gets
+// overwritten, and for a multi-byte character that is all of its bytes. Dropping
+// one byte instead would leave the rest of the rune behind as a broken sequence,
+// so cleaning valid text could hand back invalid UTF-8 — which is how a stray
+// high byte followed by a backspace, a thing a shell does while drawing a
+// progress line, ends up in a result no client can decode.
+func backspace(line []byte) []byte {
+	for back := 1; back <= utf8.UTFMax && back <= len(line); back++ {
+		p := len(line) - back
+		if utf8.RuneStart(line[p]) {
+			return line[:p]
+		}
+	}
+	// No rune start in the last UTFMax bytes: the tail was already broken, so
+	// dropping the last byte is the most that can be repaired.
+	if len(line) > 0 {
+		return line[:len(line)-1]
+	}
+	return line
 }
 
 func (c *Cleaner) endLine() {
@@ -128,7 +149,20 @@ func escapeLen(b []byte) (int, bool) {
 		}
 		return 0, false
 	default:
-		// ESC plus one byte.
+		// ESC plus one byte, which is the two-character escapes.
+		//
+		// Not when that byte is 0x80 or above. Such a byte is the start of a
+		// multi-byte rune, and consuming it as part of the escape would leave the
+		// rest of that rune behind as a broken sequence: cleaning a valid string
+		// would then hand back invalid UTF-8. It happens with a replacement
+		// character, which is what an undecodable byte has already been turned
+		// into, so any output with a stray high byte would come back corrupt.
+		//
+		// The caller drops the ESC on its own and reads the byte as text, which
+		// is what it is.
+		if b[1] >= utf8.RuneSelf {
+			return 1, true
+		}
 		return 2, true
 	}
 }

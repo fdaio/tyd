@@ -27,6 +27,7 @@ the binary. This page is the map plus the defaults.
 | | `register` | Register with the Control Panel (`--force` replaces) |
 | | `invite` | Mint an invite, print the accept line, wait (10m TTL); `invite revoke <token>` |
 | | `accept` | Accept an invite (token or a pasted accept line), `--as <nickname>`. Already paired: print that peer instead of failing. If the peer has a live endpoint, print `tyd session create --peer <nick\|id>` |
+| Model | `mcp` | Serve sessions to a model over MCP on stdio. Needs a target: `--peer <id\|nick>`, or `--peer local` for this machine |
 | Daemon | `up` | Start the daemon (unix socket; TLS off by default) |
 | | `status` | Show CP registration, peers, aliases, connections |
 | | `approval` | Show or set the approval mode: `full`, `pre`, `post` |
@@ -50,7 +51,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--data-listen MODE` | QUIC data plane: `auto`, `off`, `HOST:PORT` (`auto` = all interfaces when registered, off otherwise) | `auto` |
 | `--advertise HOST` | Host to prefer in published candidates | interface IPs |
 | `--addr HOST:PORT` | TLS client endpoint (overrides `--socket` for that command) | — |
-| `--peer ID\|NICK` | Target a paired peer for session dial commands | recent, else single outbound |
+| `--peer ID\|NICK` | Target a paired peer for session dial commands. `tyd mcp` uses it as the machine it serves, and `local` means this machine's own daemon | recent, else single outbound; `mcp`: single outbound, else an error |
 | `--relay URL[,URL…]\|off` | Dual-NAT rendezvous; offer on and fall back to each in turn | `https://app.getfda.dev/relay` |
 | `--tls-cert PATH` | Server certificate / client pin | `~/.tyd/server.crt` |
 | `--tls-key PATH` | Server key | `~/.tyd/server.key` |
@@ -77,6 +78,10 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--archive-ttl D` | Hide a peer, or a closed session, unused this long: `7d`, `168h`, `off` (default `7d`; env `TYD_ARCHIVE_TTL`) |
+| `--read-only` | `mcp`: register only `session_list` and `session_read`. Not a permission boundary — the daemon's capability check is |
+| `--max-sessions N` | `mcp`: sessions one process holds; `0` means the default, not no limit (default 8) |
+| `--close-on-exit` | `mcp`: close the sessions this process opened when it stops (default: they survive) |
+| `--allow-peer REF` | `mcp`: serve this peer too; repeat for several. Required before the tools take a `peer` argument. `local` is accepted here as well |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--shell PATH` | `session create`: shell to run; must be listed in the **daemon's** `/etc/shells` (default: the daemon's own shell) |
@@ -99,7 +104,7 @@ Everything lives under `~/.tyd`:
 | `peers.json` | Paired peers; a cache of what the daemon already holds |
 | `aliases.json` | Client-local session names |
 | `recent.json` | Last peer / session used by this client |
-| `sessions.json` | Client-local session catalog read by `session list` |
+| `sessions.json` | Client-local session catalog read by `session list` and by `tyd mcp`'s `session_list` |
 | `archive.json` | Which peers and sessions are archived, and when each peer was last dialled. Kept out of `peers.json` on purpose: that file is rebuilt from the Control Panel on every sync, and `doctor --fix` replaces it outright |
 | `live/<id>/` | Per-session live-agent socket, metadata, PID, and sequenced output segments (`output.<seq>`, `0600`; deleted on close) |
 | `audit.log` | Only when `--audit-log` points here |

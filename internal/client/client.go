@@ -401,6 +401,21 @@ func rpcContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, req pr
 		_ = c.SetDeadline(time.Now().Add(dialAttemptTimeout))
 	}
 	defer c.SetDeadline(time.Time{})
+	// Recv blocks until the daemon answers, and a daemon parked on a long read
+	// will not answer until its wait runs out. Closing the connection is what
+	// unblocks it, so a cancelled context has to reach the socket and not just
+	// the dial.
+	if ctx.Done() != nil {
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = c.Close()
+			case <-stop:
+			}
+		}()
+	}
 	if err := c.Send(req); err != nil {
 		return protocol.Frame{}, err
 	}
@@ -496,7 +511,22 @@ func CloseSession(ep Endpoint, key ed25519.PrivateKey, id string) error {
 // Pass epoch 0 on the first pull, then the epoch from the last read_result.
 // A non-zero wait parks the read until bytes arrive or the wait elapses.
 func Read(ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64, wait time.Duration, cond live.ReadConditions) (protocol.Frame, error) {
-	resp, err := rpc(ep, key, protocol.Frame{
+	// rpc bounds a call by the dial timeout, which is shorter than the longest
+	// read wait, so a caller that parks needs ReadContext.
+	return ReadContext(context.Background(), ep, key, sessionID, cursor, epoch, wait, cond)
+}
+
+// ReadContext is Read under a caller-supplied context. A read that parks until
+// its conditions are met can outlive the dial timeout, so the deadline covers
+// the wait as well as the dial. Cancelling the context closes the connection,
+// which is what lets the daemon's read give up rather than hold its slot.
+func ReadContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, cursor, epoch uint64, wait time.Duration, cond live.ReadConditions) (protocol.Frame, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, wait+dialAttemptTimeout)
+		defer cancel()
+	}
+	resp, err := rpcContext(ctx, ep, key, protocol.Frame{
 		Type:      protocol.TypeRead,
 		SessionID: sessionID,
 		Cursor:    cursor,
@@ -522,12 +552,30 @@ type SendReply struct {
 	Written int
 	Cursor  uint64
 	Epoch   uint64
+	// Reported says a reply frame arrived, so Written is the daemon's own count.
+	// Without a frame a zero Written means "we never heard back", which is not
+	// the same as "nothing was written".
+	Reported bool
 }
 
 // Send injects keystrokes without taking the exclusive attach slot. It needs
 // the write capability but not attach. An error means nothing was written.
 func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
-	resp, err := rpc(ep, key, protocol.Frame{
+	return SendContext(context.Background(), ep, key, sessionID, data)
+}
+
+// SendContext sends keystrokes under a caller-supplied context. Cancelling the
+// context closes the connection, so the daemon aborts the write and can report
+// how much landed.
+func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		// Without a deadline a stuck daemon would hold the caller forever, and a
+		// send is bounded by how long the PTY takes to accept the bytes.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, dialAttemptTimeout)
+		defer cancel()
+	}
+	resp, err := rpcContext(ctx, ep, key, protocol.Frame{
 		Type:      protocol.TypeSend,
 		SessionID: sessionID,
 		Data:      data,
@@ -535,7 +583,12 @@ func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (S
 	// A send that timed out or was preempted still reports how many bytes
 	// reached the PTY, so the caller can resume from there instead of
 	// resending what already landed.
-	reply := SendReply{Written: int(resp.CursorNext), Cursor: resp.Cursor, Epoch: resp.Epoch}
+	reply := SendReply{
+		Written:  int(resp.CursorNext),
+		Cursor:   resp.Cursor,
+		Epoch:    resp.Epoch,
+		Reported: resp.Type != "",
+	}
 	if err != nil {
 		return reply, err
 	}

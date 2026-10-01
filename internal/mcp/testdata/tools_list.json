@@ -1,0 +1,213 @@
+[
+  {
+    "name": "session_list",
+    "title": "List sessions",
+    "description": "List the sessions in the local catalog, with a probe read on each to find out whether it is still running. A probe on a remote target that needs approval reports that instead of a state.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_read",
+    "title": "Read output",
+    "description": "Read what a session has printed, continuing from the last read. Use wait to block until a prompt, a pattern or a byte count. Without a cursor it returns new output; with one it re-reads that stretch and does not move the saved position.",
+    "inputSchema": {
+      "properties": {
+        "cursor": {
+          "description": "Byte offset to re-read from. Optional: a re-read does not advance the saved cursor.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_bytes": {
+          "description": "Largest page to return. Optional.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "peer": {
+          "description": "Which target, one of: local and laptop",
+          "type": "string"
+        },
+        "session": {
+          "description": "Which session to read, by alias or by id.",
+          "type": "string"
+        },
+        "wait": {
+          "description": "When to return. Optional: without a match or an idle rule this call waits 2000 ms for new output and then returns, empty or not. A session that is still running can be waited on longer with match or idle_ms.",
+          "properties": {
+            "idle_ms": {
+              "description": "Return once the output has been quiet this long.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "match": {
+              "description": "RE2 pattern to wait for, for example \"[Pp]assword:\" or \"^\\\\S+@\\\\S+$\" for a prompt. Use it instead of idle_ms when the shell is expected to ask something.",
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "Return once this many bytes have arrived.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "wait_ms": {
+              "description": "Never wait longer than this. A read on a target is parked at most 30000 ms.",
+              "maximum": 30000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_open",
+    "title": "Open a shell session",
+    "description": "Create a shell session on a target and return its first output. It does not attach, so the session stays writable from here. Give it a name to refer to it later; without one it is called agent-1, agent-2 and so on.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Alias for this session, for example build. Optional: one is assigned when it is absent.",
+          "type": "string"
+        },
+        "peer": {
+          "description": "Which target, one of: local and laptop",
+          "type": "string"
+        },
+        "shell": {
+          "description": "Command to run instead of the login shell, for example bash -l. Optional: the target picks the login shell. The target validates it.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "annotations": {
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_send",
+    "title": "Type into a session",
+    "description": "Type into a session nobody is attached to and return what those keystrokes produced. The command must end with a real newline, as in \"echo hi\\n\", or the shell waits for more input and nothing runs. Refused while a person is attached, so a human and a model cannot fight over one session. Without a wait condition it waits for the output to go quiet; a long run needs session_interrupt.",
+    "inputSchema": {
+      "properties": {
+        "data": {
+          "description": "The text or keys to type, sent as it stands. End a command with a real newline, as in \"echo hi\\n\"; nothing is added on its own, so a command without one leaves the shell waiting. Stop a running command with session_interrupt rather than by typing a control character.",
+          "type": "string"
+        },
+        "escapes": {
+          "default": false,
+          "description": "Read data as a key sequence instead of typing it as it stands. Optional, false when absent. When true only \\n, \\r, \\t, \\xHH and \\\\ are recognized and anything else is an error, so leave it off for a command that holds a real backslash, such as a regex, a sed script or a Windows path.",
+          "type": "boolean"
+        },
+        "peer": {
+          "description": "Which target, one of: local and laptop",
+          "type": "string"
+        },
+        "session": {
+          "description": "Which session to type into, by alias or by id.",
+          "type": "string"
+        },
+        "wait": {
+          "description": "When to return. Optional: without a match or an idle rule, send waits for the output to go quiet after 1500 ms and gives up after 10000 ms.",
+          "properties": {
+            "idle_ms": {
+              "description": "Return once the output has been quiet this long.",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "match": {
+              "description": "RE2 pattern to wait for, for example \"[Pp]assword:\" or \"^\\\\S+@\\\\S+$\" for a prompt. Use it instead of idle_ms when the shell is expected to ask something.",
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "Return once this many bytes have arrived.",
+              "minimum": 1,
+              "type": "integer"
+            },
+            "wait_ms": {
+              "description": "Never wait longer than this. A read on a target is parked at most 30000 ms.",
+              "maximum": 30000,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "session",
+        "data"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_interrupt",
+    "title": "Interrupt a running command",
+    "description": "Send Ctrl-C to a session, which stops the command it is running, and return what the shell said about it. Use it instead of typing control characters into session_send.",
+    "inputSchema": {
+      "properties": {
+        "peer": {
+          "description": "Which target, one of: local and laptop",
+          "type": "string"
+        },
+        "session": {
+          "description": "Which session to interrupt, by alias or by id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "session_close",
+    "title": "Close a session",
+    "description": "End a session. It cannot be reopened, so this is not the way to refresh a shell: call session_open for a new one.",
+    "inputSchema": {
+      "properties": {
+        "peer": {
+          "description": "Which target, one of: local and laptop",
+          "type": "string"
+        },
+        "session": {
+          "description": "Which session to close, by alias or by id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "type": "object"
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true
+    }
+  }
+]

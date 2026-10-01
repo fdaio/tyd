@@ -1,0 +1,7 @@
+go test fuzz v1
+[]byte("\xc4\b")
+uint64(82)
+uint64(1)
+bool(true)
+bool(false)
+bool(false)

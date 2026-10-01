@@ -77,6 +77,8 @@ func run(opts options) error {
 	case "alias":
 		fmt.Fprintln(os.Stderr, "note: prefer 'tyd session alias'")
 		return runAlias(opts)
+	case "mcp":
+		return runMCP(opts)
 	case "session":
 		return runSession(opts)
 	case "peer":

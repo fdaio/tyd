@@ -138,6 +138,23 @@ the byte count and never the bytes. The output log does hold terminal bytes
 for `read`; treat the session dir as sensitive, the same way you treat the PTY
 itself.
 
+### A secret only stays secret if the terminal is not echoing
+
+The PTY's echo state is what decides this, and nothing in tyd reports it. A
+secret typed where the terminal **is** echoing is written to the terminal
+immediately, and from there into the shell's scrollback and the session's output
+log, which is mode `0600` and deleted when the session closes. A shell asked for
+a password switches the terminal to no-echo first, so the secret never appears —
+but a secret typed at an ordinary prompt, or pasted into one, is echoed like any
+other keystroke.
+
+So a session is not a place to type a secret unless the program in front of it
+turned echo off. `tyd mcp` warns when the last line of a result looks like a
+password prompt, and that warning is a regex over the text: it can miss a prompt
+that asks in other words, and it fires on a prompt that was never going to
+receive input. The reliable answer is to hand the session to a person with the
+attach command the result prints.
+
 ## Deployment tiers
 
 | Tier | What it contains | What it stops |

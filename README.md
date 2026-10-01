@@ -212,7 +212,7 @@ non-goals, then [docs/connect.md](docs/connect.md) to pair.
 
 | Doc | Contents |
 |-----|----------|
-| [docs/agent.md](docs/agent.md) | Agent handbook — one-line install, `--agent` / `--client` recipes, tool model, troubleshooting |
+| [docs/agent.md](docs/agent.md) | Agent handbook — one-line install, `--agent` / `--client` recipes, tool model, `tyd mcp` for a model, troubleshooting |
 | [docs/overview.md](docs/overview.md) | What tyd is, architecture, non-goals |
 | [docs/connect.md](docs/connect.md) | Install, pair, connect, detach, close |
 | [docs/session.md](docs/session.md) | Session lifecycle, aliases, approval modes, audit log |
