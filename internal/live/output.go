@@ -48,6 +48,14 @@ type ReadResult struct {
 	// Reason says why this reply came back. Empty means the pre-conditions
 	// behaviour, where having data was reason enough.
 	Reason string
+	// Echo and Icanon are the target terminal's line-discipline bits at the moment
+	// of the read, which is the state a prompt is asking in. Nil means the agent
+	// did not report them, which is not the same as reporting them off.
+	Echo   *bool
+	Icanon *bool
+	// AgentVersion is what build the agent is. Zero means it did not say, which is
+	// an agent older than the field existed.
+	AgentVersion int
 }
 
 type outputSeg struct {
@@ -1100,9 +1108,9 @@ func ReadSession(dir string, cursor, epoch uint64, wait time.Duration, cond Read
 
 // SendSession injects keystrokes into a live dir without taking the attach
 // slot. It fails when the agent is gone, so a send never starts a shell.
-func SendSession(dir string, data []byte) (SendReply, error) {
+func SendSession(dir string, data []byte, secret bool) (SendReply, error) {
 	if !Alive(dir) {
 		return SendReply{}, fmt.Errorf("session has no running agent; send needs a live shell")
 	}
-	return DialSend(dir, data)
+	return DialSend(dir, data, secret)
 }

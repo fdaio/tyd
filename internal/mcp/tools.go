@@ -465,6 +465,10 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 		return "", nil, invalidParams("data is required: the text or keys to type, " +
 			"for example \"ls -la\\n\"")
 	}
+	secret, err := a.boolean("secret", false)
+	if err != nil {
+		return "", nil, err
+	}
 	// Escapes are off by default. A JSON string already carries a newline, a
 	// tab or a control character as \n, \t or \u0003, so a second layer of
 	// unescaping only gets in the way of a command that legitimately holds a
@@ -512,7 +516,7 @@ func (s *server) send(ctx context.Context, a args) (string, any, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	sent, serr := s.backend.Send(ctx, sess, data)
+	sent, serr := s.backend.Send(ctx, sess, data, secret)
 	s.logf("session_send session=%s bytes=%d written=%d", sess.ID, len(data), sent.Written)
 	if serr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -653,7 +657,7 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 	// The send is under the lock as well. A read of the same session would
 	// otherwise hand its page out after the interrupt, and the model would read
 	// output from before the command it just stopped.
-	sent, serr := s.backend.Send(ctx, sess, []byte{0x03})
+	sent, serr := s.backend.Send(ctx, sess, []byte{0x03}, false)
 	if serr != nil {
 		return "", nil, withWritten(mapError(serr, sess), sent.Written, 1)
 	}

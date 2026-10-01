@@ -566,14 +566,14 @@ type SendReply struct {
 
 // Send injects keystrokes without taking the exclusive attach slot. It needs
 // the write capability but not attach. An error means nothing was written.
-func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
-	return SendContext(context.Background(), ep, key, sessionID, data)
+func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte, secret bool) (SendReply, error) {
+	return SendContext(context.Background(), ep, key, sessionID, data, secret)
 }
 
 // SendContext sends keystrokes under a caller-supplied context. Cancelling the
 // context closes the connection, so the daemon aborts the write and can report
 // how much landed.
-func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
+func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte, secret bool) (SendReply, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		// Without a deadline a stuck daemon would hold the caller forever, and a
 		// send is bounded by how long the PTY takes to accept the bytes.
@@ -585,6 +585,10 @@ func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessi
 		Type:      protocol.TypeSend,
 		SessionID: sessionID,
 		Data:      data,
+		// Forwarded rather than set here: the far agent holds the PTY and is the
+		// only place the terminal state can be read. A dropped flag would be a
+		// silent fail-open, so this is asserted in the tests.
+		Secret: secret,
 	})
 	// A send that timed out or was preempted still reports how many bytes
 	// reached the PTY, so the caller can resume from there instead of

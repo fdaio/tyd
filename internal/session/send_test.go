@@ -61,7 +61,7 @@ func TestSendInjectsKeystrokes(t *testing.T) {
 	defer cleanup()
 	_ = m
 
-	if _, err := s.Send([]byte("echo send-marker-1\n")); err != nil {
+	if _, err := s.Send([]byte("echo send-marker-1\n"), false); err != nil {
 		t.Fatal(err)
 	}
 	_, _, out := readUntil(t, s, 0, 0, "send-marker-1", 2*time.Second)
@@ -75,7 +75,7 @@ func TestSendAfterExitRefuses(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 
-	if _, err := s.Send([]byte("exit\n")); err != nil {
+	if _, err := s.Send([]byte("exit\n"), false); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
@@ -88,7 +88,7 @@ func TestSendAfterExitRefuses(t *testing.T) {
 	if s.State() != StateExited {
 		t.Skipf("shell did not report EXITED, state=%s", s.State())
 	}
-	if _, err := s.Send([]byte("echo should-not-run\n")); err == nil {
+	if _, err := s.Send([]byte("echo should-not-run\n"), false); err == nil {
 		t.Fatal("send on an exited session must fail")
 	} else if !strings.Contains(err.Error(), "exited") {
 		t.Fatalf("want an explicit exited error, got %v", err)
@@ -110,7 +110,7 @@ func TestSendAgentRefusesWhileAttached(t *testing.T) {
 	defer att.Detach()
 
 	dir := live.Dir(root, s.ID)
-	_, err = live.DialSend(dir, []byte("echo direct\n"))
+	_, err = live.DialSend(dir, []byte("echo direct\n"), false)
 	if err == nil {
 		t.Fatal("agent must refuse a send while attached")
 	}
@@ -129,7 +129,7 @@ func TestSendRefusedWhileAttached(t *testing.T) {
 	}
 	defer att.Detach()
 
-	_, err = s.Send([]byte("echo nope\n"))
+	_, err = s.Send([]byte("echo nope\n"), false)
 	if err == nil {
 		t.Fatal("send while attached must fail")
 	}
@@ -152,19 +152,19 @@ func TestSendAfterDetach(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send([]byte("echo x\n")); err == nil {
+	if _, err := s.Send([]byte("echo x\n"), false); err == nil {
 		t.Fatal("send while attached must fail")
 	}
 	att.Detach()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := s.Send([]byte("echo send-after-detach\n")); err == nil {
+		if _, err := s.Send([]byte("echo send-after-detach\n"), false); err == nil {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if _, err := s.Send([]byte("echo send-after-detach\n")); err != nil {
+	if _, err := s.Send([]byte("echo send-after-detach\n"), false); err != nil {
 		t.Fatalf("send after detach: %v", err)
 	}
 	readUntil(t, s, 0, 0, "send-after-detach", 2*time.Second)
@@ -191,7 +191,7 @@ func TestSendConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = s.Send([]byte("true\n"))
+			_, errs[i] = s.Send([]byte("true\n"), false)
 		}(i)
 	}
 	wg.Wait()
@@ -216,7 +216,7 @@ func TestReadWaitReturnsOnData(t *testing.T) {
 
 	go func() {
 		time.Sleep(150 * time.Millisecond)
-		_, _ = s.Send([]byte("echo wait-early\n"))
+		_, _ = s.Send([]byte("echo wait-early\n"), false)
 	}()
 
 	start := time.Now()
@@ -284,7 +284,7 @@ func TestReadExitedFlag(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 
-	if _, err := s.Send([]byte("exit\n")); err != nil {
+	if _, err := s.Send([]byte("exit\n"), false); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(8 * time.Second)
@@ -329,7 +329,7 @@ func TestSendPendingRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send([]byte("echo no\n")); err == nil {
+	if _, err := s.Send([]byte("echo no\n"), false); err == nil {
 		t.Fatal("send on a pending session must fail")
 	} else if !strings.Contains(err.Error(), "pending") {
 		t.Fatalf("want a pending error, got %v", err)
@@ -343,7 +343,7 @@ func TestSendReadUnsupportedInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Send([]byte("echo x\n")); !errors.Is(err, ErrSendUnsupported) {
+	if _, err := s.Send([]byte("echo x\n"), false); !errors.Is(err, ErrSendUnsupported) {
 		t.Fatalf("want ErrSendUnsupported, got %v", err)
 	}
 	if _, err := s.Read(0, 0, 0, live.ReadConditions{}); !errors.Is(err, ErrReadUnsupported) {
@@ -379,7 +379,7 @@ func TestSendLargeDoesNotWedge(t *testing.T) {
 			t.Fatalf("%s hung instead of returning", what)
 		}
 	}
-	await("large send", func() error { _, err := s.Send(big); return err })
-	await("send after a large one", func() error { _, err := s.Send([]byte("true\n")); return err })
+	await("large send", func() error { _, err := s.Send(big, false); return err })
+	await("send after a large one", func() error { _, err := s.Send([]byte("true\n"), false); return err })
 	await("read after a large send", func() error { _, err := s.Read(0, 0, 0, live.ReadConditions{}); return err })
 }

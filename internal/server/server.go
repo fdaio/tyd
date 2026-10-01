@@ -992,6 +992,13 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			CursorAhead: res.CursorAhead,
 			Exited:      res.Exited,
 			Reason:      res.Reason,
+			// Forwarded, not interpreted. This frame is rebuilt field by field, so
+			// anything the agent said that is not listed here is lost — and losing
+			// these is fail-open in the sense that matters: the model gets no
+			// terminal state, and a capable agent looks unknown.
+			Echo:         res.Echo,
+			Icanon:       res.Icanon,
+			AgentVersion: res.AgentVersion,
 		})
 
 	case protocol.TypeSend:
@@ -1017,7 +1024,10 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID); err != nil {
 			return err
 		}
-		rep, err := sess.Send(f.Data)
+		// The flag is forwarded, not interpreted here. The far agent holds the
+		// PTY, so it is the only place the terminal state can be read, and a
+		// proxy that dropped this would turn a refusal into a silent write.
+		rep, err := sess.Send(f.Data, f.Secret)
 		if err != nil {
 			return err
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"tyd/internal/ttyutil"
 	"unicode/utf8"
 
 	"tyd/internal/termclean"
@@ -62,6 +63,21 @@ type result struct {
 	HumanAttach string `json:"human_attach,omitempty"`
 	// Sessions is the row list of session_list.
 	Sessions []sessionRow `json:"sessions,omitempty"`
+	// Tty is the target terminal's line discipline as of this result. The bits are
+	// reported raw as well as derived, because a derived field that turns out to be
+	// wrong is a change of derivation rather than a change of contract.
+	Tty *ttyState `json:"tty,omitempty"`
+}
+
+// ttyState is what the terminal was doing when the page was taken. InputMode is
+// derived from the bits; see internal/ttyutil for why those two bits and not one.
+type ttyState struct {
+	Echo      bool   `json:"echo"`
+	Icanon    bool   `json:"icanon"`
+	InputMode string `json:"input_mode"`
+	// Why is set only when the target did not report the state, so a model is told
+	// it is unknown rather than left to read a zero value as "not echoing".
+	Why string `json:"why,omitempty"`
 }
 
 // sessionRow is one row of session_list.
@@ -155,6 +171,12 @@ func render(s Session, p Page, start uint64, humanAttach string) (string, *resul
 		// model unable to hand the session to the user.
 		footer += fmt.Sprintf("\n[a human can take this session over with: %s]", humanAttach)
 	}
+	if t := ttyOf(p); t.Why == "" && t.InputMode == string(ttyutil.InputSecretLikely) {
+		// The regex above is a guess over the text; this is the terminal's own
+		// answer. Both are reported, and where they disagree the terminal is right.
+		footer += fmt.Sprintf("\n[the terminal is not echoing: this looks like a prompt asking for a secret. " +
+			"Pass secret:true on session_send and the target will refuse rather than echo the bytes.]")
+	}
 	if humanAttach != "" && looksLikePasswordPrompt(body) {
 		footer += fmt.Sprintf("\n[the last line looks like a password prompt: do not type into it. "+
 			"Ask the user to run `%s` and take the session over]", humanAttach)
@@ -177,6 +199,24 @@ func render(s Session, p Page, start uint64, humanAttach string) (string, *resul
 		Session:      s.Label(),
 		Peer:         orLocal(s.Peer),
 		HumanAttach:  humanAttach,
+		Tty:          ttyOf(p),
+	}
+}
+
+// ttyOf reports the terminal state the page carries, or says it is unknown.
+//
+// Unknown is spelled out rather than left as two false bits, because two false
+// bits read as "the terminal is not echoing", which is the one thing a caller must
+// not conclude from a target that did not answer.
+func ttyOf(p Page) *ttyState {
+	if p.Echo == nil || p.Icanon == nil {
+		return &ttyState{Why: "the target did not report its terminal state, so it is unknown"}
+	}
+	st := ttyutil.EchoState{Echo: *p.Echo, Icanon: *p.Icanon}
+	return &ttyState{
+		Echo:      *p.Echo,
+		Icanon:    *p.Icanon,
+		InputMode: st.InputMode().String(),
 	}
 }
 

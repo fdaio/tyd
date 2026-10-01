@@ -69,7 +69,7 @@ func TestSendTimesOutWithWrittenCount(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		n, err := a.awaitSend(make([]byte, 4096))
+		n, err := a.awaitSend(make([]byte, 4096), false)
 		done <- res{n, err}
 	}()
 
@@ -108,7 +108,7 @@ func TestAttachPreemptsStuckSend(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		n, err := a.awaitSend(make([]byte, 4096))
+		n, err := a.awaitSend(make([]byte, 4096), false)
 		done <- res{n, err}
 	}()
 
@@ -150,7 +150,7 @@ func TestConcurrentSendsAreRefusedWhileOneIsHeld(t *testing.T) {
 	held := make(chan int64, 1)
 	const heldBytes = 4096
 	go func() {
-		n, _ := a.awaitSend(make([]byte, heldBytes))
+		n, _ := a.awaitSend(make([]byte, heldBytes), false)
 		held <- int64(n)
 	}()
 	// Wait for the held send to have claimed the slot and reached the writer,
@@ -172,7 +172,7 @@ func TestConcurrentSendsAreRefusedWhileOneIsHeld(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = a.awaitSend([]byte("x"))
+			_, errs[i] = a.awaitSend([]byte("x"), false)
 		}(i)
 	}
 	wg.Wait()
@@ -223,7 +223,7 @@ func TestSendReportsPartialWriteOnPreempt(t *testing.T) {
 	}
 	done := make(chan res, 1)
 	go func() {
-		c, err := a.awaitSend(make([]byte, 4096))
+		c, err := a.awaitSend(make([]byte, 4096), false)
 		done <- res{c, err}
 	}()
 	wg.Wait()
@@ -256,12 +256,12 @@ func TestSecondSendIsBusyNotQueued(t *testing.T) {
 	first := make(chan struct{})
 	go func() {
 		defer close(first)
-		_, _ = a.awaitSend(make([]byte, 4096))
+		_, _ = a.awaitSend(make([]byte, 4096), false)
 	}()
 	time.Sleep(50 * time.Millisecond)
 
 	// A second send is refused rather than queued behind the first.
-	_, second := a.awaitSend(make([]byte, 16))
+	_, second := a.awaitSend(make([]byte, 16), false)
 	if !errors.Is(second, errSendBusy) {
 		t.Fatalf("a concurrent send should be refused as busy, got %v", second)
 	}
@@ -273,7 +273,7 @@ func TestSecondSendIsBusyNotQueued(t *testing.T) {
 	<-first
 
 	// After it finishes, the slot is free again.
-	if _, err := a.awaitSend(nil); errors.Is(err, errSendBusy) {
+	if _, err := a.awaitSend(nil, false); errors.Is(err, errSendBusy) {
 		t.Fatal("the slot should be released when the send ends")
 	}
 }

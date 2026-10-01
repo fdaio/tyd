@@ -36,8 +36,8 @@ var toolProperties = map[string]struct {
 		required: nil,
 	},
 	"session_send": {
-		schema:   []string{"session", "data", "escapes", "wait", "peer"},
-		handled:  []string{"session", "data", "escapes", "wait", "peer"},
+		schema:   []string{"session", "data", "escapes", "secret", "wait", "peer"},
+		handled:  []string{"session", "data", "escapes", "secret", "wait", "peer"},
 		required: []string{"session", "data"},
 	},
 	"session_read": {

@@ -93,6 +93,26 @@ type Frame struct {
 	MaxBytes uint32 `json:"max_bytes,omitempty"`
 	// Reason says why a read returned.
 	Reason string `json:"reason,omitempty"`
+
+	// Secret asks the target to refuse a write unless the terminal is not echoing.
+	// It is honoured where the PTY is held, which is the only place the check can
+	// be made with nothing between the check and the write. A target that does not
+	// understand it ignores it, so a caller that means it must not send without a
+	// version it recognises.
+	Secret bool `json:"secret,omitempty"`
+
+	// Echo and Icanon are the target terminal's line-discipline bits, reported on
+	// a read. They are pointers so an absent field means the target did not report
+	// them, which is different from reporting them as off.
+	Echo   *bool `json:"echo,omitempty"`
+	Icanon *bool `json:"icanon,omitempty"`
+
+	// AgentVersion is what build the agent that sent this frame is. It is not the
+	// auth handshake's Version: that one travels daemon to client, and this one
+	// travels daemon to agent over a socket with no handshake. It is absent on an
+	// agent older than this field, which is what makes a secret write refusable
+	// rather than silently ignored.
+	AgentVersion int `json:"agent_version,omitempty"`
 }
 
 type ConnInfo struct {

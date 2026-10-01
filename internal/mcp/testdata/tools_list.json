@@ -118,6 +118,11 @@
           "description": "Which target, one of: local and laptop",
           "type": "string"
         },
+        "secret": {
+          "default": false,
+          "description": "Refuse the write unless the terminal is not echoing. Set it for a password, a token or a key: the target checks the terminal at the moment it writes, and writes nothing when the bytes would echo into the session's scrollback and output log. It is refused, rather than written and warned about, in three cases: the terminal echoes; the terminal is in raw mode, which is what a full-screen program or a nested terminal produces and where the far end cannot be checked; or the state could not be read at all. Each refusal says which, and a human is the way out. Leave it off when you are not sure: an ordinary prompt with this set is refused, which is the safe direction to be wrong in.",
+          "type": "boolean"
+        },
         "session": {
           "description": "Which session to type into, by alias or by id.",
           "type": "string"
