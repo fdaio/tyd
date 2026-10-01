@@ -13,6 +13,37 @@ import (
 // a signing oracle for messages of its own choosing.
 const NonceSize = 32
 
+// CurrentVersion is the handshake protocol version this build speaks. The
+// accepted range is 1 to CurrentVersion: a peer that sends no version is older
+// than every version here, and one that sends more is a build whose next
+// incompatible change this code has never seen.
+//
+// The version travels outside the signature, so a peer can be told it is too old
+// before anything is verified. Raising this constant is how the next
+// incompatible change ships: every build that reads it refuses everything
+// outside the range, and says which side to upgrade.
+const CurrentVersion = 1
+
+// CheckVersion reports whether a peer speaking handshake version peerVersion
+// can be talked to. peer names the role that version arrived from and self names
+// the role this build is playing, so the message can say which program to
+// upgrade.
+//
+// Both versions are in the message, because "handshake failed" is what this
+// exists to replace: an old peer and an impostor produce the same failed
+// signature otherwise, and only one of them is fixed by an upgrade.
+func CheckVersion(self, peer string, peerVersion int) error {
+	switch {
+	case peerVersion <= 0:
+		return fmt.Errorf("%s sends no handshake version, so it is older than version %d: upgrade the %s",
+			peer, CurrentVersion, peer)
+	case peerVersion > CurrentVersion:
+		return fmt.Errorf("%s speaks handshake version %d, this %s speaks version %d: upgrade the %s",
+			peer, peerVersion, self, CurrentVersion, peer)
+	}
+	return nil
+}
+
 func NewNonce() ([]byte, error) {
 	n := make([]byte, NonceSize)
 	if _, err := rand.Read(n); err != nil {
@@ -64,6 +95,7 @@ func AuthFrame(priv ed25519.PrivateKey, nonce []byte) protocol.Frame {
 func AuthFrameBound(priv ed25519.PrivateKey, nonce, binder []byte) protocol.Frame {
 	return protocol.Frame{
 		Type:      protocol.TypeAuth,
+		Version:   CurrentVersion,
 		PublicKey: priv.Public().(ed25519.PublicKey),
 		Data:      SignAuth(priv, nonce, binder),
 	}
@@ -82,7 +114,7 @@ func BoundFrame(priv ed25519.PrivateKey, nonce, binder []byte) protocol.Frame {
 }
 
 func ChallengeFrame(nonce []byte) protocol.Frame {
-	return protocol.Frame{Type: protocol.TypeChallenge, Data: nonce}
+	return protocol.Frame{Type: protocol.TypeChallenge, Version: CurrentVersion, Data: nonce}
 }
 
 func Denied(cap Cap) error {

@@ -618,6 +618,19 @@ func (s *Server) handshake(st *connState) error {
 	if f.Type != protocol.TypeAuth {
 		return fmt.Errorf("authentication required")
 	}
+	// Checked before verification. A peer that cannot be talked to is refused
+	// without this build spending anything on working out who it is, and the
+	// audit keeps the refusal the way it keeps every other denied connection.
+	//
+	// The reason carries both versions, because the client sees the message and
+	// the operator sees this, and neither of them learns the peer's version from
+	// a denial that only says there was one.
+	if err := auth.CheckVersion("daemon", "client", f.Version); err != nil {
+		e := s.connEvent(st, audit.KindDenied)
+		e.Reason = fmt.Sprintf("handshake version %d: %v", f.Version, err)
+		s.audit(e)
+		return err
+	}
 	p, err := s.cfg.Trust.AuthenticateBound(nonce, binder, f.PublicKey, f.Data)
 	if err != nil {
 		return err

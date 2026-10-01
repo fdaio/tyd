@@ -57,10 +57,33 @@ Maximum frame size: 1 MiB.
 On every new connection, before any other command:
 
 ```text
-server → challenge { data: nonce }                 nonce is 32 bytes
-client → auth      { public_key, data: sig }
+server → challenge { version, data: nonce }       nonce is 32 bytes
+client → auth      { version, public_key, data: sig }
 server → ok | error
 ```
+
+`version` is the handshake protocol version, and it is **outside the signature**,
+on purpose. A version that was signed could only be checked after verification,
+and verification is what fails identically for an old peer and for an impostor —
+so the whole reason for the field would be lost. Each side refuses a version it
+cannot speak before it verifies anything or signs anything.
+
+The accepted range is `1..version`, where `version` is the current value. A peer
+that sends no version field is older than every version there is. The only
+permitted answer to a version outside the range is **refusal**: negotiating a
+version, or accepting one the peer chose, would hand an attacker the choice of
+protocol. Both numbers and the side to upgrade are in the error, because
+`handshake failed` cannot tell an old peer from an impostor.
+
+A build from before this field existed sends no version, so it is refused by any
+build that has it. That break is deliberate and loud: the old side still sees only
+an authentication failure, so the improvement available to it lands on the new
+side, which logs the refusal and reports the peer's version rather than leaving an
+unexplained bad signature.
+
+The next incompatible change raises the current version, and the one after that
+folds the version into the channel binding, where it is authenticated instead of
+merely carried.
 
 `sig` is `Ed25519(auth payload)` where the auth payload is
 

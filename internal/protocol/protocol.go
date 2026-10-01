@@ -50,6 +50,13 @@ type Frame struct {
 	SessionID string `json:"session_id,omitempty"`
 	Error     string `json:"error,omitempty"`
 
+	// Version is the handshake protocol version, sent on the challenge and on
+	// the auth frame. It is deliberately outside the signature: a peer has to be
+	// refused before anything is verified, and a version that was signed could
+	// not be checked until after. Absent means a build from before the field
+	// existed, which is older than every version there is.
+	Version int `json:"version,omitempty"`
+
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 
