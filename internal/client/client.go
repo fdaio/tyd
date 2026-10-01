@@ -342,6 +342,12 @@ func (c *Conn) authenticate(key ed25519.PrivateKey, binder []byte) error {
 	if chal.Type != protocol.TypeChallenge {
 		return fmt.Errorf("expected challenge, got %q", chal.Type)
 	}
+	// Checked before the key is used at all, so a daemon this client cannot
+	// speak never gets anything signed for it, and the reason names both
+	// versions instead of surfacing later as a signature that does not verify.
+	if err := auth.CheckVersion("client", "daemon", chal.Version); err != nil {
+		return err
+	}
 	// Signing whatever the peer sent would make this key a signing oracle: the
 	// peer could take a challenge from a third daemon, have it signed here, and
 	// log in there as this client. A daemon only ever challenges with NonceSize

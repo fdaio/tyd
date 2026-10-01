@@ -158,7 +158,15 @@ func startImpostor(t *testing.T, kind transport.Kind, challenge []byte) *imposto
 func (i *impostor) serve(conn net.Conn, challenge []byte) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeChallenge, Data: challenge}); err != nil {
+	// The version, because a client refuses to sign for a daemon it cannot
+	// speak. Without it this test would still pass, but for the wrong reason:
+	// the impostor would get no signature because the client walked away rather
+	// than because the binding rejected the signature.
+	if err := protocol.WriteFrame(conn, protocol.Frame{
+		Type:    protocol.TypeChallenge,
+		Version: auth.CurrentVersion,
+		Data:    challenge,
+	}); err != nil {
 		return
 	}
 	f, err := protocol.ReadFrame(conn)

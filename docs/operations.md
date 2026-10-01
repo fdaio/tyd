@@ -313,6 +313,19 @@ stop it.
 If the Control Panel is also unreachable, the daemon keeps serving local sessions
 and tells you to run `tyd doctor --fix` once the disk is healthy.
 
+### "sends no handshake version" or "speaks handshake version"
+
+The two ends are not the same build. The handshake carries a protocol version
+outside the signature, and each side refuses a version it cannot speak **before**
+it verifies anything — which is why this is a clear message instead of the bad
+signature an old peer used to produce, indistinguishable from an impostor.
+
+The error names both versions and which side to upgrade. Upgrade that side; there
+is no setting to relax it, and no negotiation to fall back on, because a version
+that a peer gets to choose is a downgrade attack. A build from before the version
+field existed is older than every version there is, so it is refused like any
+other incompatible peer.
+
 ### "connect: invalid argument" from a live agent
 
 A live agent listens on a unix socket under the live root, and `AF_UNIX`
