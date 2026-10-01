@@ -242,3 +242,61 @@ func TestRemoveAndRemoveByPeer(t *testing.T) {
 		t.Fatal("an empty peer id must remove nothing")
 	}
 }
+
+// Ties must break the same way every time. Two sessions created in the same second
+// have no other order, and a caller that walks the list cannot then say which one
+// it got first if the answer changes between runs or between machines.
+func TestListOrderIsStableAcrossCalls(t *testing.T) {
+	// Same created_at for both, which is the case sort.Slice leaves to chance.
+	f := &File{Sessions: []Record{
+		{ID: "sess2", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+		{ID: "sess1", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+	}}
+	first := ids(f.List())
+	for i := 0; i < 50; i++ {
+		if got := ids(f.List()); !equal(got, first) {
+			t.Fatalf("order changed between calls: %v then %v", first, got)
+		}
+	}
+	if first[0] != "sess1" {
+		t.Errorf("ties broke by id ascending, got %v", first)
+	}
+}
+
+// A stable sort would also be deterministic here, but sort.Slice is not stable, so
+// the tiebreak has to be in the comparison. This pins that the tiebreak is not
+// merely luck for two sessions.
+func TestListTiebreakDoesNotDependOnInputOrder(t *testing.T) {
+	forward := &File{Sessions: []Record{
+		{ID: "sess1", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+		{ID: "sess2", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+	}}
+	reverse := &File{Sessions: []Record{
+		{ID: "sess2", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+		{ID: "sess1", State: "DETACHED", CreatedAt: "2026-10-01T00:00:00Z"},
+	}}
+	if !equal(ids(forward.List()), ids(reverse.List())) {
+		t.Errorf("the input order changed the result: %v vs %v",
+			ids(forward.List()), ids(reverse.List()))
+	}
+}
+
+func ids(rs []Record) []string {
+	out := make([]string, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, r.ID)
+	}
+	return out
+}
+
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

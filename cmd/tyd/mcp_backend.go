@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"tyd/internal/alias"
 	"tyd/internal/catalog"
@@ -243,12 +245,37 @@ func (b *mcpBackend) List(context.Context) ([]mcp.Listed, error) {
 		}
 		out = append(out, mcp.Listed{
 			Session:  mcp.Session{ID: rec.ID, Alias: aliasNameOf(adoc, rec.ID), Peer: b.labelForRecord(rec)},
+			LastUsed: lastUsedOf(rec),
 			Recorded: rec.State,
 			Created:  catalog.CreatedDisplay(rec),
 			// The tool layer runs the probe read, so no state is claimed here.
 		})
 	}
+	// Most recently active first, so the row a reader sees first is also the first
+	// one probed. That matters on a target that will not give out more than one
+	// approval: the rows after the first are read from the local catalog instead,
+	// and which rows those are should be a choice rather than an accident of how
+	// the catalog happened to be written.
+	//
+	// The catalog's own order is open-first-then-newest. It is not what a model
+	// wants here, and it is a different question from which sessions exist.
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].LastUsed.Equal(out[j].LastUsed) {
+			return out[i].LastUsed.After(out[j].LastUsed)
+		}
+		return out[i].Session.ID < out[j].Session.ID
+	})
 	return out, nil
+}
+
+// lastUsedOf is when the catalog last saw this session driven. A row written
+// before that field existed falls back to the catalog write time, and a session
+// with neither sorts last.
+func lastUsedOf(rec catalog.Record) time.Time {
+	if !rec.LastUsed.IsZero() {
+		return rec.LastUsed
+	}
+	return rec.UpdatedAt
 }
 
 func (b *mcpBackend) labelForRecord(rec catalog.Record) string {

@@ -50,6 +50,9 @@ type Opened struct {
 // probe read found.
 type Listed struct {
 	Session Session
+	// LastUsed is when this session was last read or driven, as the catalog has it.
+	// It orders the rows, which is also the order they are probed in.
+	LastUsed time.Time
 	// Recorded is the state the catalog holds. A probe updates it.
 	Recorded string
 	// State is running, exited, pending, unknown or closed. It is empty when no

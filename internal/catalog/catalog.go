@@ -334,6 +334,13 @@ func listKey(r Record) string {
 	return ""
 }
 
+// List returns the sessions in the order a reader should see them: open ones
+// first, then newest by creation.
+//
+// The session id breaks ties. Without it the order of sessions created in the same
+// second is whatever the sort happened to produce, which differs between runs and
+// between machines — and a caller that walks the list in order cannot then say
+// which one it got first.
 func (f *File) List() []Record {
 	out := append([]Record(nil), f.Sessions...)
 	sort.Slice(out, func(i, j int) bool {
@@ -342,7 +349,11 @@ func (f *File) List() []Record {
 		if closedI != closedJ {
 			return !closedI
 		}
-		return listKey(out[i]) > listKey(out[j]) // newest CreatedAt first
+		ki, kj := listKey(out[i]), listKey(out[j])
+		if ki != kj {
+			return ki > kj // newest CreatedAt first
+		}
+		return out[i].ID < out[j].ID
 	})
 	return out
 }

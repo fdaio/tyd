@@ -91,19 +91,31 @@ type server struct {
 	// aliases maps a requested alias to its session key, so a name cannot be
 	// handed to two sessions this process opened.
 	aliases map[string]string
-	// gated holds the targets that have refused a read pending approval. A target
-	// in pre mode spends the operator's approval on the first read that gets
-	// through, so a list must not keep handing it reads to spend: once a target
-	// has asked, this process stops probing it and says why. A call that gets
+	// gated holds the targets that have refused a read pending approval, and since
+	// when. A target in pre mode spends the operator's approval on the first read
+	// that gets through, so a list must not keep handing it reads to spend: once a
+	// target has asked, this process stops probing it and says why. A call that gets
 	// through clears the mark, because that is the target saying the gate is open.
-	gated map[string]bool
+	//
+	// The mark is process memory on purpose and is deliberately not persisted. A
+	// restart that resurrected it would report a block the operator has already
+	// lifted, which sends a model looking for a gate that has closed — worse than
+	// spending one approval again. If it ever needs to outlive the process it
+	// belongs on the target, with a time to live, not here.
+	gated map[string]time.Time
+	// probing holds the targets with a probe in flight, so that two callers
+	// listing at once cannot each send a read past the same gate. Checking the
+	// mark and setting it are two separate steps, and the probe sits between them.
+	probing map[string]bool
 }
 
-// needsApproval reports whether this target has refused a read pending approval.
-func (s *server) needsApproval(peer string) bool {
+// needsApproval reports whether this target has refused a read pending approval,
+// and since when.
+func (s *server) needsApproval(peer string) (time.Time, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.gated[peer]
+	since, ok := s.gated[peer]
+	return since, ok
 }
 
 // markGated records that a target refused a read pending approval.
@@ -111,9 +123,11 @@ func (s *server) markGated(peer string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.gated == nil {
-		s.gated = make(map[string]bool)
+		s.gated = make(map[string]time.Time)
 	}
-	s.gated[peer] = true
+	if _, seen := s.gated[peer]; !seen {
+		s.gated[peer] = time.Now()
+	}
 }
 
 // ungate records that a target let a call through, so it is not gated after all.
@@ -121,6 +135,32 @@ func (s *server) ungate(peer string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.gated, peer)
+}
+
+// claimProbe reserves the single probe slot for a target, and reports whether this
+// caller got it.
+//
+// This is the invariant a concurrent list would otherwise break. needsApproval and
+// markGated are two separate locked calls with the probe between them, so N probes
+// all pass the check before any of them sets the mark: one approval, spent N times.
+// A slot makes "at most one probe per target in flight" true rather than likely.
+func (s *server) claimProbe(peer string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.probing == nil {
+		s.probing = make(map[string]bool)
+	}
+	if s.probing[peer] {
+		return false
+	}
+	s.probing[peer] = true
+	return true
+}
+
+func (s *server) releaseProbe(peer string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.probing, peer)
 }
 
 type sessionState struct {
@@ -365,11 +405,19 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 		// again: the row says what the catalog recorded and why it was not
 		// probed, which is more use to a model than a second request the operator
 		// has to answer.
-		if s.needsApproval(it.Session.Peer) {
+		switch since, gated := s.needsApproval(it.Session.Peer); {
+		case gated:
 			row.State = "unknown"
-			row.ProbeError = gatedProbeNote
+			row.ProbeError = gatedProbeNote(since)
 			row.Probed = false
-		} else {
+		case !s.claimProbe(it.Session.Peer):
+			// Another caller is already asking this target. Saying so is better than
+			// queueing behind it: the answer would be the same read, and the reader
+			// is told this row was skipped rather than why it changed.
+			row.State = "unknown"
+			row.ProbeError = probeInFlightNote
+			row.Probed = false
+		default:
 			page, perr := s.probe(ctx, it.Session)
 			row.Probed = true
 			switch {
@@ -384,6 +432,11 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 			default:
 				row.State = "running"
 			}
+			// Released after the state is recorded, never before. Releasing first
+			// leaves a gap between the slot being free and the mark being set, and
+			// a second caller walks straight into it — which is the same double
+			// spend the slot exists to prevent, one step later.
+			s.releaseProbe(it.Session.Peer)
 		}
 		out = append(out, row)
 
@@ -419,8 +472,24 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 // gatedProbeNote is why a row was not probed. It names the cause rather than
 // repeating the daemon's message, because the daemon's message asks for an
 // approval this process has decided not to spend on a probe.
-const gatedProbeNote = "not probed: this target requires approval, and a probe would spend the " +
-	"operator's single approval. Approve and then read the session directly."
+//
+// It carries how long the target has been asking, because "waiting for approval"
+// and "waiting since this morning" call for different responses, and a reader
+// cannot tell them apart from a line that only says it is waiting.
+func gatedProbeNote(since time.Time) string {
+	note := "not probed: this target requires approval, and a probe would spend the " +
+		"operator's single approval. Approve and then read the session directly."
+	if since.IsZero() {
+		return note
+	}
+	return note + fmt.Sprintf(" Approval pending since %s.", since.UTC().Format(time.RFC3339))
+}
+
+// probeInFlightNote is for a row skipped because another caller was already asking
+// this target. It is not the same as a gated target and must not read like one:
+// nothing is waiting for an operator here.
+const probeInFlightNote = "not probed: another session_list is already probing this target. " +
+	"Read the session directly if you need its state."
 
 // gatedTargets lists the targets this process has stopped probing.
 func (s *server) gatedTargets() []string {
