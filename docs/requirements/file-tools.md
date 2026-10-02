@@ -190,8 +190,8 @@ approval covers one file operation — against two for the shell equivalent.
 **The rule: bind exactly what the operator can see.** No more, no less. Operation,
 path or session, byte count, mode.
 
-`expected_sha256` is **not** in the digest and appears **nowhere** the operator can
-read it. It is a hash the writing side claims about existing content, which on a
+`expected_sha256` is **not** in the digest — it is absent from the formula above on
+purpose — and appears **nowhere** the operator can read it. It is a hash the writing side claims about existing content, which on a
 low-entropy file is the same offline dictionary verifier as a bare hash in the audit
 log. It is the writer's concurrency guard, not part of what is being approved.
 
@@ -222,7 +222,7 @@ session the operator already named. It is not survivable once a write to
 So a file request carries a digest of what it intends to do:
 
 ```
-digest = SHA-256( op \0 relpath \0 size \0 mode \0 expected_sha256 )
+digest = SHA-256( op \0 session \0 relpath \0 size \0 mode )
 ```
 
 - `approved` holds `{expires, digest}` instead of a bare expiry.
@@ -234,6 +234,31 @@ digest = SHA-256( op \0 relpath \0 size \0 mode \0 expected_sha256 )
 
 The key becomes `(session, principal, digest)`, so two different operations on one
 session need two approvals rather than racing for one.
+
+**`size` is the request, not the result.** For a write it is the content's length,
+which the daemon knows before it sends anything. For a read there is no content, and
+the number that is both known in advance and meaningful to an operator is the
+requested `max_bytes` — so that is what goes in. The page the agent returns is the
+agent's decision and is deliberately **not** in the digest: binding it would mean the
+daemon had to predict the file's size before reading it, and a digest nobody can
+compute in advance is not something an operator can meaningfully approve.
+
+**The digest must name the path, and today's does not.** `approvalDigest` is
+currently `(op, session, size)`, which is enough for `send` and `attach` because a
+session id already names the thing being acted on. A file request breaks that
+assumption: with no path in the digest, an approval granted for reading `notes.txt`
+would be spent by a read of `authorized_keys`, which is the exact hole this section
+exists to close. So B2 extends the digest rather than reusing it as it stands.
+
+**The approval is spent before the operation runs, and a failed operation keeps it
+spent.** `gateAttach` spends first and performs second; with no matching approval the
+operation does not happen at all and the caller is told to get one. The alternative —
+perform, then refund on failure — turns "approved once" into "one approval per
+successful read", which is a discovery oracle: it would let a caller walk a
+filesystem, spending nothing on every path that is not there. So a file operation
+refused for a missing file, a symlink or a bad parameter has still consumed the
+operator's approval. That is the intended behaviour, recorded here so it is not later
+smoothed over as an inconvenience.
 
 ## 6. Write semantics
 

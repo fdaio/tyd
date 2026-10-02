@@ -33,7 +33,17 @@ func fileOps(ceiling *fileroot.Root, conn io.Writer, f protocol.Frame) {
 		// content.
 		reply = protocol.Frame{Type: protocol.TypeFileResult, ID: f.ID, Error: err.Error()}
 	}
-	_ = protocol.WriteFrame(conn, reply)
+	if err := protocol.WriteFrame(conn, reply); err != nil {
+		// Nothing can be said about it: the channel this would travel on is the frame
+		// that just failed. It should be unreachable, because every payload here is
+		// bounded by protocol.MaxDataBytes and the reply is a metadata envelope
+		// around it — and the first version of this was not bounded, so a large read
+		// silently closed the connection instead of answering too_large.
+		//
+		// So this is a bug if it happens, and the way to find out is a test that asks
+		// for the largest thing the feature allows and gets bytes back.
+		_ = err
+	}
 }
 
 // serveFile performs one operation and fills in the reply's result fields. The
@@ -92,9 +102,19 @@ func serveFileRead(root *fileroot.Root, f protocol.Frame, reply *protocol.Frame)
 		// field goes missing without anyone noticing.
 		return fmt.Errorf("a read carries no mode")
 	}
+	// Two ceilings, and the smaller one is the wire. fileroot.MaxReadBytes is what the
+	// library will read; protocol.MaxDataBytes is what a frame can carry once the page
+	// is base64 and a reply envelope is added. Between them a read cannot be answered,
+	// and answering it by dropping the frame leaves the caller with a closed connection
+	// and no error at all — so the wire bound is checked here, where it can still be
+	// reported as too_large with a number in it.
 	if int64(f.MaxBytes) > fileroot.MaxReadBytes {
 		return fmt.Errorf("%s: max_bytes %d is above the %d ceiling",
 			fileroot.CodeTooLarge, f.MaxBytes, fileroot.MaxReadBytes)
+	}
+	if int64(f.MaxBytes) > protocol.MaxDataBytes {
+		return fmt.Errorf("%s: max_bytes %d is above the %d ceiling of a single reply frame",
+			fileroot.CodeTooLarge, f.MaxBytes, protocol.MaxDataBytes)
 	}
 	res, err := root.Read(f.Path, f.Offset, int(f.MaxBytes))
 	if err != nil {
@@ -126,6 +146,13 @@ func serveFileWrite(root *fileroot.Root, f protocol.Frame, reply *protocol.Frame
 	if len(f.Data) > fileroot.MaxWriteBytes {
 		return fmt.Errorf("%s: %d bytes is above the %d ceiling",
 			fileroot.CodeTooLarge, len(f.Data), fileroot.MaxWriteBytes)
+	}
+	if len(f.Data) > protocol.MaxDataBytes {
+		// Unreachable in practice: a request this size does not survive the frame
+		// encoder, so it never arrives. Kept because the write ceiling and the wire
+		// ceiling are separate numbers and only one of them is enforced on this side.
+		return fmt.Errorf("%s: %d bytes is above the %d ceiling of a single request frame",
+			fileroot.CodeTooLarge, len(f.Data), protocol.MaxDataBytes)
 	}
 	if f.Offset != 0 {
 		return fmt.Errorf("a write does not take an offset")
