@@ -11,17 +11,23 @@ const MaxFrame = 1 << 20
 
 // frameMetadataSlack reserves room in a frame for everything that is not Data.
 //
-// Measured, not assumed, and **derived from a bound that is enforced** rather than
-// from PATH_MAX. The widest metadata a real frame carries is a write request with a
-// fileroot.MaxPathLen path and a fileroot.MaxRootLen root claim, which encodes to
-// 2343 bytes; 4 KiB covers that with room to spare. Sizing this against PATH_MAX
-// instead — 4096 for the path and 4096 for the root — needs 8487 bytes, and picking a
-// round 8192 for it is how this ends up 231 bytes short on the write direction while
-// every read test passes.
+// Derived from a bound that is **enforced** (fileroot.MaxPathLen and MaxRootLen) and
+// from the **worst-case encoding** of those bytes.
 //
-// The test next to this pins both directions against the encoder, so the constant
-// cannot drift away from the thing it is a bound on.
-const frameMetadataSlack = 4 << 10
+// The second half is the part that is easy to get wrong, and getting it wrong is
+// silent. encoding/json escapes `<`, `>` and `&` to six bytes each — `\u003c` — so a
+// path of MaxPathLen of them encodes to six times its length, and path plus root claim
+// is 12288 bytes before anything else is counted. Measured worst case: 12583.
+//
+// An earlier version reserved 4096 and derived it from a path filled with `p`, which
+// encodes as itself. That test passed, and the write direction still overflowed by 8200
+// bytes on any path containing one of the three escaped characters — which are legal in
+// filenames and common in generated code. So the test below fills with `<` on purpose:
+// a worst-case test written with a character that does not escape is not a worst case.
+//
+// 16 KiB covers 12583 with room to spare. The price is about 1% of the payload, which
+// is cheap against a frame that cannot be sent.
+const frameMetadataSlack = 16 << 10
 
 // MaxDataBytes is the largest Data payload a single frame can carry.
 //

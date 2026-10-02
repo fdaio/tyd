@@ -465,3 +465,75 @@ func TestTheReplyEchoesTheRequestID(t *testing.T) {
 		t.Error("the missing-file read was not refused")
 	}
 }
+
+// The agent's content ceiling on a write, with a long path and a long root claim.
+//
+// The frame arithmetic for the *worst-case* metadata — a path and a root claim both at
+// the enforced bound, filled with the character that escapes to six bytes — is the
+// protocol package's test, because that is a property of the encoder and needs no
+// filesystem. What is left for here is the agent's own behaviour: a payload of exactly
+// MaxDataBytes is accepted and lands on disk, one byte more is refused with the ceiling
+// named, and the refusal leaves the existing file alone.
+//
+// The path here is long but creatable. A path of exactly fileroot.MaxPathLen cannot be:
+// 1024 bytes of relative path plus any root prefix is past macOS's PATH_MAX of 1024, so
+// the filesystem would refuse it before the protocol ever saw it. That is worth knowing
+// about the bound — it is a limit on what a frame may carry, not on what a filesystem
+// will hold.
+func TestTheLargestAllowedWriteGoesThrough(t *testing.T) {
+	dir := rootDir(t, nil)
+	content := bytes.Repeat([]byte("w"), protocol.MaxDataBytes)
+
+	const comp, leaf = 120, "leaf"
+	var parts []string
+	for remaining := longestCreatablePath - len(leaf); remaining > 0; {
+		n := comp
+		if n > remaining-1 {
+			n = remaining - 1
+		}
+		parts = append(parts, strings.Repeat("<", n))
+		remaining -= n + 1
+	}
+	path := strings.Join(parts, "/") + "/" + leaf
+	if err := os.MkdirAll(filepath.Join(dir, strings.Join(parts, "/")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a := agentWithRoot(t, dir)
+
+	reply := oneFileOp(t, a, protocol.Frame{
+		Type: protocol.TypeFileWrite, Path: path, Mode: "create", Data: content,
+	})
+	if reply.Error != "" {
+		t.Fatalf("a write at the ceiling was refused: %.60q", reply.Error)
+	}
+	if reply.Bytes != protocol.MaxDataBytes {
+		t.Errorf("wrote %d bytes, want %d", reply.Bytes, protocol.MaxDataBytes)
+	}
+	onDisk, err := os.ReadFile(filepath.Join(dir, path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onDisk) != protocol.MaxDataBytes {
+		t.Errorf("the file is %d bytes on disk, want %d", len(onDisk), protocol.MaxDataBytes)
+	}
+
+	// One byte more is refused with the ceiling named, and the file is untouched.
+	reply = oneFileOp(t, a, protocol.Frame{
+		Type: protocol.TypeFileWrite, Path: path, Mode: "replace",
+		Data: bytes.Repeat([]byte("w"), protocol.MaxDataBytes+1),
+	})
+	if reply.Error == "" {
+		t.Fatal("a write above the ceiling was answered rather than refused")
+	}
+	if !strings.Contains(reply.Error, string(fileroot.CodeTooLarge)) ||
+		!strings.Contains(reply.Error, fmt.Sprint(protocol.MaxDataBytes)) {
+		t.Errorf("error does not name too_large or the ceiling: %.80q", reply.Error)
+	}
+	if onDisk, err := os.ReadFile(filepath.Join(dir, path)); err != nil || len(onDisk) != protocol.MaxDataBytes {
+		t.Error("the refused write changed the file")
+	}
+}
+
+// longestCreatablePath leaves room for the root prefix inside macOS's PATH_MAX of
+// 1024, which is the shortest of the platforms this builds on.
+const longestCreatablePath = 512
