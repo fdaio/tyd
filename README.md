@@ -135,7 +135,7 @@ than issued by the Control Panel, so the Control Panel cannot use it to stand in
 for this host.
 
 `pre` is the mode worth starting with for a peer you have not used before: every
-remote create, attach, and watch waits for a `tyd session approve` on this
+remote request waits for a `tyd session approve` on this
 machine, and each approval covers one request. `full` is the default and starts
 a shell as soon as the peer asks. `tyd approval pre` switches without changing
 the daemon id or any pairing, and a `tyd up` restart applies it; a host with no

@@ -230,8 +230,12 @@ func (s *Server) requestApproval(st *connState, sessionID, digest, op string, si
 		// better than dropping an arbitrary one: the caller is told, and the
 		// approvals already waiting are the ones a person was going to look at.
 		s.mu.Unlock()
-		return fmt.Errorf("too many requests waiting for approval on this session (%d); "+
-			"an operator has to decide on the pending ones before more can wait", pendingCap)
+		// Says whose budget it is and what frees it, because a peer that has filled
+		// it needs to know the waiting requests are its own and that an operator
+		// has to act — a bare "too many" reads as the daemon being busy.
+		return fmt.Errorf("this session already has %d requests waiting for approval from you, "+
+			"which is the most that will wait at once. They expire after %s, or an operator "+
+			"decides on them with 'tyd session approve %s'", pendingCap, s.cfg.ApprovalTTL, sessionID)
 	}
 	s.pending[key] = req
 	s.mu.Unlock()

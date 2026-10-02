@@ -128,11 +128,27 @@ func gatePub(p *auth.Principal) string {
 // that never fires looks exactly like a cap that is not there.
 func (s *Server) countPendingLocked(sessionID string, p *auth.Principal) int {
 	prefix := sessionID + "|" + gatePub(p) + "|"
+	now := time.Now()
 	n := 0
-	for key := range s.pending {
-		if strings.HasPrefix(key, prefix) {
-			n++
+	for key, req := range s.pending {
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		// Expired entries do not count, and are swept here rather than only where
+		// they are read.
+		//
+		// Expiry used to happen in one place: the listing. In production that
+		// listing runs when somebody invokes `tyd session approve`, so a principal
+		// that filled its slots and was never approved kept them — the cap counted
+		// them, every later request was refused, and nothing would ever clear them
+		// short of the operator running a command that had itself stopped working.
+		// A limit that can be reached permanently, by the party it is meant to slow
+		// down, is a denial of service with a 10-minute fuse that never burns down.
+		if now.Sub(req.at) > s.cfg.ApprovalTTL {
+			delete(s.pending, key)
+			continue
+		}
+		n++
 	}
 	return n
 }
