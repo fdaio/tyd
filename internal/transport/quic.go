@@ -69,6 +69,33 @@ func (l *quicListener) Accept() (net.Conn, error) {
 func (l *quicListener) Close() error   { return l.ql.Close() }
 func (l *quicListener) Addr() net.Addr { return l.ql.Addr() }
 
+// defaultHandshakeIdle is quic-go's own default, kept as a floor.
+//
+// A caller with a short budget keeps the old behaviour rather than being made worse
+// off: the point is to stop the budget being silently *truncated*, not to shorten it.
+const defaultHandshakeIdle = 5 * time.Second
+
+// handshakeIdleFor is the handshake timer for a dial that must finish within dctx.
+//
+// For TLS and unix the whole window — dial, handshake and auth — shares one deadline.
+// For QUIC the handshake alone was getting less than that, which is the inconsistency
+// this removes. The post-handshake steps then share whatever is left, which is the
+// arrangement the other transports already have.
+//
+// Two quic-go rules make the arithmetic safe: the attempt is also aborted at twice this
+// value, and dctx cancels first either way, so the budget is still the budget.
+func handshakeIdleFor(dctx context.Context) time.Duration {
+	deadline, ok := dctx.Deadline()
+	if !ok {
+		return defaultHandshakeIdle
+	}
+	budget := time.Until(deadline)
+	if budget <= defaultHandshakeIdle {
+		return defaultHandshakeIdle
+	}
+	return budget
+}
+
 // DialQUICFingerprint dials QUIC and pins the server by SHA-256 cert fingerprint (hex).
 func DialQUICFingerprint(addr, certFP string) (Conn, error) {
 	return DialQUICFingerprintContext(context.Background(), addr, certFP)
@@ -107,6 +134,16 @@ func DialQUICFingerprintContext(ctx context.Context, addr, certFP string) (Conn,
 	defer cancel()
 	sess, err := quic.DialAddr(dctx, addr, tlsConf, &quic.Config{
 		MaxIdleTimeout: 2 * time.Minute,
+		// Derived from the dial context, so the transport honours whatever budget the
+		// caller allocated instead of quic-go's default.
+		//
+		// Without this the handshake gets 5 seconds — quic-go's default when
+		// HandshakeIdleTimeout is zero — and that silently truncates the per-address
+		// budget the client documents as 12s for "dial + handshake + auth". A QUIC peer
+		// that completes its handshake at 6s is reported unreachable while a TLS peer at
+		// 6s succeeds, which is not a decision anyone made: it is a library default
+		// standing in for one.
+		HandshakeIdleTimeout: handshakeIdleFor(dctx),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dial quic %s: %w", addr, err)

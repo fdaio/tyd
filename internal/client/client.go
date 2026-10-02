@@ -65,7 +65,13 @@ const (
 )
 
 // dialAttemptTimeout caps TCP/TLS/QUIC dial + handshake + auth per address.
-// Tests may lower this.
+// Tests may lower it.
+//
+// Each transport honours it over the whole window. TLS and unix set one deadline across
+// dial, handshake and auth together; QUIC derives its handshake timer from the same
+// budget, so a QUIC handshake is not cut short where a TLS one would not be. That was
+// not true until #144 — the QUIC dial took quic-go's 5s default for the handshake
+// whatever this said, which is a library default standing in for a decision nobody made.
 var dialAttemptTimeout = defaultDialAttemptTimeout
 
 func Dial(ep Endpoint, key ed25519.PrivateKey) (*Conn, error) {
