@@ -15,6 +15,7 @@ import (
 	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
+	"tyd/internal/fileroot"
 	"tyd/internal/live"
 	"tyd/internal/procs"
 	"tyd/internal/protocol"
@@ -45,6 +46,14 @@ type Config struct {
 	Trust        *auth.Store
 	ApprovalMode string // full|pre|post; default full
 
+	// AuditKey keys the content digest on file operations.
+	//
+	// Nil means no MAC is recorded, which is the honest answer when no key was
+	// configured — and it is **not** a fallback to a bare hash, because a bare hash of
+	// low-entropy content is an offline dictionary-attack verifier, which is the thing
+	// §7 exists to prevent. So the record simply has no ContentMAC, and a reader can
+	// see that it has none rather than being misled by a weaker one.
+	AuditKey *audit.Key
 	// Audit receives control events in every approval mode. Nil means stderr
 	// under post and no auditing otherwise.
 	Audit audit.Sink
@@ -733,6 +742,134 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 		op, describeRequest(op, sessionID, size), shortDigest(digest), sessionID)
 }
 
+// handleFile forwards one file operation to the session's agent.
+//
+// Two things are decided here and two things are forwarded.
+//
+// Decided: that the caller may attempt it, and that an approval covers **this**
+// operation — this path, this mode, this size. That is the digest's whole job, and
+// without the path an approval for reading one file is spent by reading another.
+//
+// Forwarded: the frame itself, both directions, whole. The request copy cannot lose
+// the root claim or the mode, and the reply cannot lose the ID, because neither is
+// rebuilt from a list of fields — a list is only as complete as the last time
+// somebody remembered to update it. The read path below rebuilds its reply field by
+// field and carries a comment about exactly that hazard; this one does not have the
+// problem.
+//
+// Not decided here: anything about the path. The agent holds the root and is the only
+// party that can say what a path means.
+func (s *Server) handleFile(st *connState, f protocol.Frame) error {
+	if f.SessionID == "" {
+		return fmt.Errorf("session_id required")
+	}
+	if err := s.require(st, auth.CapFile, f.SessionID); err != nil {
+		return err
+	}
+	// The wire ceiling is checked before an approval is spent on a request that could
+	// not be answered. Checking it after would mean the operator approves something
+	// and then watches it fail on arithmetic.
+	if int64(len(f.Data)) > protocol.MaxDataBytes || int64(f.MaxBytes) > protocol.MaxDataBytes {
+		return fmt.Errorf("%s: %d bytes is above the %d ceiling of a single frame",
+			fileroot.CodeTooLarge, maxInt64(int64(len(f.Data)), int64(f.MaxBytes)), protocol.MaxDataBytes)
+	}
+
+	sess, err := s.cfg.Mgr.Get(f.SessionID)
+	if err != nil {
+		return err
+	}
+	op := opFileRead
+	if f.Type == protocol.TypeFileWrite {
+		op = opFileWrite
+	}
+	// The digest is built here, from the request being served, so it describes what
+	// will actually happen rather than what the peer claimed.
+	size := int64(len(f.Data))
+	if f.Type == protocol.TypeFileRead {
+		size = int64(f.MaxBytes)
+	}
+	digest := fileApprovalDigest(op, f.SessionID, f.Path, f.Mode, size)
+	if !s.consumeApproval(approvalKey(f.SessionID, gatePub(st.principal), digest), digest) {
+		if err := s.requestApproval(st, f.SessionID, digest, op, size); err != nil {
+			return err
+		}
+		return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
+			op, describeFileRequest(f, size), shortDigest(digest), f.SessionID)
+	}
+
+	res, err := sess.File(f)
+	if err != nil {
+		// The approval was spent before the operation ran and stays spent. A model has
+		// to be told that, or it reads the failure as "not now" and retries on its own,
+		// which cannot work — the retry has no approval behind it.
+		//
+		// Stated as a fact rather than as advice, because the reason varies: a blocked
+		// path will not be helped by a new approval, and telling the model to go and
+		// get one sends it to an operator with nothing to ask for. Refunding instead
+		// would be worse than either — see §5.
+		return fileFailure(err.Error(), "the approval for that request has been used; a new operation needs a new approval")
+	}
+	s.auditFile(st, f, res, digest)
+	// The agent's reply, sent as it arrived. Its ID is the request's, which the agent
+	// echoed and DialFile checked.
+	return st.send(res)
+}
+
+// fileFailure is what a model reads when a file operation fails after its approval was
+// spent.
+//
+// The two halves are separate arguments so the guidance is in one place and cannot
+// drift into wording that contradicts the reason it is attached to.
+func fileFailure(reason, approvalNote string) error {
+	return fmt.Errorf("%s (%s)", reason, approvalNote)
+}
+
+// auditFile records what a file operation did: the metadata, never the content.
+func (s *Server) auditFile(st *connState, f protocol.Frame, res protocol.Frame, digest string) {
+	kind := audit.KindFileRead
+	if f.Type == protocol.TypeFileWrite {
+		kind = audit.KindFileWrite
+	}
+	e := s.connEvent(st, kind)
+	e.SessionID = f.SessionID
+	e.Op = string(f.Type)
+	e.Path = f.Path
+	e.FileRoot = f.Root
+	e.WriteMode = f.Mode
+	e.Size = res.Size
+	e.Result = "ok"
+	if f.Type == protocol.TypeFileWrite && s.cfg.AuditKey != nil {
+		// Keyed, and computed over the content **this server holds** — not over the
+		// digest the agent returned. res.SHA256 is a bare sha256, and §7 is explicit
+		// that a bare hash of low-entropy content is an offline dictionary-attack
+		// verifier; putting that in the log would reintroduce exactly what the key
+		// exists to prevent.
+		e.ContentMAC = s.cfg.AuditKey.MAC(kind, f.Data)
+	}
+	s.audit(e)
+}
+
+// describeFileRequest is the operator-facing summary. It names the path and the mode
+// because those are what the digest binds, and an operator shown only "file_write"
+// cannot tell one pending request from another.
+func describeFileRequest(f protocol.Frame, size int64) string {
+	verb := "read"
+	if f.Type == protocol.TypeFileWrite {
+		verb = f.Mode
+	}
+	if f.Path == "" {
+		return fmt.Sprintf("%s (no path)", verb)
+	}
+	return fmt.Sprintf("%s %s (%d bytes)", verb, f.Path, size)
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // auditRead records a read that broke the client's view of the stream: the
 // cursor was reset, or the requested prefix was already gone. A plain page is
 // not recorded. Draining the disk cap is a thousand calls and the chain does
@@ -1085,6 +1222,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			Icanon:       res.Icanon,
 			AgentVersion: res.AgentVersion,
 		})
+
+	case protocol.TypeFileRead, protocol.TypeFileWrite:
+		return s.handleFile(st, f)
 
 	case protocol.TypeSend:
 		if f.SessionID == "" {

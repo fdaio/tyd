@@ -332,3 +332,58 @@ func (c *Conn) Close() {
 func (c *Conn) closeOut() {
 	c.closeOnce.Do(func() { close(c.closed) })
 }
+
+// FileResult is what a file operation returned. It is a whole frame rather than a
+// struct of fields, on purpose — see DialFile.
+type FileResult = protocol.Frame
+
+// DialFile forwards one file operation to the agent that holds the session's
+// directory descriptor, and returns the agent's answer.
+//
+// **The frame goes across as it arrived and the answer comes back as it was sent.**
+// No field is re-listed in either direction, so none can be dropped by forgetting
+// it: the request copy cannot lose the path or the root claim, and the reply cannot
+// lose the ID or the digest. Re-listing is how #118's `secret` flag came to be
+// nearly fail-open, and the comment on the read path in the server says the same
+// thing about a frame rebuilt field by field.
+//
+// The agent is the authority here. This function validates nothing about the path: a
+// root claim arriving from a daemon is a claim, and the agent decides.
+func DialFile(dir string, req protocol.Frame) (FileResult, error) {
+	if !Alive(dir) {
+		return FileResult{}, fmt.Errorf("session has no running agent; file operations need one")
+	}
+	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
+	if err != nil {
+		return FileResult{}, err
+	}
+	defer nc.Close()
+	if err := protocol.WriteFrame(nc, req); err != nil {
+		return FileResult{}, err
+	}
+	f, err := protocol.ReadFrame(nc)
+	if err != nil {
+		return FileResult{}, err
+	}
+	if f.Type == protocol.TypeError {
+		return FileResult{}, fmt.Errorf("%s", f.Error)
+	}
+	if f.Type != protocol.TypeFileResult {
+		return FileResult{}, fmt.Errorf("unexpected file reply %q", f.Type)
+	}
+	// A result carrying an error is a **failure**, not a result. The agent reports a
+	// refusal by setting Error on the result frame rather than by sending TypeError,
+	// because one reply per request is the invariant; without this check the refusal
+	// came back as a success with no data in it, and the caller recorded it as a
+	// successful operation.
+	if f.Error != "" {
+		return FileResult{}, fmt.Errorf("%s", f.Error)
+	}
+	// Checked rather than assumed. A reply that arrived without the ID cannot be
+	// matched to its request, and a caller that cannot match it waits out a timeout
+	// to attribute the failure.
+	if f.ID != req.ID {
+		return FileResult{}, fmt.Errorf("file reply carried id %q, request was %q", f.ID, req.ID)
+	}
+	return f, nil
+}

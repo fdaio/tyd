@@ -721,6 +721,34 @@ func (s *Session) noteAgentVersion(v int) {
 // Send writes to the session's terminal. secret asks the agent to refuse the
 // write unless the terminal is not echoing, which it decides where the PTY is
 // held; see internal/live.
+// File forwards one file operation to this session's agent.
+//
+// The guards are Send's, for the same reasons: a session that is pending approval
+// has no agent to ask, a closed one has nothing left to read, and a session with no
+// live directory was never given to a live agent at all — so the last is reported as
+// unsupported rather than as a missing file, which would be a different fix.
+//
+// The frame is passed through whole. Nothing here inspects the path: the agent holds
+// the root and is the only party that can decide what a path means.
+func (s *Session) File(req protocol.Frame) (live.FileResult, error) {
+	s.mu.Lock()
+	dir := s.liveDir
+	pending := s.state == StatePending
+	closed := s.closed || s.state == StateClosed
+	s.mu.Unlock()
+
+	if pending {
+		return live.FileResult{}, fmt.Errorf("session pending approval")
+	}
+	if closed {
+		return live.FileResult{}, fmt.Errorf("session %s is closed", s.ID)
+	}
+	if dir == "" {
+		return live.FileResult{}, ErrSendUnsupported
+	}
+	return live.DialFile(dir, req)
+}
+
 func (s *Session) Send(p []byte, secret bool) (live.SendReply, error) {
 	if len(p) == 0 {
 		return live.SendReply{}, fmt.Errorf("send requires data")
