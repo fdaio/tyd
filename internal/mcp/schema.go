@@ -13,6 +13,12 @@ func (s *server) dispatch(ctx context.Context, name string, a args) (string, any
 	case "session_open":
 		return s.open(ctx, a)
 	case "session_list":
+		// The fan-out only exists when the caller asked for it. Without `peers` this
+		// is the single-target path, unchanged, so a server serving one machine
+		// behaves exactly as it did before.
+		if a.has("peers") {
+			return s.listMany(ctx, a)
+		}
 		return s.list(ctx)
 	case "session_send":
 		if s.readOnly {
@@ -55,8 +61,23 @@ func (s *server) definitions() []toolDef {
 		{
 			Name:        "session_list",
 			Title:       "List sessions",
-			Description: "List the sessions in the local catalog, with a probe read on each to find out whether it is still running. A probe on a remote target that needs approval reports that instead of a state.",
-			InputSchema: s.schema(nil),
+			Description: "List the sessions in the local catalog, with a probe read on each to find out whether it is still running. A probe on a remote target that needs approval reports that instead of a state. Pass peers to ask several machines at once; without it only the default target is asked.",
+			InputSchema: s.schemaNoPeerArg(map[string]any{
+				"peers": map[string]any{
+					"type":  []string{"string", "array"},
+					"items": map[string]any{"type": "string"},
+					"description": "Which machines to ask, by the names --peer takes. " +
+						"\"all\" asks every machine this server serves. Omit it and only the " +
+						"default target is asked — omitting is not the same as asking for all. " +
+						"They are probed at the same time, bounded to a few at once, so one " +
+						"unreachable machine no longer holds up the others. Within one machine " +
+						"the probes stay in sequence: a machine with many sessions does not " +
+						"get many reads past its approval gate at once. A machine that cannot " +
+						"be reached is reported and the rest of the answer still comes back. " +
+						"Only reading tools take this; send, interrupt, close and open stay on " +
+						"one machine, because broadcasting keystrokes is not reversible.",
+				},
+			}),
 			Annotations: &annotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: true},
 		},
 		{
@@ -170,6 +191,24 @@ func (s *server) schema(props map[string]any, required ...string) map[string]any
 	if s.multiPeer() && len(props) > 0 {
 		props["peer"] = s.stringProp("Which target, one of: " + joinNames(s.peerNames()))
 	}
+	return objectSchema(props, required)
+}
+
+// schemaNoPeerArg is schema without the automatic peer argument, for a tool that
+// reports every target anyway. A peer argument there would be read and then ignored,
+// which is worse than not offering it.
+//
+// session_list is that case: it lists the local catalog, which already holds every
+// target's sessions, so `peers` chooses which of them to *probe* rather than which
+// to report. Both exist, and they mean different things.
+func (s *server) schemaNoPeerArg(props map[string]any, required ...string) map[string]any {
+	if props == nil {
+		props = map[string]any{}
+	}
+	return objectSchema(props, required)
+}
+
+func objectSchema(props map[string]any, required []string) map[string]any {
 	if len(required) == 0 {
 		return map[string]any{"type": "object", "properties": props}
 	}

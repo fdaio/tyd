@@ -67,14 +67,14 @@ func TestTheSlotIsReleasedAfterAProbe(t *testing.T) {
 	s := testServer(newFakeBackend(), nil)
 	const peer = "box"
 
-	if !s.claimProbe(peer) {
+	if _, _, ok := s.claimProbe(peer); !ok {
 		t.Fatal("the first claim was refused")
 	}
-	if s.claimProbe(peer) {
+	if _, _, ok := s.claimProbe(peer); ok {
 		t.Error("a second claim was allowed while one was held")
 	}
 	s.releaseProbe(peer)
-	if !s.claimProbe(peer) {
+	if _, _, ok := s.claimProbe(peer); !ok {
 		t.Error("the claim was not released")
 	}
 	s.releaseProbe(peer)
@@ -88,7 +88,7 @@ func TestASkippedRowSaysItWasSkippedNotThatApprovalIsPending(t *testing.T) {
 	f.sessions["sess1"] = &fakeSession{id: "sess1", alias: "build"}
 	s := testServer(f, nil)
 
-	if !s.claimProbe("") {
+	if _, _, ok := s.claimProbe(""); !ok {
 		t.Fatal("could not take the slot")
 	}
 	_, res, err := call(t, s, "session_list", args{})

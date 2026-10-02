@@ -2,9 +2,20 @@
   {
     "name": "session_list",
     "title": "List sessions",
-    "description": "List the sessions in the local catalog, with a probe read on each to find out whether it is still running. A probe on a remote target that needs approval reports that instead of a state.",
+    "description": "List the sessions in the local catalog, with a probe read on each to find out whether it is still running. A probe on a remote target that needs approval reports that instead of a state. Pass peers to ask several machines at once; without it only the default target is asked.",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "peers": {
+          "description": "Which machines to ask, by the names --peer takes. \"all\" asks every machine this server serves. Omit it and only the default target is asked — omitting is not the same as asking for all. They are probed at the same time, bounded to a few at once, so one unreachable machine no longer holds up the others. Within one machine the probes stay in sequence: a machine with many sessions does not get many reads past its approval gate at once. A machine that cannot be reached is reported and the rest of the answer still comes back. Only reading tools take this; send, interrupt, close and open stay on one machine, because broadcasting keystrokes is not reversible.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "string",
+            "array"
+          ]
+        }
+      },
       "type": "object"
     },
     "annotations": {

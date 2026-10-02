@@ -31,8 +31,14 @@ var toolProperties = map[string]struct {
 		required: nil,
 	},
 	"session_list": {
-		schema:   nil,
-		handled:  nil,
+		// peer appears only when the server serves more than one target, and
+		// peers is the fan-out. Both are read; giving both at once is refused by
+		// the handler, which is a stricter answer than either being ignored.
+		// peer is deliberately absent: session_list reports every target, so a
+		// peer argument has nothing to select. peers chooses which targets to
+		// probe. The handler refuses an unoffered peer rather than ignoring it.
+		schema:   []string{"peers"},
+		handled:  []string{"peers"},
 		required: nil,
 	},
 	"session_send": {
