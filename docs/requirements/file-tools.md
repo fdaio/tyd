@@ -94,17 +94,39 @@ errors; symbolic links must not be absolute.
 
 ### 4.1 What it does not do, and what that costs
 
-**`os.Root` follows symlinks that stay inside the root.** The earlier draft refused
-any symlink at all. Under this design the final component is refused by
-**`O_NOFOLLOW` in the open flags**, so the kernel refuses it atomically, while a
-symlinked intermediate *directory* is still followed.
+**`os.Root` follows symlinks that stay inside the root — including one in the
+final component, and a caller's own `O_NOFOLLOW` does not stop it.** The earlier
+draft refused any symlink at all. So the final component is refused here, but it
+takes one step that `os.Root` does not.
 
-Not by `Lstat` followed by an open. That puts a check and a use back apart, which is
-the whole gap this design exists to close; asking the kernel to refuse is the one
-version of this with no window in it.
+The reason is worth writing down, because it is the kind of thing that reads as
+obvious and is not. `os.Root` always passes `O_NOFOLLOW` down, and when the kernel
+refuses, its `doInRoot` treats the result as `errSymlink` and **resolves the link
+itself** — the comment in the standard library says so: *"If f returns errSymlink,
+this element is a symlink which should be followed."* Verified against the toolchain
+in use: `os.Root.OpenFile("link")` on a symlink returns a readable file, not an
+error.
 
-For a write, temp-file-then-rename replaces the **directory entry**, so a target
-that is a symlink has its link replaced and is never written through.
+So the walk stays with `os.Root` and only the **last step is taken directly**: the
+parent directory is opened through `os.Root` — which confines every intermediate
+component, including a symlinked one — and the final component is then opened with
+`openat(parentfd, base, O_NOFOLLOW | O_NONBLOCK)`. The kernel refuses the link as
+part of the open, with no window between a check and a use.
+
+`O_NONBLOCK` is in that call for a second reason: without it, opening a FIFO for
+reading waits for a writer that may never arrive, and a "not a regular file" answer
+becomes a hang instead of a result.
+
+A symlinked intermediate *directory* is still followed, since `os.Root` allows it as
+long as it stays inside the root.
+
+For a write, the target is examined with **`Lstat`, not `Stat`** — `Stat` would
+resolve a link and report its target, so a write to `link` would be approved as a
+write to whatever it points at, and a write to a *dangling* link would look like a
+create. A symlinked target is then refused rather than replaced. The
+temp-file-then-rename in §6 would not follow it either, since it swaps the entry, so
+nothing would escape; but silently destroying a link that somebody put there is not
+what "write to this path" means.
 
 The approval promise therefore weakens, and §1 has to say so honestly:
 
@@ -273,6 +295,15 @@ Distinguished, because the fix differs:
 | `too_large` | over a cap |
 | `conflict` | `expected_sha256` did not match |
 | `unavailable` | no root configured, or none valid |
+| `symlink` | the final component is a symlink |
+| `denied` | the daemon's own user cannot read or write it |
+
+The last two were added while implementing §4.1, because the table as first written
+had no name for two outcomes the code can actually produce. `symlink` cannot be
+folded into `not_regular` — it resolves to a regular file — or into `blocked_path`,
+which means the sensitive-path list. `denied` is separated for the same reason the
+others are: an operator fixes it with a `chmod`, and reporting it as anything else
+sends them looking in the wrong place.
 
 Paths in errors are root-relative. An absolute path outside the root is never
 echoed back.
@@ -338,14 +369,19 @@ and would catch it if it stopped being true.
 **Paths** — `..`, absolute, NUL, over-long; a symlinked parent directory pointing
 outside is refused; a concurrent goroutine swapping a directory component for a
 symlink throughout the operation never escapes the root under `-race`; a symlinked
-**final** component is refused by the `Lstat` check, while a symlinked intermediate
-directory redirects **within** the root — §4.1 concedes that, and the test pins it
-so the concession cannot change silently; FIFO, device and directory give
-`not_regular` rather than blocking; root deleted or renamed has defined
-behaviour.
+**final** component gives `symlink` — for a read from the `openat` in §4.1, for a
+write from the `Lstat` — while a symlinked intermediate directory redirects
+**within** the root, which §4.1 concedes and the test pins so the concession cannot
+change silently; FIFO, device and directory give `not_regular` rather than blocking;
+a denial is `denied` and not one of the other codes; root renamed or deleted has
+defined behaviour, because the root is a descriptor.
 
-**Writes** — a target that is a symbolic link has its **link** replaced and is never
-written through, because the sequence replaces the directory entry; failure injected
+The refusal of a final symlink is asserted **against `os.Root`'s actual behaviour**
+as well as against this package's, so the difference §4.1 describes cannot quietly
+disappear in a Go release.
+
+**Writes** — a target that is a symbolic link is refused with `symlink`, including a
+dangling one, and is never written through; failure injected
 before the rename leaves the original untouched and removes the temporary file; a crash point leaves no half-written target; `create`
 on an existing file and `replace` on a missing one both fail; a mismatched
 `expected_sha256` is refused; permissions and ownership survive.
