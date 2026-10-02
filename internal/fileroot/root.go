@@ -154,6 +154,45 @@ func Open(dir string) (*Root, error) {
 // through it.
 func (r *Root) Dir() string { return r.dir }
 
+// Narrow returns a Root for a directory inside this one.
+//
+// **This can only narrow.** It is [os.Root.OpenRoot], so the result is confined by
+// this Root: a name that resolves outside is refused by the standard library rather
+// than by a prefix comparison written here. That matters because a prefix test gets
+// the awkward cases wrong — a sibling called `root-evil` starts with `root`, and a
+// symlink named `inside` can point out — and the point of using os.Root is that
+// those cases stop being ours to get right.
+//
+// name is relative to this Root, exactly as the operation's path is.
+func (r *Root) Narrow(name string) (*Root, error) {
+	rel := clean(name)
+	if rel == "" || rel == "." {
+		// The ceiling itself, re-opened, so a caller gets an independent
+		// descriptor rather than a second handle onto the same one.
+		sub, err := r.r.OpenRoot(".")
+		if err != nil {
+			return nil, fail(CodeOutsideRoot, rel, err)
+		}
+		return &Root{r: sub, dir: r.dir}, nil
+	}
+	if strings.HasPrefix(name, "/") {
+		return nil, fail(CodeOutsideRoot, rel, errors.New("absolute path"))
+	}
+	sub, err := r.r.OpenRoot(rel)
+	if err != nil {
+		// An escape arrives as a permission error from os.Root, same as anywhere
+		// else, so the code is the same: outside_root.
+		if errors.Is(err, os.ErrPermission) {
+			return nil, fail(CodeOutsideRoot, rel, nil)
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fail(CodeNotFound, rel, nil)
+		}
+		return nil, fail(CodeNotFound, rel, err)
+	}
+	return &Root{r: sub, dir: path.Join(r.dir, rel)}, nil
+}
+
 // Close releases the descriptor. The Root is unusable afterwards.
 func (r *Root) Close() error { return r.r.Close() }
 

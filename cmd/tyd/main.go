@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"tyd/internal/live"
 	"tyd/internal/ttyutil"
@@ -103,5 +104,54 @@ func runLiveAgent(opts options) error {
 	if opts.dir == "" {
 		return fmt.Errorf("__live-agent requires --dir")
 	}
-	return live.Run(opts.dir)
+	cfg := live.Config{}
+	if opts.fileRoot != "" {
+		root, err := resolveFileRoot(opts.fileRoot, opts.fileRootAllowHome)
+		if err != nil {
+			return err
+		}
+		cfg.FileRoot = root
+	}
+	return live.Run(opts.dir, cfg)
+}
+
+// resolveFileRoot applies the two refusals the design fixes, and returns an absolute
+// path.
+//
+// `/` is refused with no switch. Any use that genuinely needs the whole filesystem
+// wants a narrower root, and a flag that permits `/` is a flag that turns off the
+// only guarantee this feature makes — so the way to get it is to not use this
+// feature, which is a decision someone can see in a process list.
+//
+// `$HOME` is refused unless the operator asked for it, because it is a real default
+// for a shell-based tool and an unreasonable root for a file API: it is where the
+// keys, the tokens and the shell startup files all live. It is available, and
+// saying so out loud is the price.
+func resolveFileRoot(given string, allowHome bool) (string, error) {
+	abs, err := filepath.Abs(given)
+	if err != nil {
+		return "", fmt.Errorf("--file-root %s: %w", given, err)
+	}
+	abs = filepath.Clean(abs)
+	if abs == string(filepath.Separator) {
+		return "", fmt.Errorf("--file-root %s: the filesystem root is refused and cannot be allowed; "+
+			"give a directory the session may work in", given)
+	}
+	if home, err := os.UserHomeDir(); err == nil && abs == filepath.Clean(home) {
+		if !allowHome {
+			return "", fmt.Errorf("--file-root %s: $HOME is refused unless --file-root-allow-home is given; "+
+				"a home directory holds keys and tokens as well as work", given)
+		}
+		// Loud, once, on stderr: this is the root where .ssh and .aws are.
+		fmt.Fprintf(os.Stderr, "tyd: file operations are rooted at $HOME (%s); "+
+			"this includes ssh keys, cloud credentials and shell startup files\n", abs)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("--file-root %s: %w", given, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--file-root %s: not a directory", given)
+	}
+	return abs, nil
 }

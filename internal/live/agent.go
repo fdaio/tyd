@@ -14,14 +14,31 @@ import (
 
 	"github.com/creack/pty"
 
+	"tyd/internal/fileroot"
 	"tyd/internal/protocol"
 	"tyd/internal/ttyutil"
 )
 
 const ringMax = 64 << 10
 
+// Config is what an operator gave this agent at startup.
+type Config struct {
+	// FileRoot is the ceiling for the file operations. Empty means they do not
+	// exist, which is the default and is not the same as unrestricted.
+	//
+	// A path here is a claim by whoever ran the daemon, so it is opened here, in
+	// the process that owns the PTY, and the resulting descriptor is what every
+	// later request is checked against.
+	FileRoot string
+}
+
 // Run starts a live-agent in dir (blocking). Expects meta.json already written.
-func Run(dir string) error {
+//
+// The ceiling is a parameter rather than something read from the directory on
+// purpose: a root that came out of the session directory would be a value the
+// session could have written, and the whole point is that this is the operator's
+// decision.
+func Run(dir string, cfg Config) error {
 	meta, err := LoadMeta(dir)
 	if err != nil {
 		return err
@@ -40,6 +57,19 @@ func Run(dir string) error {
 		return err
 	}
 
+	// Opened before the agent exists so a bad ceiling stops the process here,
+	// rather than leaving an agent running that answers every file request with
+	// "unavailable" for a reason nobody will read again.
+	var fileRoot *fileroot.Root
+	if cfg.FileRoot != "" {
+		root, err := fileroot.Open(cfg.FileRoot)
+		if err != nil {
+			return fmt.Errorf("file root %s: %w", cfg.FileRoot, err)
+		}
+		defer root.Close()
+		fileRoot = root
+	}
+
 	a := &agent{
 		dir:       dir,
 		meta:      meta,
@@ -48,6 +78,7 @@ func Run(dir string) error {
 		cmdDone:   make(chan struct{}),
 		sendQueue: make(chan *sendJob, 8),
 		outLog:    openOutputLog(dir, meta.OutputLogMax),
+		fileRoot:  fileRoot,
 	}
 	// The PTY does not exist until the shell starts, so the writer looks it up
 	// each time. Tests replace this with a writer that blocks for ever, which
@@ -220,6 +251,15 @@ type agent struct {
 	waitClosed  sync.Once
 	waiters     int // reads parked in ReadAtWait
 	outLog      *outputLog
+
+	// fileRoot is the operator's ceiling, opened by this process. It is nil when
+	// --file-root was not given, and nil means the file operations do not exist —
+	// not "unrestricted". A request that arrives anyway is refused.
+	//
+	// Held here rather than passed per request because the agent owns the PTY, so
+	// the agent is where the directory descriptor has to be, and a root that came
+	// in over the socket would be a claim rather than a fact.
+	fileRoot *fileroot.Root
 }
 
 func (a *agent) serve() error {
@@ -257,11 +297,13 @@ func (a *agent) handle(conn net.Conn) {
 		a.handleRead(conn, f)
 	case protocol.TypeSend:
 		a.handleSend(conn, f)
+	case protocol.TypeFileRead, protocol.TypeFileWrite:
+		fileOps(a.fileRoot, conn, f)
 	case protocol.TypeClose:
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeClosed})
 		a.closeSession()
 	default:
-		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, read, or close"})
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, read, file_read, file_write, or close"})
 	}
 }
 
