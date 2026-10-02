@@ -2,6 +2,7 @@ package live
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -417,9 +418,11 @@ func TestTheLargestAllowedReadComesBack(t *testing.T) {
 	if reply.Error == "" {
 		t.Fatal("a read above the wire ceiling was answered rather than refused")
 	}
+	// The number in the message is the ceiling itself, named rather than hardcoded
+	// here, so this assertion cannot drift away from the constant it is checking.
 	if !strings.Contains(reply.Error, string(fileroot.CodeTooLarge)) ||
-		!strings.Contains(reply.Error, "780288") {
-		t.Errorf("error %q does not name too_large or the number", reply.Error)
+		!strings.Contains(reply.Error, fmt.Sprint(protocol.MaxDataBytes)) {
+		t.Errorf("error %q does not name too_large or the ceiling %d", reply.Error, protocol.MaxDataBytes)
 	}
 }
 

@@ -11,10 +11,17 @@ const MaxFrame = 1 << 20
 
 // frameMetadataSlack reserves room in a frame for everything that is not Data.
 //
-// Measured, not assumed. A frame carrying MaxDataBytes together with full-size
-// session id, digest and path encodes to just under MaxFrame; the test next to this
-// pins both directions, so the constant cannot drift away from the encoder.
-const frameMetadataSlack = 8 << 10
+// Measured, not assumed, and **derived from a bound that is enforced** rather than
+// from PATH_MAX. The widest metadata a real frame carries is a write request with a
+// fileroot.MaxPathLen path and a fileroot.MaxRootLen root claim, which encodes to
+// 2343 bytes; 4 KiB covers that with room to spare. Sizing this against PATH_MAX
+// instead — 4096 for the path and 4096 for the root — needs 8487 bytes, and picking a
+// round 8192 for it is how this ends up 231 bytes short on the write direction while
+// every read test passes.
+//
+// The test next to this pins both directions against the encoder, so the constant
+// cannot drift away from the thing it is a bound on.
+const frameMetadataSlack = 4 << 10
 
 // MaxDataBytes is the largest Data payload a single frame can carry.
 //
@@ -25,7 +32,11 @@ const frameMetadataSlack = 8 << 10
 // slack above is what makes the number correct rather than nearly correct.
 //
 // This is the ceiling that matters in practice, and it is **below** the library's own
-// 1 MiB caps on a read and a write. A page between this and MaxReadBytes cannot be
+// 1 MiB caps on a read and a write. It is also the number a sender must check against,
+// because the slack above assumes the path and root bounds are enforced — see
+// fileroot.MaxPathLen, which is where they are.
+//
+// A page between this and MaxReadBytes cannot be
 // sent at all: the frame encoder refuses it, and a sender that ignored the error
 // would drop the reply on the floor and leave the caller with a closed connection and
 // no explanation. So whoever builds a payload uses this, and asks for more than this

@@ -15,11 +15,12 @@ const (
 
 // No syscall numbers to name here; the unix build carries the mapping.
 var (
-	syscallErrNotExist = errors.New("not exist")
-	syscallErrSymlink  = errors.New("symlink")
-	syscallErrNotDir   = errors.New("not a directory")
-	syscallErrPerm     = errors.New("operation not permitted")
-	syscallErrAccess   = errors.New("access denied")
+	syscallErrNotExist    = errors.New("not exist")
+	syscallErrSymlink     = errors.New("symlink")
+	syscallErrNotDir      = errors.New("not a directory")
+	syscallErrPerm        = errors.New("operation not permitted")
+	syscallErrAccess      = errors.New("access denied")
+	syscallErrNameTooLong = errors.New("file name too long")
 )
 
 // openLastNoFollow has no equivalent here. The unix build is the one that carries
