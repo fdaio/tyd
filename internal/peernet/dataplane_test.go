@@ -137,7 +137,18 @@ func TestDataPlanePeerSession(t *testing.T) {
 		t.Fatal("missing data-plane addr")
 	}
 	fp := srv.TLSFingerprintFull()
-	cands := transport.ExpandCandidates(dp, "")
+	// The fixture binds loopback, so loopback is all it may publish.
+	// transport.ExpandCandidates would append every non-loopback interface address
+	// on the host, so the candidate list would be whatever network this machine
+	// happens to have — on the box that found this, a Tailscale address and three
+	// LAN addresses. A test about the dataplane should not depend on that, and
+	// should not report a dial failure against an address nothing is listening on.
+	//
+	// This is a hygiene fix and not the cause of the reported failures: with the
+	// host addresses removed, a loopback-only dial still times out under the same
+	// load, because the QUIC handshake exceeds quic-go's 5s default idle timeout
+	// when the machine is oversubscribed. See #135.
+	cands := []string{dp}
 	// Signed the way a daemon signs it, so the client that dials this endpoint
 	// can check it against the key it pinned at pairing.
 	record := auth.NewEndpointRecord(reg.ID, sPub, dp, fp, "quic", cands,
