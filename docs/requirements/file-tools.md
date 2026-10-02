@@ -257,6 +257,18 @@ relationships.
 atomic. `flock` narrows it for cooperating processes only. This is best-effort
 and documented as such.
 
+**A size ceiling the transport imposes underneath the library's.** The library caps a
+write at 1 MiB. The content travels in the JSON frame as base64, and a frame is
+capped at 1 MiB, so base64's four-thirds expansion means a write anywhere near the
+library's ceiling is rejected by the frame layer before the agent ever sees it — as
+an opaque "frame too large" rather than as `too_large`. The agent's own check
+therefore cannot be the one that fires at the top of the range.
+
+So the effective ceiling is the smaller of the two, and **B2 enforces it before
+sending**, where it can be reported as `too_large` with a number in it. Roughly
+700 KiB of content is the practical limit. This is recorded here rather than left
+for B2 to discover, because it is arithmetic rather than judgement.
+
 Sizes: read defaults to 64 KiB and caps at 1 MiB; write caps at 1 MiB.
 
 ## 7. Audit
@@ -280,6 +292,18 @@ confirm a guess. So:
   guess offline; the daemon can still do an integrity comparison.
 - Cost: after a key rotation, older records cannot be compared. Recorded, and
   accepted.
+
+The key is **created by writing it and linking it into place**, not by creating the
+name and then writing into it. `O_EXCL` publishes the name first, so a second daemon
+starting in that window reads a zero-length file and reports a corrupt key rather
+than the race it is; `link(2)` is atomic and fails when the name is taken, so
+exactly one creator wins and its content is complete before the name is visible. A
+`rename` would not do — it overwrites, so two daemons would each replace the other's
+key and be unable to verify each other's records.
+
+The key is **not** optional at runtime in the sense of falling back: an unreadable
+key, or one whose mode is wider than `0600`, **stops startup**. Continuing would
+produce records that carry a MAC and mean nothing.
 
 ## 8. Errors
 
@@ -352,9 +376,22 @@ security-critical part and the one worth reviewing on its own: symlink-swap race
 under `-race`, FIFO and device files, failure injection before the rename, and a
 root that has been deleted or renamed.
 
-**B — the two RPCs.** Both hops, the field-arrives-at-the-agent tests, the
-agent-side ceiling check, the audit fields and the HMAC key in its own `0600`
-file.
+**B — the two RPCs**, split in two, each merging with the feature still off.
+
+- **B1 — the agent.** The RPC handling, the `--file-root` ceiling re-validated in
+  the agent, parameter validation, the audit fields, and the HMAC key in its own
+  `0600` file. One hop, tested against the agent on its own: no second process, no
+  forwarding, so a failure here is the agent's and nothing else's.
+- **B2 — the forwarding.** Server to peer to agent, with the tests that assert each
+  field **arrived** at the agent rather than merely being sent. The digest is still
+  computed by the daemon from the request it is serving, and a digest that arrives
+  from a peer is not believed — that is the #132 position, and B2 is where it has to
+  hold.
+
+The reason for the split is that B2's tests are the expensive ones: each needs a
+full server fixture at about 0.12s a run. Keeping them in their own PR keeps the
+agent's own tests cheap enough to iterate on, and keeps a failure in a forwarding
+test unambiguously a forwarding bug.
 
 **C — the tools.** `file_read`, `file_write`, `session_open {root}`,
 `--file-root`, the schema snapshot and contract test, and the documentation.

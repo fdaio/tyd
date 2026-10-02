@@ -663,3 +663,76 @@ func TestAnUnknownModeIsACallerBugNotAPathCondition(t *testing.T) {
 		t.Errorf("an unknown mode was reported as %q, which tells a model the wrong thing", c)
 	}
 }
+
+// Narrowing can only narrow, and the refusal comes from os.Root rather than from a
+// prefix comparison written here. The sibling-directory case is the one a prefix
+// test gets wrong, so it is the one worth having.
+func TestNarrowOnlyNarrows(t *testing.T) {
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, "root/sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "root-evil"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "root/sub/inside.txt"), []byte("inside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "root-evil/outside.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileroot.Open(filepath.Join(base, "root"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	sub, err := r.Narrow("sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Close()
+	got, err := sub.Read("inside.txt", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Data) != "inside" {
+		t.Errorf("got %q", got.Data)
+	}
+
+	// "root-evil" shares a textual prefix with "root" and is outside it.
+	for _, name := range []string{"../root-evil", "..", "../root-evil/outside.txt", "/etc"} {
+		if _, err := r.Narrow(name); err == nil {
+			t.Errorf("Narrow(%q) succeeded, so it widened rather than narrowed", name)
+		}
+	}
+	// And the sub-root stays confined after narrowing.
+	if _, err := sub.Read("../outside.txt", 0, 0); err == nil {
+		t.Error("a narrowed root reached outside itself")
+	}
+}
+
+func TestNarrowRefusesASymlinkOutOfTheCeiling(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{root, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("no"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "away")); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	r, err := fileroot.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err := r.Narrow("away"); err == nil {
+		t.Error("a symlinked directory out of the ceiling was narrowed into")
+	}
+}

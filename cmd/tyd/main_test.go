@@ -69,7 +69,9 @@ func startTestCP(t *testing.T) (string, interface{ Close() error }, error) {
 func TestMain(m *testing.M) {
 	if os.Getenv("TYD_TEST_LIVE_AGENT") == "1" {
 		dir := os.Getenv("TYD_TEST_LIVE_DIR")
-		if err := live.Run(dir); err != nil {
+		// Empty unless a test asks for a ceiling, so these harnesses keep meaning
+		// "no file root" rather than silently gaining one.
+		if err := live.Run(dir, live.Config{FileRoot: os.Getenv("TYD_TEST_LIVE_FILE_ROOT")}); err != nil {
 			os.Stderr.WriteString(err.Error() + "\n")
 			os.Exit(1)
 		}

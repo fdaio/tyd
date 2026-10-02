@@ -46,6 +46,8 @@ type options struct {
 	noWait             bool
 	detach             bool
 	readOnly           bool
+	fileRoot           string
+	fileRootAllowHome  bool
 	closeOnExit        bool
 	maxSessions        int
 	allowPeer          []string
@@ -327,6 +329,8 @@ func parseArgs(args []string) (options, error) {
 			}
 			i++
 			opts.as = args[i]
+		case strings.HasPrefix(a, "--file-root="):
+			opts.fileRoot = strings.TrimPrefix(a, "--file-root=")
 		case strings.HasPrefix(a, "--as="):
 			opts.as = strings.TrimPrefix(a, "--as=")
 		case a == "--no-wait":
@@ -335,6 +339,14 @@ func parseArgs(args []string) (options, error) {
 			opts.detach = true
 		case a == "--read-only":
 			opts.readOnly = true
+		case a == "--file-root":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a directory", a)
+			}
+			i++
+			opts.fileRoot = args[i]
+		case a == "--file-root-allow-home":
+			opts.fileRootAllowHome = true
 		case a == "--close-on-exit":
 			opts.closeOnExit = true
 		case a == "--allow-peer":

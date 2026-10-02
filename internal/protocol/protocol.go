@@ -12,22 +12,32 @@ const MaxFrame = 1 << 20
 type Type string
 
 const (
-	TypeCreate  Type = "create"
-	TypeList    Type = "list"
-	TypeAttach  Type = "attach"
-	TypeWatch   Type = "watch"
-	TypeDetach  Type = "detach"
-	TypeWrite   Type = "write"
-	TypeRead    Type = "read"
-	TypeSend    Type = "send"
-	TypeResize  Type = "resize"
-	TypeSignal  Type = "signal"
-	TypeClose   Type = "close"
-	TypeApprove Type = "approve"
-	TypeReject  Type = "reject"
-	TypeAuth    Type = "auth"
-	TypeBound   Type = "bound" // server proves its identity over the relay TLS binding
-	TypeStatus  Type = "status"
+	TypeCreate Type = "create"
+	TypeList   Type = "list"
+	TypeAttach Type = "attach"
+	TypeWatch  Type = "watch"
+	TypeDetach Type = "detach"
+	TypeWrite  Type = "write"
+	TypeRead   Type = "read"
+	TypeSend   Type = "send"
+	TypeResize Type = "resize"
+	TypeSignal Type = "signal"
+	TypeClose  Type = "close"
+	// TypeFileRead and TypeFileWrite carry a file operation to the agent that
+	// holds the session's directory descriptor. They run to completion, so each is
+	// answered by exactly one TypeFileResult.
+	//
+	// Their presence here is not permission to use them: whether they are
+	// registered at all is decided at the far end, from the operator's
+	// --file-root. A daemon that offers them against an agent with no root
+	// configured gets an error, not a filesystem.
+	TypeFileRead  Type = "file_read"
+	TypeFileWrite Type = "file_write"
+	TypeApprove   Type = "approve"
+	TypeReject    Type = "reject"
+	TypeAuth      Type = "auth"
+	TypeBound     Type = "bound" // server proves its identity over the relay TLS binding
+	TypeStatus    Type = "status"
 
 	TypeChallenge   Type = "challenge"
 	TypeOK          Type = "ok"
@@ -42,6 +52,7 @@ const (
 	TypeSessions    Type = "sessions"
 	TypeConnections Type = "connections"
 	TypeReadResult  Type = "read_result"
+	TypeFileResult  Type = "file_result"
 )
 
 type Frame struct {
@@ -88,8 +99,10 @@ type Frame struct {
 	// Match is an RE2 pattern. The reply returns once the cleaned text
 	// matches. The pattern is capped at MaxMatchPattern.
 	Match string `json:"match,omitempty"`
-	// MaxBytes returns once this many bytes have accumulated after the
-	// cursor, cut back to a rune boundary.
+	// MaxBytes caps how many bytes come back. On a terminal read it returns once
+	// this many bytes have accumulated after the cursor, cut back to a rune
+	// boundary; on a file read it caps the page, and the reply says whether it
+	// cut it. Same field, because both answer "how much will you take".
 	MaxBytes uint32 `json:"max_bytes,omitempty"`
 	// Reason says why a read returned.
 	Reason string `json:"reason,omitempty"`
@@ -113,6 +126,46 @@ type Frame struct {
 	// agent older than this field, which is what makes a secret write refusable
 	// rather than silently ignored.
 	AgentVersion int `json:"agent_version,omitempty"`
+
+	// File-operation fields. They travel together across both hops, and each one
+	// that arrives changes what the agent does — which is why §10 of the design
+	// treats a dropped field as a security bug rather than a missing feature.
+	// Nothing here is a pointer: an absent field and a zero field have to mean the
+	// same thing to the agent, because there is no way to tell them apart after
+	// two hops.
+	//
+	// Path is always relative to the root. An absolute path is refused by the
+	// agent rather than normalised, because the agent cannot know what the sender
+	// meant it relative to.
+	Path string `json:"path,omitempty"`
+	// Root narrows the agent's configured ceiling. It may only narrow: the agent
+	// derives the sub-root with os.Root.OpenRoot, so a claim that does not stay
+	// inside the ceiling fails inside the standard library rather than being
+	// compared against a prefix string here.
+	Root string `json:"root,omitempty"`
+	// Mode is "create" or "replace" on a write, and empty on a read.
+	Mode string `json:"mode,omitempty"`
+	// Offset is where a file read starts. It shares MaxBytes with a terminal read:
+	// both say how many bytes the caller will take, so one field is enough.
+	Offset int64 `json:"offset,omitempty"`
+	// ExpectedSHA is the writing side's claim about the content already there. It
+	// is the writer's concurrency guard and is deliberately not part of the
+	// approval digest: it is not something the operator can see.
+	ExpectedSHA string `json:"expected_sha256,omitempty"`
+
+	// FileResult carries what an operation did. Bytes is a count — never the bytes
+	// themselves, which travel in Data for a read and are the write's input. SHA256
+	// is the digest of the whole file, so a caller can use it as a later
+	// expected_sha256. Truncated says the cap cut the page. Created says a create
+	// made the file. MTimeMS is a modification time in Unix milliseconds, because a
+	// time.Time in a frame is a formatting decision nobody should make twice.
+	Bytes      int    `json:"bytes,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+	Created    bool   `json:"created,omitempty"`
+	MTimeMS    int64  `json:"mtime_ms,omitempty"`
+	ContentMAC string `json:"content_mac,omitempty"`
 }
 
 type ConnInfo struct {

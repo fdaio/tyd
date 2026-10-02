@@ -38,6 +38,12 @@ const (
 	// KindSend records keystrokes injected without the attach slot. It
 	// carries the byte count only.
 	KindSend Kind = "send"
+	// KindFileRead and KindFileWrite record a file operation. They are separate
+	// kinds rather than one kind with a field, so a reader can select reads or
+	// writes without parsing every record, and so neither can be added to by
+	// accident.
+	KindFileRead  Kind = "file_read"
+	KindFileWrite Kind = "file_write"
 )
 
 type Event struct {
@@ -55,6 +61,18 @@ type Event struct {
 	ExitCode   *int      `json:"exit_code,omitempty"`
 	// Bytes is a count of terminal bytes sent, never the bytes themselves.
 	Bytes int `json:"bytes,omitempty"`
+
+	// File-operation fields. The path is root-relative, and there is no field here
+	// for the content — which is structural rather than a promise, in the same way
+	// the absence of a terminal-input field is. ContentMAC is keyed, so it does not
+	// hand a log reader a way to check a guess; see mac.go.
+	Op         string     `json:"op,omitempty"`
+	Path       string     `json:"path,omitempty"`
+	FileRoot   string     `json:"file_root,omitempty"`
+	WriteMode  string     `json:"write_mode,omitempty"`
+	Size       int64      `json:"size,omitempty"`
+	Result     string     `json:"result,omitempty"`
+	ContentMAC ContentMAC `json:"content_mac,omitempty"`
 }
 
 type Sink interface {
