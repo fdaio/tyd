@@ -106,6 +106,22 @@ const (
 	MaxWriteBytes    = 1 << 20
 )
 
+// MaxPathLen and MaxRootLen bound the path and the root claim.
+//
+// Not for tidiness. A path and a root claim travel in the same frame as the content,
+// so their length decides how much of the frame is left for content — and
+// PATH_MAX-sized paths plus PATH_MAX-sized roots overflow the frame by a couple of
+// hundred bytes, which the sender cannot see and the receiver cannot report. So the
+// length the protocol reserves is derived from a bound this package **enforces**,
+// rather than from whatever the filesystem happens to allow.
+//
+// 1024 is far longer than any path inside a project tree, and short enough that the
+// two together leave the frame's payload room.
+const (
+	MaxPathLen = 1024
+	MaxRootLen = 1024
+)
+
 // WriteMode says what the target must be for the write to go ahead.
 type WriteMode string
 
@@ -177,6 +193,9 @@ func (r *Root) Narrow(name string) (*Root, error) {
 	}
 	if strings.HasPrefix(name, "/") {
 		return nil, fail(CodeOutsideRoot, rel, errors.New("absolute path"))
+	}
+	if len(name) > MaxRootLen {
+		return nil, fail(CodeTooLarge, rel, fmt.Errorf("root claim is %d bytes, above the %d ceiling", len(name), MaxRootLen))
 	}
 	sub, err := r.r.OpenRoot(rel)
 	if err != nil {
@@ -485,6 +504,9 @@ func (r *Root) check(name string, write bool) (string, error) {
 	if strings.ContainsRune(name, 0) {
 		return "", fail(CodeOutsideRoot, rel, errors.New("path contains a NUL"))
 	}
+	if len(name) > MaxPathLen {
+		return "", fail(CodeTooLarge, rel, fmt.Errorf("path is %d bytes, above the %d ceiling", len(name), MaxPathLen))
+	}
 	if strings.HasPrefix(name, "/") {
 		return "", fail(CodeOutsideRoot, rel, errors.New("absolute path"))
 	}
@@ -508,10 +530,17 @@ func clean(name string) string {
 }
 
 func writeCode(err error) Code {
-	if errors.Is(err, os.ErrNotExist) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		return CodeNotFound
+	case errors.Is(err, syscallErrNameTooLong):
+		// A single component over NAME_MAX. That is a length, so it is reported as
+		// one: `unavailable` would send a caller looking at the daemon rather than at
+		// the path it chose.
+		return CodeTooLarge
+	default:
+		return CodeUnavailable
 	}
-	return CodeUnavailable
 }
 
 func short(h string) string {

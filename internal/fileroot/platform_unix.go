@@ -17,11 +17,12 @@ const (
 // Named once so the error mapping in root.go reads as a list of conditions rather
 // than a list of syscall numbers. A symlink refused by O_NOFOLLOW arrives as ELOOP.
 var (
-	syscallErrNotExist = syscall.ENOENT
-	syscallErrSymlink  = syscall.ELOOP
-	syscallErrNotDir   = syscall.ENOTDIR
-	syscallErrPerm     = syscall.EPERM
-	syscallErrAccess   = syscall.EACCES
+	syscallErrNotExist    = syscall.ENOENT
+	syscallErrSymlink     = syscall.ELOOP
+	syscallErrNotDir      = syscall.ENOTDIR
+	syscallErrPerm        = syscall.EPERM
+	syscallErrAccess      = syscall.EACCES
+	syscallErrNameTooLong = syscall.ENAMETOOLONG
 )
 
 // openLastNoFollow opens base within an already-open directory, refusing to follow

@@ -736,3 +736,42 @@ func TestNarrowRefusesASymlinkOutOfTheCeiling(t *testing.T) {
 		t.Error("a symlinked directory out of the ceiling was narrowed into")
 	}
 }
+
+// The path and root lengths are a protocol requirement, not a style choice: they
+// decide how much of a frame is left for content. A PATH_MAX path plus a PATH_MAX
+// root claim overflows the frame by a couple of hundred bytes, and the sender cannot
+// see that. So the bound is enforced here and the slack is derived from it.
+func TestPathAndRootLengthsAreBounded(t *testing.T) {
+	r, dir := openRoot(t)
+	write(t, dir, "a.txt", "x")
+
+	long := strings.Repeat("a", fileroot.MaxPathLen+1)
+	if _, err := r.Read(long, 0, 0); fileroot.CodeOf(err) != fileroot.CodeTooLarge {
+		t.Errorf("an over-long path gave %q, want too_large", fileroot.CodeOf(err))
+	}
+	if _, err := r.Write(long, []byte("x"), fileroot.ModeCreate, ""); fileroot.CodeOf(err) != fileroot.CodeTooLarge {
+		t.Errorf("a write to an over-long path gave %q, want too_large", fileroot.CodeOf(err))
+	}
+	// Exactly at the bound is fine — the ceiling is inclusive. Built from several
+	// components, because the bound is on the whole path: one component of that length
+	// would be refused by the filesystem's NAME_MAX, which is a different limit and is
+	// reported as too_large too.
+	atLimit := strings.Repeat("seg/", (fileroot.MaxPathLen-4)/4) + "leaf"
+	if len(atLimit) > fileroot.MaxPathLen {
+		t.Fatalf("test path is %d bytes, over the bound it is checking", len(atLimit))
+	}
+	// What the bound promises is only that a path of exactly this length is not
+	// refused *for its length*. Whether the directories exist is a separate question,
+	// and this deliberately does not create them: a write does not make parent
+	// directories, so the answer here is not_found and that is correct.
+	if _, err := r.Write(atLimit, []byte("x"), fileroot.ModeCreate, ""); fileroot.CodeOf(err) != fileroot.CodeNotFound {
+		t.Errorf("a path of exactly MaxPathLen gave %q, want not_found rather than a length refusal", err)
+	}
+	// And a single over-long component is too_large, not `unavailable`.
+	if _, err := r.Write(strings.Repeat("n", 300), []byte("x"), fileroot.ModeCreate, ""); fileroot.CodeOf(err) != fileroot.CodeTooLarge {
+		t.Errorf("an over-long component gave %q, want too_large", fileroot.CodeOf(err))
+	}
+	if _, err := r.Narrow(strings.Repeat("c", fileroot.MaxRootLen+1)); fileroot.CodeOf(err) != fileroot.CodeTooLarge {
+		t.Errorf("an over-long root claim gave %q, want too_large", fileroot.CodeOf(err))
+	}
+}

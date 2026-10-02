@@ -47,6 +47,31 @@ func approvalDigest(op, sessionID string, size int64) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// fileApprovalDigest is approvalDigest with the two fields a file operation needs and
+// a session operation does not: **which path, and whether it creates or replaces**.
+//
+// Without the path the digest does not name the thing being acted on. A session id
+// names a session, so (op, session, size) is enough for `send` and `attach`; but an
+// approval granted for reading notes.txt would be spent by a read of authorized_keys,
+// which is the exact hole §5 of the file-tools design exists to close.
+//
+// `size` is the request and not the result: a write's content length is known before
+// anything is sent, and a read has no content, so what goes in is the requested
+// max_bytes. The page an agent returns is the agent's decision and is deliberately
+// left out — binding it would mean predicting a file's size before reading it, and a
+// digest nobody can compute in advance is not something an operator can approve.
+func fileApprovalDigest(op, sessionID, path, mode string, size int64) string {
+	h := sha256.New()
+	// NUL separated so no combination of fields can be read as another one. A path
+	// can contain anything except NUL and a slash separator, so the separation has to
+	// be explicit rather than positional.
+	for _, part := range []string{op, sessionID, path, mode, strconv.FormatInt(size, 10)} {
+		h.Write([]byte(part))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 // shortDigest is what an operator is shown. Enough to tell two pending requests
 // apart, not enough to be worth attacking.
 func shortDigest(d string) string {
@@ -91,6 +116,11 @@ const (
 	opWatch  = "watch"
 	opRead   = "read"
 	opSend   = "send"
+	// The file operations are named separately from read and send because the digest
+	// binds a path, so "read" here would be ambiguous between reading a file and
+	// reading a terminal, and an approval shown to an operator has to say which.
+	opFileRead  = "file_read"
+	opFileWrite = "file_write"
 )
 
 // approvalKey is the map key for both the pending record and the spent decision.
