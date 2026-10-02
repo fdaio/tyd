@@ -9,6 +9,29 @@ import (
 
 const MaxFrame = 1 << 20
 
+// frameMetadataSlack reserves room in a frame for everything that is not Data.
+//
+// Measured, not assumed. A frame carrying MaxDataBytes together with full-size
+// session id, digest and path encodes to just under MaxFrame; the test next to this
+// pins both directions, so the constant cannot drift away from the encoder.
+const frameMetadataSlack = 8 << 10
+
+// MaxDataBytes is the largest Data payload a single frame can carry.
+//
+// Data is JSON, so a byte array becomes base64 and expands by four thirds. The
+// payload is therefore three quarters of what is left after the metadata, not of
+// MaxFrame — and not even that: three quarters of MaxFrame is 786432, while the
+// largest payload that actually fits alongside full-size metadata is 785460. So the
+// slack above is what makes the number correct rather than nearly correct.
+//
+// This is the ceiling that matters in practice, and it is **below** the library's own
+// 1 MiB caps on a read and a write. A page between this and MaxReadBytes cannot be
+// sent at all: the frame encoder refuses it, and a sender that ignored the error
+// would drop the reply on the floor and leave the caller with a closed connection and
+// no explanation. So whoever builds a payload uses this, and asks for more than this
+// gets `too_large` rather than silence.
+const MaxDataBytes = (MaxFrame - frameMetadataSlack) * 3 / 4
+
 type Type string
 
 const (

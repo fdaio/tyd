@@ -1,6 +1,7 @@
 package live
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
@@ -373,4 +374,91 @@ func TestExactlyOneReplyPerRequest(t *testing.T) {
 		t.Error("two replies for one request")
 	}
 	_ = client.Close()
+}
+
+// A read big enough that its reply does not fit in one frame used to be answered
+// with a closed connection and no error at all: the page was capped by the library,
+// the reply was not capped by the wire, the encoder refused the frame, and the error
+// had nowhere to go. So this asks for the largest thing the feature allows and
+// requires bytes back.
+//
+// Every part of this was decided against the numbers rather than by feel: the payload
+// is base64 in a JSON frame, so the ceiling is three quarters of what is left after the
+// metadata, not three quarters of MaxFrame.
+func TestTheLargestAllowedReadComesBack(t *testing.T) {
+	dir := rootDir(t, nil)
+	body := make([]byte, protocol.MaxDataBytes)
+	for i := range body {
+		body[i] = byte('a' + i%26)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "max.bin"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := agentWithRoot(t, dir)
+
+	// At the wire ceiling: answered, with every byte.
+	reply := oneFileOp(t, a, protocol.Frame{
+		Type: protocol.TypeFileRead, Path: "max.bin", MaxBytes: protocol.MaxDataBytes,
+	})
+	if reply.Error != "" {
+		t.Fatalf("a read at the wire ceiling failed: %q", reply.Error)
+	}
+	if len(reply.Data) != protocol.MaxDataBytes {
+		t.Errorf("got %d bytes, want %d", len(reply.Data), protocol.MaxDataBytes)
+	}
+	if !bytes.Equal(reply.Data, body) {
+		t.Error("the page came back altered")
+	}
+
+	// Above it: refused with a code and a number, not silence.
+	reply = oneFileOp(t, a, protocol.Frame{
+		Type: protocol.TypeFileRead, Path: "max.bin", MaxBytes: protocol.MaxDataBytes + 1,
+	})
+	if reply.Error == "" {
+		t.Fatal("a read above the wire ceiling was answered rather than refused")
+	}
+	if !strings.Contains(reply.Error, string(fileroot.CodeTooLarge)) ||
+		!strings.Contains(reply.Error, "780288") {
+		t.Errorf("error %q does not name too_large or the number", reply.Error)
+	}
+}
+
+// The library's own ceilings are above the wire, which is why there are two numbers and
+// why the agent checks both. Asserted here because this is where both are visible.
+func TestTheWireCeilingSitsBelowTheLibraryCeilings(t *testing.T) {
+	if protocol.MaxDataBytes >= fileroot.MaxReadBytes {
+		t.Errorf("the wire ceiling %d is not below the read ceiling %d, so one of the two checks is dead code",
+			protocol.MaxDataBytes, fileroot.MaxReadBytes)
+	}
+	if protocol.MaxDataBytes >= fileroot.MaxWriteBytes {
+		t.Errorf("the wire ceiling %d is not below the write ceiling %d", protocol.MaxDataBytes, fileroot.MaxWriteBytes)
+	}
+}
+
+// The reply has to carry back the ID it was asked with, on every path. A caller that
+// cannot match a reply to its request cannot multiplex, and a file read is the kind
+// of call worth overlapping with something else. Nothing else in this file checks it,
+// because every other assertion here is about one reply whose ID nothing reads.
+func TestTheReplyEchoesTheRequestID(t *testing.T) {
+	dir := rootDir(t, map[string]string{"a.txt": "x"})
+	a := agentWithRoot(t, dir)
+	for _, id := range []string{"req-1", "", strings.Repeat("i", 200)} {
+		reply := oneFileOp(t, a, protocol.Frame{
+			Type: protocol.TypeFileRead, ID: id, Path: "a.txt",
+		})
+		if reply.ID != id {
+			t.Errorf("asked with id %q, reply carried %q", id, reply.ID)
+		}
+	}
+	// And on the failure path, which is the one that matters: an error the caller
+	// cannot match is an error it has to wait out a timeout to attribute.
+	reply := oneFileOp(t, a, protocol.Frame{
+		Type: protocol.TypeFileRead, ID: "req-2", Path: "missing.txt",
+	})
+	if reply.ID != "req-2" {
+		t.Errorf("the failure reply carried id %q, want req-2", reply.ID)
+	}
+	if reply.Error == "" {
+		t.Error("the missing-file read was not refused")
+	}
 }
