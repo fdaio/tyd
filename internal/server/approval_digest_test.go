@@ -140,7 +140,7 @@ func TestThePendingListIsBounded(t *testing.T) {
 	var capped int
 	for i := 0; i < pendingCap+8; i++ {
 		err := srv.gateAttach(st, sid, opSend, int64(i))
-		if err != nil && strings.Contains(err.Error(), "too many requests") {
+		if err != nil && strings.Contains(err.Error(), "already has") {
 			capped++
 		}
 	}
@@ -343,4 +343,65 @@ func captureStderr(t *testing.T, fn func()) string {
 	}
 	_ = r.Close()
 	return buf.String()
+}
+
+// A cap that can be reached permanently, by the party it is meant to slow down, is
+// a denial of service with a fuse that never burns down. Expiry used to happen only
+// where expired entries are *read*, and in production that is `tyd session approve`
+// — so a principal that filled its slots and was never approved kept them, and
+// every later request was refused for good.
+func TestAnExpiredPendingDoesNotHoldASlotForever(t *testing.T) {
+	srv, st := gatedServer(t)
+	const sid = "sess1"
+
+	// Fill it.
+	for i := 0; i < pendingCap; i++ {
+		_ = srv.gateAttach(st, sid, opSend, int64(i))
+	}
+	if err := srv.gateAttach(st, sid, opSend, 999); err == nil ||
+		!strings.Contains(err.Error(), "already has") {
+		t.Fatalf("the cap did not engage: %v", err)
+	}
+
+	// Wait out the TTL without anybody listing or deciding anything — the state a
+	// daemon sits in when no operator is looking.
+	srv.mu.Lock()
+	for _, req := range srv.pending {
+		req.at = time.Now().Add(-2 * srv.cfg.ApprovalTTL)
+	}
+	srv.mu.Unlock()
+
+	// The slots must be free again without anything having cleaned them.
+	if err := srv.gateAttach(st, sid, opSend, 1001); err == nil {
+		t.Fatal("a request was refused by slots that had expired")
+	}
+	if err := srv.gateAttach(st, sid, opSend, 1002); err == nil {
+		t.Fatal("a second request was refused by slots that had expired")
+	}
+	// And the expired records are actually gone, not merely uncounted.
+	srv.mu.Lock()
+	left := len(srv.pending)
+	srv.mu.Unlock()
+	if left != 2 {
+		t.Errorf("%d pending records left after expiry, want 2", left)
+	}
+}
+
+func TestTheCapMessageSaysWhoseBudgetItIs(t *testing.T) {
+	// A peer that hit the limit needs to know the waiting requests are its own and
+	// that a person has to act. "Too many" on its own reads as the daemon being busy.
+	srv, st := gatedServer(t)
+	const sid = "sess1"
+	for i := 0; i <= pendingCap; i++ {
+		_ = srv.gateAttach(st, sid, opSend, int64(i))
+	}
+	err := srv.gateAttach(st, sid, opSend, 4242)
+	if err == nil {
+		t.Fatal("expected the cap to refuse")
+	}
+	for _, want := range []string{"from you", "expire after", "tyd session approve " + sid} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not mention %q:\n%v", want, err)
+		}
+	}
 }

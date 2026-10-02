@@ -76,7 +76,7 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 ### Step 3 — Approval modes
 
 - Enforce `pre` / `post` / `full` from `peers.json` `Registration.ApprovalMode` on `tyd up`
-- **pre**: every remote (TLS or QUIC) create, attach, and watch waits for a local `tyd session approve`; unix bypasses; approvals are one-shot with a 10m TTL
+- **pre**: every remote (TLS or QUIC) request waits for a local `tyd session approve`; unix bypasses; an approval is one-shot, expires after 10m, and is bound to one request — approving a create does not release a later send, and several waiting requests need `--digest` to choose between them
 - **post**: auto-create like full; control events audited
 - **full** (default): unchanged create; no per-session review
 - `approve` / `reject` protocol + CLI (unix transport only)

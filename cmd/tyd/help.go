@@ -46,7 +46,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"session watch", "Follow session output (read-only)"},
 		{"session read", "Pull output by cursor (--json, --follow, --wait)"},
 		{"session send", "Type into a session nobody is attached to"},
-		{"session approve", "Approve a PENDING remote session (local unix)"},
+		{"session approve", "Approve a PENDING remote session, or one request waiting on it (local unix)"},
 		{"session reject", "Reject a PENDING remote session (local unix)"},
 		{"session close", "Close a session (kept as history)"},
 		{"session rm", "Remove a closed session from the local catalog (--force)"},
