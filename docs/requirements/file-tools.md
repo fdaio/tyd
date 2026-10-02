@@ -95,9 +95,16 @@ errors; symbolic links must not be absolute.
 ### 4.1 What it does not do, and what that costs
 
 **`os.Root` follows symlinks that stay inside the root.** The earlier draft refused
-any symlink at all. Under this design that becomes: the final component is checked
-with `Lstat` and refused if it is a symlink, while a symlinked intermediate
-*directory* is still followed.
+any symlink at all. Under this design the final component is refused by
+**`O_NOFOLLOW` in the open flags**, so the kernel refuses it atomically, while a
+symlinked intermediate *directory* is still followed.
+
+Not by `Lstat` followed by an open. That puts a check and a use back apart, which is
+the whole gap this design exists to close; asking the kernel to refuse is the one
+version of this with no window in it.
+
+For a write, temp-file-then-rename replaces the **directory entry**, so a target
+that is a symlink has its link replaced and is never written through.
 
 The approval promise therefore weakens, and §1 has to say so honestly:
 
@@ -111,8 +118,11 @@ boundary: it is the same user, inside their own root, and the same user could ha
 made the edit. What cannot happen is a write landing outside the root, and that is
 unconditional.
 
-Refusing every symlink is still available, at the cost of writing the walk by hand
-and reviewing it. That is a real choice and a reviewer should be told it exists.
+**Accepted, as the default position.** The residual stays inside the root and
+crosses no privilege boundary, while the alternative is a hand-rolled walk somebody
+has to review line by line. Refusing every symlink remains available at that cost;
+recording it as a decision rather than an open question means overturning it is a
+deliberate act rather than a drift.
 
 **`Root.Chmod`, `Root.Chown` and `Root.Chtimes` are documented as racy on Unix** —
 the target can be changed from a regular file to a symlink mid-operation. So §6
@@ -154,6 +164,22 @@ The list is configurable. In v1 it is on by default with no off switch.
 
 Both operations are **one** gated request each, so a `pre` target's single
 approval covers one file operation — against two for the shell equivalent.
+
+**The rule: bind exactly what the operator can see.** No more, no less. Operation,
+path or session, byte count, mode.
+
+`expected_sha256` is **not** in the digest and appears **nowhere** the operator can
+read it. It is a hash the writing side claims about existing content, which on a
+low-entropy file is the same offline dictionary verifier as a bare hash in the audit
+log. It is the writer's concurrency guard, not part of what is being approved.
+
+**Known limit, stated rather than implied.** For a `send` the digest carries a byte
+count, so a different payload of the same length still matches. What this fixes is
+one request spending another's approval — a read spending an approval granted for
+keystrokes, an approved path swapped for another. It is **not** content binding.
+Content binding would need an HMAC under a daemon-private key, which would bind
+something the operator cannot see and therefore could not meaningfully have
+approved.
 
 **This is a change to the existing gate, and it is not optional.** Today
 `consumeApproval` is keyed by `gateKey(sessionID, principal)` and its value is a
@@ -318,8 +344,9 @@ so the concession cannot change silently; FIFO, device and directory give
 `not_regular` rather than blocking; root deleted or renamed has defined
 behaviour.
 
-**Writes** — failure injected before the rename leaves the original untouched and
-removes the temporary file; a crash point leaves no half-written target; `create`
+**Writes** — a target that is a symbolic link has its **link** replaced and is never
+written through, because the sequence replaces the directory entry; failure injected
+before the rename leaves the original untouched and removes the temporary file; a crash point leaves no half-written target; `create`
 on an existing file and `replace` on a missing one both fail; a mismatched
 `expected_sha256` is refused; permissions and ownership survive.
 
@@ -343,7 +370,7 @@ Wildcard allowlists outside the root.
 [`file-tools-review-brief.md`](file-tools-review-brief.md) — one PR, a few hundred
 lines, and a checklist. Naming that person is outside this repository.
 
-**Not yet decided:** whether §4.1's concession (a symlinked intermediate directory
-may redirect within the root) is acceptable. That is the one choice in this design
-that decides whether PR A is a thin layer over the standard library or a
-hand-rolled walk someone has to review line by line.
+**Decided:** §4.1's concession is accepted, and the approval rule of §5 is settled.
+What remains is the reader for PR A, which this repository cannot name, and the
+operator-facing documentation that stands in its place — the operator has to be able
+to see exactly what they approved.
