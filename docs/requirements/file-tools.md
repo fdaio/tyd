@@ -48,8 +48,12 @@ runs. `session_open {root}` may narrow it. It may never widen it.
 
 - **No `--file-root` means the file tools do not exist**, whatever the caller
   passes. `root` is not a way to obtain them.
-- The refusal of `/` and `$HOME` as a root applies to `--file-root`. An operator
-  who genuinely wants that says so explicitly.
+- **`/` is refused, with no switch.** Any use that genuinely needs the whole
+  filesystem wants a narrower root, and a switch that permits `/` would be a
+  switch that disables the feature's only guarantee.
+- **`$HOME` is refused unless `--file-root-allow-home` is given**, which logs a
+  loud line at startup. `$HOME` is a real default for a shell-based tool and an
+  unreasonable root for a file API, so it is available and never silent.
 - **The agent re-validates.** A `root` arriving from a daemon is a claim, not a
   fact. This is the #118 lesson: a field forwarded across two hops is checked
   where the resource is, and the test asserts the field *arrived* — it does not
@@ -70,39 +74,60 @@ The root is taken **once**, at session open, as an open directory descriptor.
 Not a path string — a path can be re-pointed. Not the shell's current directory —
 `cd` must not move it.
 
-## 4. Path resolution: per-component, from the descriptor
+## 4. Path resolution: `os.Root`
 
-`EvalSymlinks` followed by a check is not enough, and neither is
-`EvalSymlinks` plus `O_NOFOLLOW`:
+The manual version of this was going to be `openat2(RESOLVE_BENEATH |
+RESOLVE_NO_SYMLINKS)` on Linux and a per-component `openat` walk elsewhere, with
+symlinks refused outright. **Go's `os.Root` already is that**, and
+`go.mod` requires 1.26, well past the 1.24 that introduced it. It has `OpenFile`,
+`Lstat`, `Stat`, `ReadFile`, `WriteFile`, `Create`, `Rename`, `Chmod`, `Chown` —
+everything this design needs — and it is safe for concurrent use, which matters
+because the agent serves requests in parallel.
 
-- Checking after resolving leaves the same gap as checking before: a directory
-  in the middle of the path can be replaced with a symlink pointing outside
-  between the check and the use.
-- `O_NOFOLLOW` only covers the **last** component. A symlinked parent directory
-  is still followed.
+So the most security-sensitive layer in the design is the standard library's, and a
+reviewer is asked to check how this design *uses* it rather than whether a
+hand-rolled walk is correct. That is a much better thing to spend a review on.
 
-So resolution walks from the root descriptor, one component at a time:
+What `os.Root` guarantees, in its own words: methods only access locations beneath
+the root; if any component of a name references a location outside it, the method
+errors; symbolic links must not be absolute.
 
-- **Linux**: `openat2(dirfd, path, RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
-  RESOLVE_NO_MAGICLINKS)`, kernel 5.6 or newer.
-- **macOS and the fallback**: `openat` per component with
-  `O_NOFOLLOW | O_DIRECTORY`, the last component taking the flags the operation
-  needs. `..`, absolute paths and NUL are refused outright.
+### 4.1 What it does not do, and what that costs
 
-No `EvalSymlinks`. A symlink anywhere in the path is **refused**, not resolved —
-resolving it is the mistake.
+**`os.Root` follows symlinks that stay inside the root.** The earlier draft refused
+any symlink at all. Under this design that becomes: the final component is checked
+with `Lstat` and refused if it is a symlink, while a symlinked intermediate
+*directory* is still followed.
 
-`openat2` exists only on Linux (`golang.org/x/sys` has it in
-`syscall_linux.go`), so CI running both platforms exercises the fallback rather
-than leaving it untested.
+The approval promise therefore weakens, and §1 has to say so honestly:
 
-### 4.1 File types
+- Before: the operator approved `foo/bar.txt`, and `foo/bar.txt` changed.
+- Now: the operator approved `foo/bar.txt`, and that path — resolved within the
+  root at the time of the call, with a symlinked final component refused — changed.
 
-- Read: open `O_NONBLOCK`, then `fstat` and require a regular file. Without
-  `O_NONBLOCK` a FIFO blocks the open forever; a device node is worse.
+The residual is a symlinked directory *inside* the root redirecting an approved
+write to another file *inside* the root. Under §1's model that crosses no privilege
+boundary: it is the same user, inside their own root, and the same user could have
+made the edit. What cannot happen is a write landing outside the root, and that is
+unconditional.
+
+Refusing every symlink is still available, at the cost of writing the walk by hand
+and reviewing it. That is a real choice and a reviewer should be told it exists.
+
+**`Root.Chmod`, `Root.Chown` and `Root.Chtimes` are documented as racy on Unix** —
+the target can be changed from a regular file to a symlink mid-operation. So §6
+never uses them: permissions and ownership are set on the **temporary file's own
+descriptor**, which cannot be swapped out from under us. That is both correct and
+one fewer thing to get wrong.
+
+### 4.2 File types
+
+- Read: `Root.OpenFile` with `O_NONBLOCK`, then `fstat` on the returned file and
+  require a regular one. Without `O_NONBLOCK` a FIFO blocks the open forever, and a
+  device node is worse. `Root.OpenFile` passes flags through, so this is unchanged.
 - Write: the target is a regular file (replace) or does not exist (create).
 
-### 4.2 Known limits, documented rather than papered over
+### 4.3 Known limits, documented rather than papered over
 
 - **Hard links**: a link inside the root can point outside it. A read then
   returns outside content. A write replaces the link, not the target, so it does
@@ -111,7 +136,7 @@ than leaving it untested.
 - Another process owned by the same user can change things inside the root
   concurrently. Nothing here defends against that.
 
-### 4.3 Sensitive paths: defence in depth, not a boundary
+### 4.4 Sensitive paths: defence in depth, not a boundary
 
 Refused **lexically, by name, before opening anything**. That ordering matters:
 deciding after an open would make "refused because it is sensitive" different from
@@ -279,11 +304,19 @@ file.
 
 ## 12. Tests
 
+`os.Root` is documented as safe for concurrent use, and the agent serves requests
+in parallel, so nothing here adds a lock around a `*os.Root`. The tests assume that
+and would catch it if it stopped being true.
+
+
 **Paths** — `..`, absolute, NUL, over-long; a symlinked parent directory pointing
 outside is refused; a concurrent goroutine swapping a directory component for a
-symlink throughout the operation never escapes the root under `-race`; FIFO,
-device and directory give `not_regular` rather than blocking; root deleted or
-renamed has defined behaviour.
+symlink throughout the operation never escapes the root under `-race`; a symlinked
+**final** component is refused by the `Lstat` check, while a symlinked intermediate
+directory redirects **within** the root — §4.1 concedes that, and the test pins it
+so the concession cannot change silently; FIFO, device and directory give
+`not_regular` rather than blocking; root deleted or renamed has defined
+behaviour.
 
 **Writes** — failure injected before the rename leaves the original untouched and
 removes the temporary file; a crash point leaves no half-written target; `create`
@@ -305,9 +338,12 @@ Wildcard allowlists outside the root.
 
 ## Review
 
-Two things are still owed before PR A:
+**Before PR A:** a reader who is neither the author nor the owner who reviewed
+#118. The brief for them is
+[`file-tools-review-brief.md`](file-tools-review-brief.md) — one PR, a few hundred
+lines, and a checklist. Naming that person is outside this repository.
 
-1. **An independent reviewer for PR A**, who is neither its author nor the owner
-   who reviewed #118. A is more sensitive than #118, so this is raised, not
-   assumed. Naming that person is outside this repository.
-2. **`--file-root` naming and the operator switch** that permits `/` or `$HOME`.
+**Not yet decided:** whether §4.1's concession (a symlinked intermediate directory
+may redirect within the root) is acceptable. That is the one choice in this design
+that decides whether PR A is a thin layer over the standard library or a
+hand-rolled walk someone has to review line by line.
