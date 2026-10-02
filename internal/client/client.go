@@ -631,8 +631,21 @@ func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessi
 	return reply, nil
 }
 
-func Approve(ep Endpoint, key ed25519.PrivateKey, id string) (protocol.SessionInfo, error) {
-	resp, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeApprove, SessionID: id})
+// Approve decides one request waiting on a session. digest names which, and must be
+// empty only when the caller knows there is exactly one — the daemon refuses rather
+// than guessing when several are waiting.
+//
+// The frame carries this build's handshake version. A daemon that did not get one
+// cannot tell which request is being approved, and refuses, because falling back to
+// "approve whatever is pending" would reinstate the defect for exactly the peers
+// that have not upgraded.
+func Approve(ep Endpoint, key ed25519.PrivateKey, id, digest string) (protocol.SessionInfo, error) {
+	resp, err := rpc(ep, key, protocol.Frame{
+		Type:      protocol.TypeApprove,
+		SessionID: id,
+		Data:      []byte(digest),
+		Version:   auth.CurrentVersion,
+	})
 	if err != nil {
 		return protocol.SessionInfo{}, err
 	}

@@ -12,7 +12,7 @@ the binary. This page is the map plus the defaults.
 | | `session attach` | Attach interactively (exclusive); id, alias, or recent |
 | | `<session>.<peer>` | Attach shortcut: `tyd jammy.laptop` is `tyd --peer laptop session attach jammy` |
 | | `session watch` | Follow output read-only; id, alias, or recent |
-| | `session approve` | Approve a PENDING remote session (local unix only) |
+| | `session approve` | Approve a PENDING session, or one waiting request on it (local unix only) |
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
 | | `session rm` | Forget a **closed** session in the local catalog (`--force`); its aliases go with it |

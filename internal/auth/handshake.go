@@ -24,6 +24,11 @@ const NonceSize = 32
 // outside the range, and says which side to upgrade.
 const CurrentVersion = 1
 
+// MinHandshakeVersion is the oldest peer this build accepts. Raising it is how a
+// later incompatible change ships; until then it is 1, which every version this
+// code has spoken satisfies.
+const MinHandshakeVersion = 1
+
 // CheckVersion reports whether a peer speaking handshake version peerVersion
 // can be talked to. peer names the role that version arrived from and self names
 // the role this build is playing, so the message can say which program to

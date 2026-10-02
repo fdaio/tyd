@@ -52,7 +52,7 @@ func TestPreModeGatesSendLikeRead(t *testing.T) {
 		t.Fatalf("unapproved remote send must be gated, got %q %q", typ, msg)
 	}
 
-	if _, err := client.Approve(unixEP, key, info.ID); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	typ, msg = sendOnce(t, tlsEP, key, info.ID, "echo hi\n")

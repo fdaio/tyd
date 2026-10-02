@@ -63,6 +63,13 @@ type PendingApproval struct {
 	Transport  string
 	RemoteAddr string
 	Requested  time.Time
+	// Digest is what an approval has to match, Op and Size are what the operator
+	// is shown, and Request describes it in one line. No content: see
+	// describeRequest.
+	Digest  string
+	Op      string
+	Size    int64
+	Request string
 }
 
 type Server struct {
@@ -75,7 +82,7 @@ type Server struct {
 	tlsListenAddr string                    // manual --listen actual addr
 	dataPlaneAddr string                    // data-plane actual listen addr
 	pending       map[string]*pendingAttach // gate key -> waiting request
-	approved      map[string]time.Time      // gate key -> one-shot approval expiry
+	approved      map[string]approval       // session|principal|digest -> one-shot approval
 	createdBy     map[string]string         // gated session id -> requester public key
 	stopReaper    chan struct{}
 	reaperOnce    sync.Once
@@ -87,6 +94,11 @@ type pendingAttach struct {
 	transport  string
 	remoteAddr string
 	at         time.Time
+	// digest is what an approval has to match, and op and size are what the
+	// operator is shown. No content: see describeRequest.
+	digest string
+	op     string
+	size   int64
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
@@ -110,7 +122,7 @@ func NewWithConfig(cfg Config) *Server {
 		cfg:        cfg,
 		conns:      make(map[string]*connState),
 		pending:    make(map[string]*pendingAttach),
-		approved:   make(map[string]time.Time),
+		approved:   make(map[string]approval),
 		createdBy:  make(map[string]string),
 		stopReaper: make(chan struct{}),
 	}
@@ -180,38 +192,59 @@ func gateKey(sessionID string, p *auth.Principal) string {
 	return sessionID + "|" + auth.EncodePublic(p.Pub)
 }
 
-// consumeApproval spends a one-shot approval for this session and principal.
-func (s *Server) consumeApproval(key string) bool {
+// consumeApproval spends a one-shot approval, and only if it was granted for this
+// request. A digest that does not match leaves the approval where it is: the
+// operator approved something, and it is not this.
+func (s *Server) consumeApproval(key, digest string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	exp, ok := s.approved[key]
+	got, ok := s.approved[key]
 	if !ok {
 		return false
 	}
+	if got.digest != digest {
+		return false
+	}
 	delete(s.approved, key)
-	return time.Now().Before(exp)
+	return time.Now().Before(got.expires)
 }
 
 // requestApproval records a waiting attach so the operator can approve it.
-func (s *Server) requestApproval(st *connState, sessionID string) {
+func (s *Server) requestApproval(st *connState, sessionID, digest, op string, size int64) error {
 	req := &pendingAttach{
 		sessionID:  sessionID,
 		transport:  string(st.info.Transport),
 		remoteAddr: st.info.RemoteAddr,
 		at:         time.Now().UTC(),
+		digest:     digest,
+		op:         op,
+		size:       size,
 	}
 	if st.principal != nil {
 		req.principal = st.principal.Name
 	}
+	key := approvalKey(sessionID, gatePub(st.principal), digest)
 	s.mu.Lock()
-	s.pending[gateKey(sessionID, st.principal)] = req
+	if _, already := s.pending[key]; !already && s.countPendingLocked(sessionID, st.principal) >= pendingCap {
+		// A peer must not be able to bury an operator in a list. Refusing is
+		// better than dropping an arbitrary one: the caller is told, and the
+		// approvals already waiting are the ones a person was going to look at.
+		s.mu.Unlock()
+		return fmt.Errorf("too many requests waiting for approval on this session (%d); "+
+			"an operator has to decide on the pending ones before more can wait", pendingCap)
+	}
+	s.pending[key] = req
 	s.mu.Unlock()
 
 	e := s.connEvent(st, audit.KindAttachPending)
 	e.SessionID = sessionID
 	s.audit(e)
-	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants session %s (tyd session approve %s)\n",
-		req.principal, sessionID, sessionID)
+	// What the operator is shown is exactly what the approval binds, so approving
+	// blind is no longer possible: the line names the operation and its size, and
+	// `tyd session approve` lists it again with the digest it needs to match.
+	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants to %s [%s] (tyd session approve %s)\n",
+		req.principal, describeRequest(op, sessionID, size), shortDigest(digest), sessionID)
+	return nil
 }
 
 // PendingApprovals lists attach requests still waiting for a decision.
@@ -243,6 +276,10 @@ func (s *Server) PendingApprovals() []PendingApproval {
 			Transport:  req.transport,
 			RemoteAddr: req.remoteAddr,
 			Requested:  req.at,
+			Digest:     req.digest,
+			Op:         req.op,
+			Size:       req.size,
+			Request:    describeRequest(req.op, req.sessionID, req.size),
 		})
 	}
 	s.mu.Unlock()
@@ -266,7 +303,13 @@ func (s *Server) grantRequesterAttach(sessionID string) {
 		return
 	}
 	delete(s.createdBy, sessionID)
-	s.approved[sessionID+"|"+pub] = time.Now().Add(s.cfg.ApprovalTTL)
+	// The follow-on attach is a request in its own right, so it carries its own
+	// digest rather than borrowing the create's.
+	digest := approvalDigest(opAttach, sessionID, 0)
+	s.approved[approvalKey(sessionID, pub, digest)] = approval{
+		expires: time.Now().Add(s.cfg.ApprovalTTL),
+		digest:  digest,
+	}
 }
 
 // forgetSession drops gate bookkeeping for a session that is gone.
@@ -289,12 +332,28 @@ func (s *Server) forgetSession(sessionID string) {
 // decidePending approves or drops every waiting request for a session and
 // reports how many were decided.
 func (s *Server) decidePending(sessionID string, approve bool) int {
+	return s.decideOnePending(sessionID, "", approve)
+}
+
+// decideOnePending decides the requests for a session. An empty digest decides all
+// of them; a digest decides exactly that one.
+//
+// "All of them" is only correct when there is one. With several pending — two
+// models asking at once, or a read and a send waiting on the same session —
+// approving all of them because nobody said which would spend an operator's
+// approval on a request they were not shown. So the caller is expected to have
+// resolved the ambiguity first, and decideOnePending refuses if it finds more than
+// one it was not asked about.
+func (s *Server) decideOnePending(sessionID, digest string, approve bool) int {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for key, req := range s.pending {
 		if req.sessionID != sessionID {
+			continue
+		}
+		if digest != "" && req.digest != digest {
 			continue
 		}
 		delete(s.pending, key)
@@ -311,7 +370,7 @@ func (s *Server) decidePending(sessionID string, approve bool) int {
 			continue
 		}
 		if approve {
-			s.approved[key] = now.Add(s.cfg.ApprovalTTL)
+			s.approved[key] = approval{expires: now.Add(s.cfg.ApprovalTTL), digest: req.digest}
 		}
 		n++
 	}
@@ -653,15 +712,21 @@ func (s *Server) require(st *connState, cap auth.Cap, sessionID string) error {
 // gateAttach enforces pre-approval for a remote attach or watch. The first
 // request is recorded for the operator; the approval it grants is one-shot, so
 // every later remote look at the session is reviewed again.
-func (s *Server) gateAttach(st *connState, sessionID string) error {
+func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) error {
 	if !s.gated(st) {
 		return nil
 	}
-	if s.consumeApproval(gateKey(sessionID, st.principal)) {
+	// The digest is built here, from the request being served, so it describes
+	// what will actually happen rather than what the peer claimed.
+	digest := approvalDigest(op, sessionID, size)
+	if s.consumeApproval(approvalKey(sessionID, gatePub(st.principal), digest), digest) {
 		return nil
 	}
-	s.requestApproval(st, sessionID)
-	return fmt.Errorf("attach pending approval; ask the operator to run: tyd session approve %s", sessionID)
+	if err := s.requestApproval(st, sessionID, digest, op, size); err != nil {
+		return err
+	}
+	return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
+		op, describeRequest(op, sessionID, size), shortDigest(digest), sessionID)
 }
 
 // auditRead records a read that broke the client's view of the stream: the
@@ -780,8 +845,24 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
+		if err := s.checkApproverVersion(f.Version); err != nil {
+			return err
+		}
 		if sess.State() != session.StatePending {
-			if n := s.decidePending(f.SessionID, true); n == 0 {
+			// More than one request waiting and nothing said which: the operator is
+			// shown the list rather than having the first one decided for them.
+			if len(f.Data) == 0 {
+				waiting := s.pendingFor(f.SessionID)
+				if len(waiting) > 1 {
+					return ambiguousApproval(f.SessionID, waiting)
+				}
+			}
+			n := s.decideOnePending(f.SessionID, string(f.Data), true)
+			if n == 0 {
+				if len(f.Data) != 0 {
+					return fmt.Errorf("no request %q is waiting for approval on session %s; "+
+						"run 'tyd session approve %s' to see what is", shortDigest(string(f.Data)), f.SessionID, f.SessionID)
+				}
 				return fmt.Errorf("session %s has nothing waiting for approval", f.SessionID)
 			}
 			e := s.connEvent(st, audit.KindApprove)
@@ -872,7 +953,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
-		if err := s.gateAttach(st, f.SessionID); err != nil {
+		if err := s.gateAttach(st, f.SessionID, opAttach, 0); err != nil {
 			return err
 		}
 		att, snap, err := sess.Attach()
@@ -922,7 +1003,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
-		if err := s.gateAttach(st, f.SessionID); err != nil {
+		if err := s.gateAttach(st, f.SessionID, opWatch, 0); err != nil {
 			return err
 		}
 		w, snap, err := sess.Watch()
@@ -966,7 +1047,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
 			return err
 		}
-		if err := s.gateAttach(st, f.SessionID); err != nil {
+		if err := s.gateAttach(st, f.SessionID, opRead, 0); err != nil {
 			return err
 		}
 		wait := time.Duration(f.WaitMS) * time.Millisecond
@@ -1021,7 +1102,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		// send reads session output through the same path as read, so it is
 		// gated the same way. The approval is spent once, at the start of the
 		// request, and is not re-checked while a read waits.
-		if err := s.gateAttach(st, f.SessionID); err != nil {
+		if err := s.gateAttach(st, f.SessionID, opSend, int64(len(f.Data))); err != nil {
 			return err
 		}
 		// The flag is forwarded, not interpreted here. The far agent holds the
