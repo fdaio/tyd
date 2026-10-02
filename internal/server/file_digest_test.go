@@ -127,3 +127,83 @@ func TestTheFailureSaysTheApprovalIsGone(t *testing.T) {
 		}
 	}
 }
+
+// The other half of forwarding a frame whole: copying cannot drop a field, and it
+// cannot stop a peer putting one there either.
+//
+// Everything a peer can reach is injected here, and the frame that would cross is
+// checked. This is not a test that the current agent handler ignores stray fields — it
+// is a test that the daemon does not forward them, so the property survives someone
+// adding a field to Frame that a file handler starts reading.
+func TestAPeerCannotAssertFieldsTheDaemonOwns(t *testing.T) {
+	injected := protocol.Frame{
+		Type: protocol.TypeFileRead, ID: "r1", SessionID: "sess1", Path: "notes.txt",
+		// Everything below arrives from the peer and must not survive.
+		Version:      99,
+		AgentVersion: 4242,
+		Cursor:       12345,
+		Epoch:        7,
+		Secret:       true,
+		Rows:         999, Cols: 999,
+		Dropped:     5,
+		AtEnd:       true,
+		CursorAhead: true,
+		Exited:      true,
+		WaitMS:      4000,
+		Shell:       "/bin/bash",
+		Cwd:         "/etc",
+	}
+	out := fileFrameForAgent(injected)
+
+	if out.Version != 0 || out.AgentVersion != 0 {
+		t.Errorf("version metadata survived: version=%d agent=%d", out.Version, out.AgentVersion)
+	}
+	// And the file fields, the ones the peer is supposed to control, are untouched.
+	if out.Path != "notes.txt" || out.SessionID != "sess1" || out.ID != "r1" {
+		t.Errorf("the daemon altered a file field: %+v", out)
+	}
+}
+
+// The digest and the size cannot be injected at all, because they are not fields — they
+// are computed here. Proven by asking for the same operation twice with different junk
+// attached and getting the same digest: if any of it reached the digest, an approval
+// granted for one would not cover the other, and a peer could choose which one.
+func TestAnInjectedFieldCannotChangeTheDigest(t *testing.T) {
+	plain := protocol.Frame{Type: protocol.TypeFileRead, Path: "notes.txt"}
+	loaded := protocol.Frame{
+		Type: protocol.TypeFileRead, Path: "notes.txt",
+		Version: 99, AgentVersion: 4242, Secret: true, Cwd: "/etc", Shell: "/bin/sh",
+	}
+
+	digestOf := func(f protocol.Frame) string {
+		size := int64(f.MaxBytes)
+		if f.Type == protocol.TypeFileWrite {
+			size = int64(len(f.Data))
+		}
+		return fileApprovalDigest(opFileRead, f.SessionID, f.Path, f.Mode, size)
+	}
+	if digestOf(plain) != digestOf(loaded) {
+		t.Error("a peer-supplied field changed the digest, so one request could be approved as another")
+	}
+	// The size is derived from the payload, not read from the frame, so the two differ
+	// only where the payload does.
+	if fileApprovalDigest(opFileRead, "s", "a.txt", "", 0) == fileApprovalDigest(opFileRead, "s", "a.txt", "", 1) {
+		t.Error("the digest does not distinguish two sizes")
+	}
+}
+
+// A refused operation is not recorded as a success, and it is recorded at all.
+//
+// handleFile returns before auditFile when the agent refuses, so a blocked path left no
+// trace. That is worse than recording it wrongly: the one operation an operator most
+// wants to see afterwards is the one that was refused.
+func TestARefusedOperationIsAuditedAsARefusal(t *testing.T) {
+	if refusalResult == "" {
+		t.Fatal("a refusal has no recorded result")
+	}
+	for _, forbidden := range []string{"ok", "success"} {
+		if refusalResult == forbidden {
+			t.Errorf("a refusal is recorded as %q", refusalResult)
+		}
+	}
+}

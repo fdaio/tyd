@@ -10,15 +10,18 @@ import (
 // request, because it has a path and a root claim and a mode on top of everything a
 // read reply has.
 //
-// The lengths are the ones fileroot enforces, not PATH_MAX. That is the whole point —
-// sizing the slack against PATH_MAX is what made the write direction overflow while
-// every read test passed.
+// The lengths are the ones fileroot enforces, not PATH_MAX, and the filler is `<`.
+//
+// **`<`, deliberately.** encoding/json escapes it to six bytes, so a test filled with a
+// character that encodes as itself is not a worst case. That mistake shipped once: the
+// slack was derived with `p` in the path, the write-direction test passed, and any path
+// containing `<`, `>` or `&` still overflowed the frame by thousands of bytes.
 func widestMetadata(n int) Frame {
 	return Frame{
 		Type: TypeFileWrite, ID: strings.Repeat("i", 64),
 		SessionID: strings.Repeat("s", 64),
-		Path:      strings.Repeat("p", 1024),
-		Root:      strings.Repeat("r", 1024),
+		Path:      strings.Repeat("<", 1024),
+		Root:      strings.Repeat("<", 1024),
 		Mode:      "replace", ExpectedSHA: strings.Repeat("e", 64),
 		Data: make([]byte, n),
 	}
@@ -29,7 +32,7 @@ func widestReply(n int) Frame {
 	return Frame{
 		Type: TypeFileResult, ID: strings.Repeat("i", 64),
 		SessionID: strings.Repeat("s", 64),
-		Path:      strings.Repeat("p", 1024), Root: strings.Repeat("r", 1024),
+		Path:      strings.Repeat("<", 1024), Root: strings.Repeat("<", 1024),
 		SHA256: strings.Repeat("a", 64),
 		Data:   make([]byte, n),
 	}

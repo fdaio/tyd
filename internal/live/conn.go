@@ -371,11 +371,19 @@ func DialFile(dir string, req protocol.Frame) (FileResult, error) {
 	if f.Type != protocol.TypeFileResult {
 		return FileResult{}, fmt.Errorf("unexpected file reply %q", f.Type)
 	}
-	// A result carrying an error is a **failure**, not a result. The agent reports a
-	// refusal by setting Error on the result frame rather than by sending TypeError,
-	// because one reply per request is the invariant; without this check the refusal
-	// came back as a success with no data in it, and the caller recorded it as a
-	// successful operation.
+	// A result carrying an error is a **failure**, not a result.
+	//
+	// This check is here only because the file path is the one that needs it: the agent
+	// reports a refusal by setting Error on the result frame rather than by sending
+	// TypeError, so that the ID survives on the reply and the caller can match it. The
+	// four other dials in this file send TypeError and are shaped correctly without it —
+	// they were checked, and none of them decodes a success-typed frame that carries an
+	// error.
+	//
+	// **The two sides are coupled.** If the agent ever answers a file operation with
+	// TypeError instead, this check becomes dead and a refusal starts arriving as a
+	// result with no data; if a caller ever stops needing the ID on a refusal, the
+	// agent should switch to TypeError and this should go. Change both or neither.
 	if f.Error != "" {
 		return FileResult{}, fmt.Errorf("%s", f.Error)
 	}

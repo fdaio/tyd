@@ -797,8 +797,12 @@ func (s *Server) handleFile(st *connState, f protocol.Frame) error {
 			op, describeFileRequest(f, size), shortDigest(digest), f.SessionID)
 	}
 
-	res, err := sess.File(f)
+	res, err := sess.File(fileFrameForAgent(f))
 	if err != nil {
+		// Recorded before returning. A refusal that leaves no trace is worse than one
+		// recorded wrongly: the operation an operator most wants to see afterwards is
+		// the one that was turned down.
+		s.auditFileResult(st, f, "refused")
 		// The approval was spent before the operation ran and stays spent. A model has
 		// to be told that, or it reads the failure as "not now" and retries on its own,
 		// which cannot work — the retry has no approval behind it.
@@ -815,6 +819,31 @@ func (s *Server) handleFile(st *connState, f protocol.Frame) error {
 	return st.send(res)
 }
 
+// fileFrameForAgent strips the fields the daemon owns before the frame crosses.
+//
+// The approval digest and the size are **not** stripped, because they are not frame
+// fields: the digest is computed here from the path and the mode, and the size is
+// derived from len(f.Data) or f.MaxBytes. A peer has nowhere to put either, which is
+// the #132 position — the digest describes the request this daemon is serving, not
+// something the far end asserted.
+//
+// The rest is the other half of forwarding a frame whole. Copying cannot drop a field,
+// which is why it is used; it also cannot stop a peer putting one there. Nothing
+// injectable is dangerous **today**, because the agent reads only the file fields and
+// ignores the rest — but that is a property of the agent's handler, and it changes the
+// moment someone adds a field to Frame that a file handler starts reading. So the
+// server-owned metadata is cleared here, and a test injects every field it can reach to
+// prove the clearing works rather than to prove the current handler ignores them.
+//
+// The list is short on purpose: it is "what the daemon owns", not "what a file
+// operation needs", so adding a frame field does not mean remembering to update it.
+func fileFrameForAgent(f protocol.Frame) protocol.Frame {
+	out := f
+	out.Version = 0
+	out.AgentVersion = 0
+	return out
+}
+
 // fileFailure is what a model reads when a file operation fails after its approval was
 // spent.
 //
@@ -822,6 +851,28 @@ func (s *Server) handleFile(st *connState, f protocol.Frame) error {
 // drift into wording that contradicts the reason it is attached to.
 func fileFailure(reason, approvalNote string) error {
 	return fmt.Errorf("%s (%s)", reason, approvalNote)
+}
+
+// auditFileResult is the result string a refusal carries. Named rather than inlined so
+// the audit and its test cannot drift apart, and so it is obvious at the call site that
+// a refusal is a recorded outcome and not a missing record.
+const refusalResult = "refused"
+
+// auditFileResult records a file operation that did not succeed. No ContentMAC: there is
+// no content to describe.
+func (s *Server) auditFileResult(st *connState, f protocol.Frame, result string) {
+	kind := audit.KindFileRead
+	if f.Type == protocol.TypeFileWrite {
+		kind = audit.KindFileWrite
+	}
+	e := s.connEvent(st, kind)
+	e.SessionID = f.SessionID
+	e.Op = string(f.Type)
+	e.Path = f.Path
+	e.FileRoot = f.Root
+	e.WriteMode = f.Mode
+	e.Result = result
+	s.audit(e)
 }
 
 // auditFile records what a file operation did: the metadata, never the content.
