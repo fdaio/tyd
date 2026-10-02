@@ -60,6 +60,21 @@ func newMCPBackend(opts options, key ed25519.PrivateKey, targets []mcpTarget) *m
 
 // target maps a tool call's peer argument to a target. An empty label is the
 // first target, which is the one --peer named, or the only outbound peer.
+// Targets names the machines this process serves, for a call that asks about more
+// than one. Identity is the paired peer id, so two labels for the same machine
+// compare equal and are probed once.
+func (b *mcpBackend) Targets(context.Context) ([]mcp.Target, error) {
+	out := make([]mcp.Target, 0, len(b.targets))
+	for _, t := range b.targets {
+		out = append(out, mcp.Target{
+			Label:    t.label,
+			Identity: t.peerID,
+			Local:    t.peerID == "",
+		})
+	}
+	return out, nil
+}
+
 func (b *mcpBackend) target(label string) (mcpTarget, error) {
 	if label == "" {
 		return b.targets[0], nil

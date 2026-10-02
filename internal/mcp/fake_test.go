@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,24 @@ type fakeBackend struct {
 	// reads counts every read that reached the target, so a test can assert a
 	// list did not spend an approval on a probe.
 	reads int
+	// targets are the machines the fake serves, for a fan-out test. Nil means the
+	// local daemon alone.
+	targets []Target
+	// readDelay makes one machine's read answer later, so reply order differs from
+	// request order. Keyed by peer label.
+	readDelay map[string]time.Duration
+	// readHang makes one machine accept a read and then never answer, which is how
+	// a per-target timeout gets exercised without a real timeout.
+	readHang map[string]bool
+	// readHook runs inside every read. A test uses it to assert something about the
+	// caller's state at that moment — which is where a lock held across IO shows up.
+	readHook func()
+	// beforeRelease runs just before a probe hands its slot back, so a test can
+	// pause in the gap between recording the state and releasing the slot.
+	beforeRelease func()
+	// approvalAsks counts reads refused pending approval, which is the operator's
+	// approval being asked for.
+	approvalAsks int
 	// alias maps a reference to a session id, like the local alias file.
 	alias map[string]string
 	// calls records the order the tools reached the target in.
@@ -67,6 +86,9 @@ type fakeBackend struct {
 type fakeSession struct {
 	id    string
 	alias string
+	// peer is the machine this session lives on, which the catalog would have
+	// recorded. Empty means the local daemon.
+	peer string
 	// log is the output stream, appended to by send.
 	log []byte
 	// exited marks a shell that has ended.
@@ -134,7 +156,10 @@ func (f *fakeBackend) List(context.Context) ([]Listed, error) {
 	defer f.mu.Unlock()
 	out := make([]Listed, 0, len(f.sessions))
 	for id, s := range f.sessions {
-		out = append(out, Listed{Session: Session{ID: id, Alias: s.alias}, Recorded: "DETACHED"})
+		out = append(out, Listed{
+			Session:  Session{ID: id, Alias: s.alias, Peer: s.peer},
+			Recorded: "DETACHED",
+		})
 	}
 	return out, nil
 }
@@ -209,14 +234,51 @@ func (f *fakeBackend) Read(ctx context.Context, req ReadRequest) (Page, error) {
 		return Page{}, errors.New("unknown session " + req.Session.ID)
 	}
 	f.reads++
-	if f.readErrFor != nil {
-		if err := f.readErrFor(req.Session.ID); err != nil {
-			f.mu.Unlock()
+	log := append([]byte(nil), sess.log...)
+	exited := sess.exited
+	peer := peerOf(req)
+	// Read everything a seam needs while the lock is held, then let it go: a seam
+	// that blocks must not hold the fake's own lock, or a test that releases it
+	// would block on the release.
+	hook, before := f.readHook, f.beforeRelease
+	delay := f.readDelay[peer]
+	hang := f.readHang[peer]
+	errFor := f.readErrFor
+	f.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
+	if before != nil {
+		before()
+	}
+	if hang {
+		// Accepted and then silent: what a per-target timeout exists for.
+		<-ctx.Done()
+		return Page{}, ctx.Err()
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return Page{}, ctx.Err()
+		}
+	}
+	if errFor != nil {
+		if err := errFor(req.Session.ID); err != nil {
+			if strings.Contains(err.Error(), "pending approval") {
+				f.mu.Lock()
+				f.approvalAsks++
+				f.mu.Unlock()
+			}
 			return Page{}, err
 		}
 	}
-	log := append([]byte(nil), sess.log...)
-	exited := sess.exited
+	_ = exited
+
+	// Taken again for the gate: the seam above released the lock so a blocking
+	// hook could not hold it, and this section still needs it for the counters.
+	f.mu.Lock()
 	gate := f.readGate
 	f.readWait = append(f.readWait, req.Wait)
 	f.readCond = append(f.readCond, req.Cond)
@@ -400,4 +462,82 @@ func (f *fakeBackend) setEchoState(echo, icanon bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.echoState = &fakeEcho{echo: echo, icanon: icanon}
+}
+
+// Targets names the machines the fake serves. A test sets peers to make several.
+func (f *fakeBackend) Targets(context.Context) ([]Target, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.targets != nil {
+		return append([]Target(nil), f.targets...), nil
+	}
+	return []Target{{Label: "", Identity: "", Local: true}}, nil
+}
+
+// setTargets makes the fake serve these machines, for a fan-out test.
+func (f *fakeBackend) setTargets(ts ...Target) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.targets = ts
+}
+
+// The seams a fan-out test needs: per-machine read delays, a machine that accepts
+// and then stops answering, a hook that runs inside a read, and the high-water mark
+// of simultaneous parked reads.
+var _ = 0
+
+// peerOf is the machine a read is for, which the fake keys its per-machine seams by.
+func peerOf(req ReadRequest) string {
+	if req.Session.Peer == "" {
+		return ""
+	}
+	return req.Session.Peer
+}
+
+func (f *fakeBackend) peakBlockedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.peakBlocked
+}
+
+func (f *fakeBackend) setReadDelay(peer string, d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readDelay == nil {
+		f.readDelay = map[string]time.Duration{}
+	}
+	f.readDelay[peer] = d
+}
+
+func (f *fakeBackend) setReadHang(peer string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.readHang == nil {
+		f.readHang = map[string]bool{}
+	}
+	f.readHang[peer] = true
+}
+
+// setReadHook runs fn inside every read, so a test can assert something about the
+// caller's state at that moment — which is where a lock held across IO shows up.
+func (f *fakeBackend) setReadHook(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.readHook = fn
+}
+
+// approvalRequests counts reads that were refused pending approval, which is the
+// operator's approval being asked for.
+func (f *fakeBackend) approvalRequests() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.approvalAsks
+}
+
+// beforeRelease runs just before a probe hands its slot back, so a test can pause in
+// the gap between recording the state and releasing the slot.
+func (f *fakeBackend) setBeforeRelease(fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.beforeRelease = fn
 }

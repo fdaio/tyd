@@ -137,24 +137,32 @@ func (s *server) ungate(peer string) {
 	delete(s.gated, peer)
 }
 
-// claimProbe reserves the single probe slot for a target, and reports whether this
-// caller got it.
+// claimProbe answers both questions a probe asks before it starts, under one lock:
+// is this target already waiting for an operator, and may this caller be the one to
+// ask it. One call rather than two because two leave a gap between them — see the
+// call site.
+//
+// The returned time is when the target started asking, and is only meaningful when
+// gated is true.
 //
 // This is the invariant a concurrent list would otherwise break. needsApproval and
 // markGated are two separate locked calls with the probe between them, so N probes
 // all pass the check before any of them sets the mark: one approval, spent N times.
 // A slot makes "at most one probe per target in flight" true rather than likely.
-func (s *server) claimProbe(peer string) bool {
+func (s *server) claimProbe(peer string) (since time.Time, gated, mayProbe bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if at, seen := s.gated[peer]; seen {
+		return at, true, false
+	}
 	if s.probing == nil {
 		s.probing = make(map[string]bool)
 	}
 	if s.probing[peer] {
-		return false
+		return time.Time{}, false, false
 	}
 	s.probing[peer] = true
-	return true
+	return time.Time{}, false, true
 }
 
 func (s *server) releaseProbe(peer string) {
@@ -385,59 +393,11 @@ func (s *server) list(ctx context.Context) (string, any, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d session(s) in the local catalog.\n", len(rows))
 
+	// The same probeRow the fan-out uses. One implementation, so the two paths
+	// cannot disagree about when a target may be asked — and a fan-out that
+	// behaved differently from the single-target call would be very hard to notice.
 	for _, it := range rows {
-		// The catalog cannot know which sessions this process opened, so the
-		// answer comes from the state the tools kept. It matters because
-		// closeOnExit acts on exactly those.
-		openedByUs := s.openedByUs(it.Session.Key())
-		row := sessionRow{
-			Session:    it.Session.Label(),
-			ID:         it.Session.ID,
-			Peer:       orLocal(it.Session.Peer),
-			Recorded:   it.Recorded,
-			OpenedByUs: openedByUs,
-			Created:    it.Created,
-		}
-		// A probe is a read with no wait: one round trip, no parked read. It
-		// still goes through the target's approval gate, and on a target in pre
-		// mode the operator's approval is spent by the first read that gets
-		// through. So a target that has already asked for approval is not asked
-		// again: the row says what the catalog recorded and why it was not
-		// probed, which is more use to a model than a second request the operator
-		// has to answer.
-		switch since, gated := s.needsApproval(it.Session.Peer); {
-		case gated:
-			row.State = "unknown"
-			row.ProbeError = gatedProbeNote(since)
-			row.Probed = false
-		case !s.claimProbe(it.Session.Peer):
-			// Another caller is already asking this target. Saying so is better than
-			// queueing behind it: the answer would be the same read, and the reader
-			// is told this row was skipped rather than why it changed.
-			row.State = "unknown"
-			row.ProbeError = probeInFlightNote
-			row.Probed = false
-		default:
-			page, perr := s.probe(ctx, it.Session)
-			row.Probed = true
-			switch {
-			case perr != nil:
-				row.State = "unknown"
-				row.ProbeError = mapError(perr, it.Session).Error()
-				if isPendingApproval(perr) {
-					s.markGated(it.Session.Peer)
-				}
-			case page.Exited:
-				row.State = "exited"
-			default:
-				row.State = "running"
-			}
-			// Released after the state is recorded, never before. Releasing first
-			// leaves a gap between the slot being free and the mark being set, and
-			// a second caller walks straight into it — which is the same double
-			// spend the slot exists to prevent, one step later.
-			s.releaseProbe(it.Session.Peer)
-		}
+		row := s.probeRow(ctx, it.Session.Peer, it)
 		out = append(out, row)
 
 		fmt.Fprintf(&b, "- %s (%s) on %s: %s", row.Session, row.ID, row.Peer, row.State)
@@ -513,6 +473,71 @@ func isPendingApproval(err error) bool {
 
 // probe asks a session for its state without waiting and without touching the
 // cursor this process keeps for it, so listing sessions cannot swallow output.
+// probeTarget probes one machine's rows, in order.
+//
+// Serial within the machine on purpose. The slot that stops a pre-mode approval
+// being spent twice is per target, so this stays one probe at a time however many
+// sessions the machine has. The fan-out's speedup is between machines and never
+// within one, which is a boundary worth stating rather than discovering.
+func (s *server) probeTarget(ctx context.Context, peer string, listed []Listed) []sessionRow {
+	out := make([]sessionRow, 0, len(listed))
+	for _, it := range listed {
+		out = append(out, s.probeRow(ctx, peer, it))
+	}
+	return out
+}
+
+// probeRow probes one row, or says why it was not probed.
+func (s *server) probeRow(ctx context.Context, peer string, it Listed) sessionRow {
+	openedByUs := s.openedByUs(it.Session.Key())
+	row := sessionRow{
+		Session:    it.Session.Alias,
+		ID:         it.Session.ID,
+		Peer:       orLocal(it.Session.Peer),
+		Recorded:   it.Recorded,
+		OpenedByUs: openedByUs,
+		Created:    it.Created,
+	}
+
+	// One locked call, not two. Asking whether the target is gated and then asking
+	// for the probe slot separately leaves a window between them, in which another
+	// caller can set the gate; this caller then takes the slot and probes a target
+	// that has just been ruled off, spending the operator's approval a second time.
+	// Same double spend as the check-then-mark the slot was added for, one step
+	// further on, and it needs concurrency to appear.
+	switch since, gated, mayProbe := s.claimProbe(peer); {
+	case gated:
+		row.State = "unknown"
+		row.ProbeError = gatedProbeNote(since)
+	case !mayProbe:
+		row.State = "unknown"
+		row.ProbeError = probeInFlightNote
+	default:
+		page, perr := s.probe(ctx, it.Session)
+		row.Probed = true
+		switch {
+		case perr != nil:
+			row.State = "unknown"
+			row.ProbeError = mapError(perr, it.Session).Error()
+			// Only a target that actually said it needs approval arms the gate. A
+			// probe this caller gave up on, or one that hit the context deadline,
+			// must leave no mark behind: the next list would then report a gate
+			// that was never raised, and no operator would ever be asked.
+			if isPendingApproval(perr) {
+				s.markGated(peer)
+			}
+		case page.Exited:
+			row.State = "exited"
+		default:
+			row.State = "running"
+		}
+		// After the state is recorded, never before: releasing first leaves the
+		// same double spend one step later.
+		s.releaseProbe(peer)
+	}
+	return row
+}
+
 func (s *server) probe(ctx context.Context, sess Session) (Page, error) {
 	st := s.state(sess.Key())
 	st.mu.Lock()

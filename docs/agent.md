@@ -291,6 +291,21 @@ attached" instead of "the target is broken".
   already asking it. Those are different problems — one waits for a person, the
   other waits for a moment — and the row does not conflate them.
 
+  **Several machines at once.** `session_list` takes `peers`, which probes the named
+  machines concurrently so one slow machine no longer holds up the others. Omitting
+  it is not the same as asking for all: it means the single default target, exactly
+  as before. A machine that cannot be reached is named and the rest of the answer
+  still comes back.
+
+  The speedup is **between machines and never within one.** Within a machine the
+  probes stay in sequence, because the approval gate is per machine and fifty
+  sessions on one host should not become fifty reads past it at once. So a list of
+  fifty sessions on a single box takes as long as it always did.
+
+  Only reading tools take `peers`. `send`, `interrupt`, `close` and `open` stay on
+  one machine, because broadcasting keystrokes is not something a parameter should
+  be able to do.
+
   **The mark that stops the probing is per process, on purpose.** Restarting
   `tyd mcp` forgets it, so the first list afterwards probes once more. That is
   deliberate: the alternative is a remembered block after the operator has already

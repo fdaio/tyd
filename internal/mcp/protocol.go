@@ -220,3 +220,38 @@ func (a args) uint(name string) (uint64, bool, error) {
 		return 0, false, invalidParams("%s must be a byte offset, for example %q", name, "1024")
 	}
 }
+
+// has reports whether the caller supplied a field at all, which is different from
+// supplying it empty. The distinction matters where absent means "today's
+// behaviour" and empty means "a mistake".
+func (a args) has(name string) bool {
+	_, ok := a[name]
+	return ok
+}
+
+// stringList reads a field that is either one string or a list of them, so a caller
+// can say `peers: "all"` or `peers: ["a","b"]` without the schema carrying a union.
+func (a args) stringList(name string) ([]string, error) {
+	v, ok := a[name]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	switch t := v.(type) {
+	case string:
+		return []string{t}, nil
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			s, ok := e.(string)
+			if !ok {
+				return nil, invalidParams("%s must be strings", name)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	case []string:
+		return t, nil
+	default:
+		return nil, invalidParams("%s must be a string or a list of strings", name)
+	}
+}

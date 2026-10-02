@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// Target is one machine this server can be asked about.
+type Target struct {
+	// Label is what a tool argument names it by.
+	Label string
+	// Identity is the paired peer behind the label, or empty for the local daemon.
+	// Two labels with the same identity are one machine.
+	Identity string
+	// Local marks the daemon this process is running inside.
+	Local bool
+}
+
 // Session identifies one session on one target. A tool call names a session by
 // alias or id, and a peer only when the process was started with more than one
 // target.
@@ -143,6 +154,11 @@ type Backend interface {
 	// List returns the sessions the local catalog knows. It reads local files
 	// only and never opens a connection.
 	List(ctx context.Context) ([]Listed, error)
+	// Targets names the machines this server can be asked about. Identity is what
+	// two labels for the same machine share, so a caller can refuse to probe one
+	// machine twice under two names — which would be two probes past the same
+	// approval gate.
+	Targets(ctx context.Context) ([]Target, error)
 	// Send injects bytes into a session nobody is attached to.
 	// Send writes to the session's terminal. secret asks that the write be refused
 	// unless the terminal is not echoing; the refusal is decided where the PTY is
