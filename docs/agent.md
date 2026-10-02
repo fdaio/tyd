@@ -280,6 +280,15 @@ attached" instead of "the target is broken".
   knows this and stops probing a target that has asked, so a list never spends
   the approval you gave.
 
+- **An approval is for one request, not for a session.** On the target it names the
+  operation, the session and the byte count, so an approval you gave for one read
+  is not spent by a different read, and approving a create does not release a later
+  send. When several requests are waiting, `tyd session approve <id>` lists them and
+  refuses to pick one for you; `--digest <hex>` names it. The operator's line shows
+  the operation and the size and never the content. The trade is more prompts than
+  "approve the session once" would need — the prompts were already one per request,
+  and what changes is that each one now covers the request it named.
+
   **Which rows a list gives up on is a choice.** The rows come back ordered most
   recently active first, and that is the order they are probed in — so the first
   row you read is the first one that was probed, and the rest came from the local

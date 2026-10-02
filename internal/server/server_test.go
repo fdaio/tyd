@@ -698,7 +698,7 @@ func TestPreTLSCreatePendingThenUnixApprove(t *testing.T) {
 		t.Fatalf("attach want pending error, got %+v", f)
 	}
 
-	approved, err := client.Approve(unixEP, key, info.ID)
+	approved, err := client.Approve(unixEP, key, info.ID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +795,7 @@ func TestPreReattachNeedsNewApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Approve(unixEP, key, info.ID); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -846,7 +846,7 @@ func TestPreReattachNeedsNewApproval(t *testing.T) {
 		t.Fatalf("no attach_pending event: %+v", getAudits())
 	}
 
-	if _, err := client.Approve(unixEP, key, info.ID); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
 		t.Fatalf("approve waiting attach: %v", err)
 	}
 	third, err := client.Dial(tlsEP, key)
@@ -898,7 +898,7 @@ func TestApproveRejectedOverTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Approve(tlsEP, key, info.ID); err == nil || !strings.Contains(err.Error(), "unix") {
+	if _, err := client.Approve(tlsEP, key, info.ID, ""); err == nil || !strings.Contains(err.Error(), "unix") {
 		t.Fatalf("approve over tls: %v", err)
 	}
 	if err := client.Reject(unixEP, key, info.ID); err != nil {
@@ -919,7 +919,7 @@ func TestPendingApprovalsExpire(t *testing.T) {
 		info:      transport.Info{Transport: transport.KindTLS, RemoteAddr: "10.0.0.2:4242"},
 		principal: trust.Add("laptop", key.Public().(ed25519.PublicKey), nil),
 	}
-	if err := srv.gateAttach(st, "sess1"); err == nil || !strings.Contains(err.Error(), "pending approval") {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err == nil || !strings.Contains(err.Error(), "pending approval") {
 		t.Fatalf("first attach: %v", err)
 	}
 	waiting := srv.PendingApprovals()
@@ -937,7 +937,7 @@ func TestPendingApprovalsExpire(t *testing.T) {
 	if n := srv.decidePending("sess1", true); n != 0 {
 		t.Fatalf("expired request approved: n=%d", n)
 	}
-	if err := srv.gateAttach(st, "sess1"); err == nil {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err == nil {
 		t.Fatal("expired approval must not let an attach through")
 	}
 }
@@ -950,7 +950,7 @@ func TestGateSkipsUnix(t *testing.T) {
 	}
 	srv := NewWithConfig(Config{Mgr: session.NewManager(), Trust: trust, ApprovalMode: "pre"})
 	st := &connState{info: transport.Info{Transport: transport.KindUnix}}
-	if err := srv.gateAttach(st, "sess1"); err != nil {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err != nil {
 		t.Fatalf("unix attach gated: %v", err)
 	}
 	if got := srv.PendingApprovals(); len(got) != 0 {
@@ -969,16 +969,16 @@ func TestGateCoversQUIC(t *testing.T) {
 		info:      transport.Info{Transport: transport.KindQUIC},
 		principal: trust.Add("peer", key.Public().(ed25519.PublicKey), nil),
 	}
-	if err := srv.gateAttach(st, "sess1"); err == nil {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err == nil {
 		t.Fatal("quic attach must be gated under pre")
 	}
 	if n := srv.decidePending("sess1", true); n != 1 {
 		t.Fatalf("approved n=%d", n)
 	}
-	if err := srv.gateAttach(st, "sess1"); err != nil {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err != nil {
 		t.Fatalf("approved quic attach: %v", err)
 	}
-	if err := srv.gateAttach(st, "sess1"); err == nil {
+	if err := srv.gateAttach(st, "sess1", opRead, 0); err == nil {
 		t.Fatal("approval must be one-shot")
 	}
 }

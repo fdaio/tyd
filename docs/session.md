@@ -186,14 +186,59 @@ tyd session approve <id>    # starts the PTY → DETACHED
 tyd session reject <id>     # removes the pending session
 ```
 
-A remote attach or watch under `pre` is refused with `attach pending approval` and
-recorded as a waiting request; the same `tyd session approve <id>` releases it.
-**Approvals are one-shot**: approving a create also covers the attach that
-immediately follows, but every later reattach is reviewed again, so access never
-becomes permanent. Requests and approvals expire after 10 minutes.
+A remote request under `pre` — create, attach, watch, read or send — is refused and
+recorded as a waiting request, and the daemon prints what it is waiting for:
+
+```
+tyd approval needed: alice wants to send 9 bytes to 0de1337a [98c250848311] (tyd session approve 0de1337a)
+```
+
+That line is the whole approval. It names the operation, the size and the session,
+and **never the content**: a `send` shows how many bytes, not what they are. The
+bracketed value identifies the request if more than one is waiting.
+
+**Approvals are one-shot and bound to one request.** An approval is spent only by
+the request it was granted for — the same operation, on the same session, with the
+same byte count. It does not carry to the next request, and it does not carry
+across kind. So approving a `create` does **not** release a later `send`, and an
+approval given for a `read` cannot be spent by a `read` the peer chose afterwards.
+
+That is deliberate. The alternative — approving a session, so that whatever arrives
+next is allowed — means the thing that runs is not necessarily the thing you were
+shown, and on a busy session the gap between the two is where an accident would
+land.
+
+Two consequences worth planning for:
+
+- **Requests expire after 10 minutes**, approvals included, so a decision made late
+  is not spent on something that happened after it.
+- **A `send` needs two approvals** to be worth anything: one for the write, one for
+  the read that would report its output. Under `pre`, a model is impractical on
+  purpose — pair a dedicated identity against a daemon registered `--approval full`.
+
+### When more than one request is waiting
+
+`tyd session approve <id>` approves the request that is waiting. If several are, it
+refuses rather than picking one for you:
+
+```
+session 0de1337a has 2 requests waiting for approval, so approving all of them
+would decide requests you were not shown. Name the one you mean:
+  98c250848311  read 0de1337a  (alice)
+  c41d09bb7e20  send 9 bytes to 0de1337a  (alice)
+
+  tyd session approve 0de1337a --digest <hex>
+```
+
+Identical requests share one waiting record, so a peer retrying does not fill the
+list with copies. The number of distinct requests that can wait at once is bounded,
+so a peer cannot bury you: past the limit the request is refused and the ones
+already waiting are the ones you were going to look at.
 
 `approve` and `reject` are accepted only over the local unix socket, never over
-TLS or QUIC.
+TLS or QUIC. The approving client must send a handshake version; one that does not
+is refused with an upgrade message, because a client too old to name a request
+cannot be allowed to approve all of them.
 
 ## Audit log
 

@@ -313,6 +313,29 @@ stop it.
 If the Control Panel is also unreachable, the daemon keeps serving local sessions
 and tells you to run `tyd doctor --fix` once the disk is healthy.
 
+### "approving all of them would decide requests you were not shown"
+
+More than one request is waiting on a session and `tyd session approve <id>` was
+run without saying which. The daemon refuses rather than picking the first, because
+approving a session means whatever arrives next is allowed — and the thing that runs
+is then not necessarily the thing you were shown.
+
+The error lists each waiting request with its digest. Re-run with the one you meant:
+
+```bash
+tyd session approve <id> --digest 98c250848311
+```
+
+Identical requests share one waiting record, so a peer retrying does not fill the
+list. The number of distinct requests that can wait at once is bounded; past the
+limit the request is refused rather than queued, so the entries already waiting stay
+readable.
+
+If you are scripting approvals, note that an approving client must send a handshake
+version. One built before approvals were bound to a request is refused with an
+upgrade message instead of quietly approving everything pending — which is the
+behaviour that made this necessary.
+
 ### A peer that takes a long time to answer
 
 A peer publishes several addresses — a LAN address, a tunnel endpoint, a stale one

@@ -88,11 +88,43 @@ type remoteFixture struct {
 // identity, the same route. Approving through the session manager instead would
 // start the PTY and stop there, and the one-shot approval that lets the request
 // through is recorded by the server on that route.
+// approve is the create approval, which is not bound to a request: what it decides
+// is "let this session exist". Requests waiting on it are decided separately.
 func (f *remoteFixture) approve(t *testing.T, sessionID string) {
 	t.Helper()
 	ep := client.Endpoint{Kind: transport.KindUnix, Address: f.srvSocket}
-	if _, err := client.Approve(ep, f.srvKey, sessionID); err != nil {
+	if _, err := client.Approve(ep, f.srvKey, sessionID, ""); err != nil {
 		t.Fatalf("approve %s: %v", sessionID, err)
+	}
+}
+
+// approveMatching approves the one waiting request whose description contains want,
+// which is what an operator does after reading the list. An empty want approves
+// only when there is exactly one, so a test cannot quietly approve a request it
+// did not mean — the daemon refuses that case, and so does this.
+func (f *remoteFixture) approveMatching(t *testing.T, sessionID, want string) {
+	t.Helper()
+	var hits []server.PendingApproval
+	for _, p := range f.srv.PendingApprovals() {
+		if p.SessionID == sessionID && (want == "" || strings.Contains(p.Request, want)) {
+			hits = append(hits, p)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		t.Fatalf("approve %s: nothing waiting that matches %q", sessionID, want)
+	case 1:
+	default:
+		var got []string
+		for _, h := range hits {
+			got = append(got, h.Request)
+		}
+		t.Fatalf("approve %s: %d requests match %q, so the test must say which: %v",
+			sessionID, len(hits), want, got)
+	}
+	ep := client.Endpoint{Kind: transport.KindUnix, Address: f.srvSocket}
+	if _, err := client.Approve(ep, f.srvKey, sessionID, hits[0].Digest); err != nil {
+		t.Fatalf("approve %s (%s): %v", sessionID, hits[0].Request, err)
 	}
 }
 
@@ -519,14 +551,27 @@ func TestRemotePreApprovalIsSpentByTheFirstRequest(t *testing.T) {
 		t.Fatalf("the refusal must name the command that unblocks it:\n%s", first.text)
 	}
 
-	// What the operator runs on the target.
+	// What the operator runs on the target. This approves the create.
 	fx.approve(t, sid)
 
-	// The approval buys exactly one request. This is the finding that decides
-	// whether a pre target is practical, so it is asserted rather than described.
-	if res := mc.tryCall(t, "session_send", map[string]any{"session": ref, "data": "echo one\n"}); res.err != "" {
-		t.Fatalf("the first request after approval must be accepted:\n%s", res.text)
+	// Approving the create does **not** carry a send through. It used to: the
+	// approval recorded for the attach that follows a create was keyed on the
+	// session alone, so the first gated request of any kind spent it — here, a
+	// send the operator was never shown. An approval is bound to one request, and
+	// this is the assertion that says so.
+	if res := mc.tryCall(t, "session_send", map[string]any{"session": ref, "data": "echo one\n"}); res.err == "" {
+		t.Fatal("approving the create carried a send the operator was not shown")
 	}
+	fx.approveMatching(t, sid, "send 9 bytes")
+
+	// Now the send has its own approval, and it goes through.
+	if res := mc.tryCall(t, "session_send", map[string]any{"session": ref, "data": "echo one\n"}); res.err != "" {
+		t.Fatalf("the request the operator approved must be accepted:\n%s", res.text)
+	}
+
+	// And one approval still buys exactly one request. This is the finding that
+	// decides whether a pre target is practical, so it is asserted rather than
+	// described.
 	second := mc.tryCall(t, "session_send", map[string]any{"session": ref, "data": "echo two\n"})
 	if second.err == "" {
 		t.Fatal("a pre approval was expected to be one-shot, and the second send was accepted")
@@ -650,9 +695,9 @@ func TestRemoteOneApprovalIsSpentByTheModelNotByAList(t *testing.T) {
 		t.Fatalf("a list of 2 rows made %d probes, want 1", n)
 	}
 
-	// The operator approves the session that was probed. That is one approval,
-	// and it is for one request.
-	fx.approve(t, probed)
+	// The operator approves the probe the list made — the one request that was
+	// actually asked for, named out of the list the daemon holds.
+	fx.approveMatching(t, probed, "read "+probed)
 
 	// A list must not spend it. The target is remembered as gated, so its rows
 	// come from the catalog and say so.
@@ -671,13 +716,23 @@ func TestRemoteOneApprovalIsSpentByTheModelNotByAList(t *testing.T) {
 		}
 	}
 
-	// The approval is still there, because nothing has spent it. A read is one
-	// gated request, so it is the one a single approval buys.
+	// That approval is spent by the probe's own retry and by nothing else. The
+	// model's read is a *different* request — the approval names the operation, not
+	// just the session — so it needs an approval of its own, and gets refused until
+	// it has one. This used to pass through on the probe's approval, which is the
+	// defect: an operator shown "read abc123" was also paying for a read the model
+	// chose afterwards.
 	read := mc.tryCall(t, "session_read", map[string]any{
 		"session": probed, "wait": map[string]any{"idle_ms": 400},
 	})
-	if read.err != "" {
-		t.Fatalf("the approval the list left alone was not there for the model's own call: %s", read.err)
+	if read.err == "" {
+		t.Fatal("the probe's approval was spent by a read the operator was not shown")
+	}
+	fx.approveMatching(t, probed, "read "+probed)
+	if read := mc.tryCall(t, "session_read", map[string]any{
+		"session": probed, "wait": map[string]any{"idle_ms": 400},
+	}); read.err != "" {
+		t.Fatalf("the read the operator approved was not accepted: %s", read.err)
 	}
 
 	// And it really was one-shot: the next gated request is refused, and says
@@ -722,11 +777,13 @@ func TestRemoteSendOnAPreTargetSpendsTheApprovalOnTheWriteAlone(t *testing.T) {
 
 	mc.openSession(t, "gated")
 	sid := sessionIDForAlias(t, fx, "gated")
-	// One attempt records the request the approval answers.
-	mc.tryCall(t, "session_send", map[string]any{"session": "gated", "data": "echo x\n"})
 	fx.approve(t, sid)
+	// The write is refused, which is what records the request an approval answers.
+	mc.tryCall(t, "session_send", map[string]any{"session": "gated", "data": "echo two-approvals\n"})
+	fx.approveMatching(t, sid, "send 19 bytes")
 
-	// The write goes through on that approval.
+	// The write goes through on that approval — the one the operator was shown,
+	// named in the list, with its size.
 	sent := mc.tryCall(t, "session_send", map[string]any{
 		"session": "gated", "data": "echo two-approvals\n",
 	})

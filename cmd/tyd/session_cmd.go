@@ -215,6 +215,7 @@ func runSession(opts options) error {
 		if err := refuseIfInSession("session approve"); err != nil {
 			return err
 		}
+		digest := approveDigestArg(args)
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session approve [session_id|alias]: %w", err)
@@ -227,7 +228,7 @@ func runSession(opts options) error {
 		if err := ensureLocalDaemon(opts, local); err != nil {
 			return err
 		}
-		info, err := client.Approve(local, key, sid)
+		info, err := client.Approve(local, key, sid, digest)
 		if err != nil {
 			return err
 		}
@@ -529,4 +530,18 @@ func writeSessionList(w io.Writer, rows []sessionListRow, color bool) {
 		fmt.Fprint(w, paintCell(r.State, stateW, color && liveState(r.State)), gap)
 		fmt.Fprintln(w, padCell(r.Created, createdW))
 	}
+}
+
+// approveDigestArg picks --digest out of the argument list.
+//
+// An approval is bound to one request, so with more than one waiting the operator
+// has to say which. Without it the daemon refuses and lists them, rather than
+// deciding the first one for them.
+func approveDigestArg(args []string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--digest" {
+			return args[i+1]
+		}
+	}
+	return ""
 }
