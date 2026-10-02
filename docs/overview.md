@@ -46,6 +46,8 @@ Agents that died while the daemon was down are dropped on that restore.
 
 Control Panel pairing (ids + peer public keys only; no TTY) is specified in
 [requirements/control-plane-pairing.md](requirements/control-plane-pairing.md).
+File read and write for `tyd mcp` is specified in
+[requirements/file-tools.md](requirements/file-tools.md).
 Session aliases, the recent-session placeholder, and the **session catalog** are
 client-local (`aliases.json` / `recent.json` / `sessions.json`).
 `tyd session list` reads the catalog only — it contacts neither the Control Panel
