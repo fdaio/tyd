@@ -30,11 +30,14 @@ func TestMain(m *testing.M) {
 
 func testLiveStarter(t *testing.T) live.Starter {
 	t.Helper()
-	return func(_, dir string) (*exec.Cmd, error) {
+	return func(_, dir, fileRoot string) (*exec.Cmd, error) {
 		cmd := exec.Command(os.Args[0], "-test.run=^$")
 		cmd.Env = append(os.Environ(),
 			"TYD_TEST_LIVE_AGENT=1",
 			"TYD_TEST_LIVE_DIR="+dir,
+			// Forwarded so a test that configures a ceiling gets a real agent with
+			// one, rather than only ever exercising the no-root path.
+			"TYD_TEST_LIVE_FILE_ROOT="+fileRoot,
 		)
 		logf, err := os.OpenFile(live.LogPath(dir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {

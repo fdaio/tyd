@@ -224,6 +224,16 @@ func (a args) uint(name string) (uint64, bool, error) {
 // has reports whether the caller supplied a field at all, which is different from
 // supplying it empty. The distinction matters where absent means "today's
 // behaviour" and empty means "a mistake".
+// stringOr returns a string argument, or def when it is absent. For an argument that
+// is optional and has no meaning as an empty string, so the two are the same thing.
+func (a args) stringOr(name, def string) string {
+	v, err := a.str(name)
+	if err != nil {
+		return def
+	}
+	return v
+}
+
 func (a args) has(name string) bool {
 	_, ok := a[name]
 	return ok

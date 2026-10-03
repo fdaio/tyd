@@ -36,6 +36,14 @@ type fakeBackend struct {
 	// reads counts every read that reached the target, so a test can assert a
 	// list did not spend an approval on a probe.
 	reads int
+	// filePage and fileWritten are what the fake file operations return; fileCalls
+	// records what they were asked, which is how the tool layer is tested without a
+	// filesystem.
+	filePage     FilePage
+	fileWritten  FileWritten
+	fileReadErr  error
+	fileWriteErr error
+	fileCalls    []fileCall
 	// targets are the machines the fake serves, for a fan-out test. Nil means the
 	// local daemon alone.
 	targets []Target
@@ -89,6 +97,10 @@ type fakeSession struct {
 	// peer is the machine this session lives on, which the catalog would have
 	// recorded. Empty means the local daemon.
 	peer string
+	// root is the narrowing session_open was given, recorded so the tool layer can be
+	// tested without a filesystem. It belongs to the session, so every later file call
+	// starts from it.
+	root string
 	// log is the output stream, appended to by send.
 	log []byte
 	// exited marks a shell that has ended.
@@ -113,7 +125,7 @@ func (f *fakeBackend) Open(_ context.Context, req OpenRequest) (Opened, error) {
 	}
 	f.nextID++
 	id := "sess" + string(rune('0'+f.nextID))
-	s := &fakeSession{id: id, alias: req.Name}
+	s := &fakeSession{id: id, alias: req.Name, root: req.Root}
 	f.sessions[id] = s
 	if req.Name != "" {
 		f.alias[req.Name] = id
@@ -139,7 +151,10 @@ func (f *fakeBackend) Resolve(_ context.Context, ref, peer string) (Session, err
 	if _, ok := f.sessions[id]; !ok {
 		return Session{}, errors.New("unknown session " + ref)
 	}
-	return Session{ID: id, Alias: f.aliases(id)}, nil
+	// Root travels with the resolved session, as it does for the real backend: it
+	// belongs to the session, so a file call starts from it without the caller having
+	// to repeat it.
+	return Session{ID: id, Alias: f.aliases(id), Root: f.sessions[id].root}, nil
 }
 
 func (f *fakeBackend) aliases(id string) string {
@@ -540,4 +555,44 @@ func (f *fakeBackend) setBeforeRelease(fn func()) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.beforeRelease = fn
+}
+
+// The file operations, so the tool layer can be tested without a filesystem. The
+// paths are recorded rather than interpreted, which is the point: the fake has no root
+// and no opinion, exactly as the real backend has none.
+func (f *fakeBackend) FileRead(ctx context.Context, s Session, req FileRequest) (FilePage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fileReadErr != nil {
+		return FilePage{}, f.fileReadErr
+	}
+	if _, ok := f.sessions[s.ID]; !ok {
+		return FilePage{}, errors.New("unknown session " + s.ID)
+	}
+	f.fileCalls = append(f.fileCalls, fileCall{op: "read", session: s.ID, req: req})
+	if f.filePage.Size == 0 {
+		return FilePage{Data: f.filePage.Data}, nil
+	}
+	return f.filePage, nil
+}
+
+func (f *fakeBackend) FileWrite(ctx context.Context, s Session, req FileWriteRequest) (FileWritten, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fileWriteErr != nil {
+		return FileWritten{}, f.fileWriteErr
+	}
+	if _, ok := f.sessions[s.ID]; !ok {
+		return FileWritten{}, errors.New("unknown session " + s.ID)
+	}
+	f.fileCalls = append(f.fileCalls, fileCall{op: "write", session: s.ID, write: req})
+	return f.fileWritten, nil
+}
+
+// fileCall is one recorded file operation.
+type fileCall struct {
+	op      string
+	session string
+	req     FileRequest
+	write   FileWriteRequest
 }

@@ -46,6 +46,13 @@ type Config struct {
 	Trust        *auth.Store
 	ApprovalMode string // full|pre|post; default full
 
+	// FileRoot is the operator's ceiling for file operations, absolute and already
+	// validated by resolveFileRoot. It is handed to every live-agent this daemon
+	// spawns, so the agent opens it itself and decides what a path means.
+	//
+	// Empty means the file operations do not exist on this machine, which is the
+	// default and is not the same as unrestricted.
+	FileRoot string
 	// AuditKey keys the content digest on file operations.
 	//
 	// Nil means no MAC is recorded, which is the honest answer when no key was
@@ -986,6 +993,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			Cols:     f.Cols,
 			Shell:    f.Shell,
 			Cwd:      f.Cwd,
+			FileRoot: s.cfg.FileRoot,
 			Owner:    st.principal.Name,
 			OwnerPub: auth.EncodePublic(st.principal.Pub),
 			PeerID:   st.principal.Name,

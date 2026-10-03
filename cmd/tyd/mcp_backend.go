@@ -418,3 +418,57 @@ func (b *mcpBackend) Close(_ context.Context, s mcp.Session) error {
 
 // compile-time check that the real backend satisfies the tool contract.
 var _ mcp.Backend = (*mcpBackend)(nil)
+
+// FileRead reads a file beneath the session's root.
+//
+// The path goes across as given and comes back as given. Nothing here resolves it,
+// because the agent holding the root is the only party that can say what a path
+// means — and a check made here would be a policy decision on a machine that has no
+// say in it.
+func (b *mcpBackend) FileRead(ctx context.Context, sess mcp.Session, req mcp.FileRequest) (mcp.FilePage, error) {
+	_, ep, err := b.fileTarget(sess)
+	if err != nil {
+		return mcp.FilePage{}, err
+	}
+	res, err := client.FileRead(ep, b.key, sess.ID, client.FileOptions{
+		Path: req.Path, Root: req.Root, Offset: req.Offset, MaxBytes: req.MaxBytes,
+	})
+	if err != nil {
+		return mcp.FilePage{}, err
+	}
+	return mcp.FilePage{
+		Data: res.Data, Size: res.Size, Truncated: res.Truncated,
+		MTime: res.MTime, SHA256: res.SHA256,
+	}, nil
+}
+
+// FileWrite creates or replaces a file beneath the session's root.
+func (b *mcpBackend) FileWrite(ctx context.Context, sess mcp.Session, req mcp.FileWriteRequest) (mcp.FileWritten, error) {
+	_, ep, err := b.fileTarget(sess)
+	if err != nil {
+		return mcp.FileWritten{}, err
+	}
+	res, err := client.FileWrite(ep, b.key, sess.ID, client.FileOptions{
+		Path: req.Path, Root: req.Root,
+		Create: req.Create, Replace: req.Replace,
+		Content: req.Content, ExpectedSHA: req.ExpectedSHA,
+	})
+	if err != nil {
+		return mcp.FileWritten{}, err
+	}
+	return mcp.FileWritten{Written: res.Written, Created: res.Created, SHA256: res.SHA256}, nil
+}
+
+// fileTarget resolves the session's peer and endpoint. Split out because both file
+// operations need the same two steps and nothing else.
+func (b *mcpBackend) fileTarget(sess mcp.Session) (mcpTarget, client.Endpoint, error) {
+	t, err := b.target(sess.Peer)
+	if err != nil {
+		return mcpTarget{}, client.Endpoint{}, err
+	}
+	ep, err := b.endpointFor(t)
+	if err != nil {
+		return mcpTarget{}, client.Endpoint{}, err
+	}
+	return t, ep, nil
+}
