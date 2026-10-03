@@ -185,6 +185,10 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  read --until-match '\\$ '  Wait for a prompt instead of polling; needs --wait.")
 	fmt.Fprintln(w, "  send 'echo hi\\n'          Type into a session nobody is attached to.")
 	fmt.Fprintln(w, "  approve [id|alias]        Start PTY for a PENDING remote create.")
+	fmt.Fprintln(w, "  approve --digest HEX      Approve one of several waiting requests, by the")
+	fmt.Fprintln(w, "                           digest the daemon printed. Without it, and with")
+	fmt.Fprintln(w, "                           more than one waiting, it refuses rather than")
+	fmt.Fprintln(w, "                           deciding requests you were not shown.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  rm [id|alias]             Forgets a CLOSED session here; needs --force.")
@@ -264,6 +268,21 @@ func mcpUsage(opts options) string {
 func sessionUsage() string {
 	var b strings.Builder
 	writeSessionHelp(&b, false)
+	return b.String()
+}
+
+// sessionApproveUsage is what `tyd session approve --help` and the docs tests read.
+// A slice rather than the whole session help, because the question is whether the
+// digest is discoverable from the command that needs it.
+func sessionApproveUsage() string {
+	var b strings.Builder
+	writeSessionHelp(&b, false)
+	for _, line := range strings.Split(b.String(), "\n") {
+		if strings.Contains(line, "approve") || strings.Contains(line, "digest") {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 

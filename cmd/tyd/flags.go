@@ -60,6 +60,19 @@ type options struct {
 	dir                string
 }
 
+// sessionSubcommandsOwningFlags are the `tyd session` subcommands that parse their
+// own flags out of opts.rest, and so must be handed the tail of the command line
+// rather than having it rejected.
+//
+// Kept as one list because the failure mode of getting it wrong is invisible: the
+// subcommand's flag parser is never reached, so its own tests — which call it
+// directly with an argument slice — keep passing while the flag cannot be typed.
+var sessionSubcommandsOwningFlags = map[string]bool{
+	"read":    true,
+	"send":    true,
+	"approve": true,
+}
+
 func parseArgs(args []string) (options, error) {
 	opts := options{
 		socket:       paths.DefaultSocket(),
@@ -85,17 +98,24 @@ func parseArgs(args []string) (options, error) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		// session read and session send own their flags. Once one of them is
-		// in hand, hand the rest over untouched instead of rejecting the
-		// flags it is going to parse itself. The session id may already be
-		// here or may still be coming, so look for the subcommand rather than
-		// assuming a position.
+		// Some session subcommands own their flags. Once one of them is in hand,
+		// hand the rest over untouched instead of rejecting the flags it is going
+		// to parse itself. The session id may already be here or may still be
+		// coming, so look for the subcommand rather than assuming a position.
+		//
+		// **approve is in this list because it was missing from it**, and that made
+		// `--digest` unreachable: the flag parser rejected it before the subcommand
+		// ever saw it, so approveDigestArg was dead code and the daemon's own
+		// instruction — "tyd session approve <id> --digest <hex>" — did not run.
+		// With two or more requests waiting there was then no way to approve either
+		// one, which is the case that flag exists for. Two documents referenced it,
+		// so the dead end was documented as the way out.
 		if strings.HasPrefix(a, "-") {
 			for k := 0; k+1 < len(positional); k++ {
 				if positional[k] != "session" {
 					continue
 				}
-				if positional[k+1] != "read" && positional[k+1] != "send" {
+				if !sessionSubcommandsOwningFlags[positional[k+1]] {
 					continue
 				}
 				opts.cmd = "session"
