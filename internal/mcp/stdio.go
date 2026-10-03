@@ -335,19 +335,34 @@ func (c *conn) initialize(m message) {
 			"name":    "tyd",
 			"version": serverVersion,
 		},
-		"instructions": instructions(c.srv.readOnly),
+		"instructions": c.srv.instructions(),
 	}, nil)
 }
 
-func instructions(readOnly bool) string {
+// instructions is what the model reads before it sees any tool list, so it has to
+// describe the server it is actually talking to. It is assembled from the same flags
+// the tool list is built from, which is why it is a method: a paragraph describing
+// tools this server does not have is worse than no paragraph.
+func (s *server) instructions() string {
 	base := "Shell sessions on a tyd target, driven one at a time per session. " +
 		"session_open creates a session and returns its first output; it never attaches, " +
 		"so the session stays writable from here. " +
 		"Call session_send with an explicit \\n, then session_read or the reply that send returns " +
 		"to see what came back. A command that runs long needs session_interrupt, which is Ctrl-C."
-	if readOnly {
-		return base + " This server was started read-only: the tools that type, interrupt or close " +
+	if s.readOnly {
+		base += " This server was started read-only: the tools that type, interrupt or close " +
 			"a session are not registered, so a person has to take the session over."
+	}
+	if s.fileRootConfigured {
+		base += " This server can also read and write files inside one directory, with file_read " +
+			"and file_write, instead of shelling out to cat. Paths are relative to that directory; " +
+			"an absolute path is refused. Prefer them over cat for reading and writing a file."
+		if !s.readOnly {
+			base += " Each file operation is one call and needs one approval, and the approval is " +
+				"spent whether or not the operation succeeds — so a failed file_write is not worth " +
+				"retrying on its own; its reason says what happened. Pass the digest file_read " +
+				"returned as expected_sha256 to be refused if the file changed since."
+		}
 	}
 	return base
 }
