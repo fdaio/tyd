@@ -211,6 +211,43 @@ enough: `id`, `whoami` and `env` need neither.
 The rule is one function, `strutil.ShellSafe`, because it is a security rule and
 two copies of one drift.
 
+### What a file operation puts in the log
+
+A `file_write` records the operation, the root-relative path, the byte count, whether
+it created or replaced, and a **keyed digest** of the content. **The content itself is
+never recorded** — not on success, not on failure. `audit.Event` has no field for it,
+which is structural rather than a promise.
+
+The digest is keyed, and that is the point. A bare sha256 of the content would be an
+offline dictionary-attack verifier: for a short password or a token — which is exactly
+what a model gets asked to write to a config file — whoever holds the log could confirm
+a guess without ever seeing the content. HMAC-SHA256 under a key the log does not carry
+does not allow that, and the daemon can still compare two records for equality.
+
+The key lives in `PATH.key` beside the log, mode `0600`, and the daemon **refuses to
+start** without it rather than fall back to recording nothing. See
+[operations.md](operations.md).
+
+## The file root is not a sandbox
+
+`--file-root DIR` bounds where `file_read` and `file_write` work, and `/` is refused
+with no switch that permits it.
+
+It is worth being exact about what that does and does not buy, because the two are
+easy to confuse:
+
+- **What it guarantees.** The file the operator approved is the file that changed, and
+  nothing above the root is reachable through these tools — unconditionally, and
+  enforced by the standard library's `os.Root` rather than by a prefix comparison.
+- **What it does not.** A model with `session_send` has a shell, and the shell reaches
+  wherever the daemon's user reaches. A root is not a chroot and not a capability
+  boundary. If the threat is a model reading `~/.ssh/id_rsa`, the answer is not
+  `--file-root`.
+
+The sensitive-path list — git hooks, shell startup files, `.ssh`, `.gnupg`, `.aws` — is
+defence in depth for the same reason. It is decided by name, before anything is opened,
+so a refusal does not reveal whether the path exists.
+
 ## Deployment tiers
 
 | Tier | What it contains | What it stops |

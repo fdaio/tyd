@@ -16,7 +16,8 @@ import (
 // looking for a switch that is not there.
 func TestEveryMCPFlagIsDocumented(t *testing.T) {
 	var help bytes.Buffer
-	writeMCPHelp(&help, false)
+	var opts options
+	writeMCPHelp(&help, false, opts)
 
 	// A help row starts with the flag in braces; a reference row starts with it in
 	// backticks. Both are the flag, so both are read here.
@@ -48,7 +49,8 @@ func TestEveryMCPFlagIsDocumented(t *testing.T) {
 // keep, and it is the one an operator acts on.
 func TestDocumentedMCPFlagsExist(t *testing.T) {
 	var help bytes.Buffer
-	writeMCPHelp(&help, false)
+	var opts options
+	writeMCPHelp(&help, false, opts)
 	var root bytes.Buffer
 	writeRootHelp(&root, false)
 	known := help.String() + root.String()

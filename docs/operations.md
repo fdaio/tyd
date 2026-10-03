@@ -305,6 +305,22 @@ stop it.
   id and the pairings survive, and the approval mode is taken from the Control
   Panel rather than reset — recovery never relaxes a `pre` or `post` daemon to
   `full`.
+- **The audit log has a key file beside it.** `--audit-log PATH` creates
+  `PATH.key` on first use, mode `0600`, holding the key that keys the content digest
+  on file operations. **A file write is recorded with a keyed digest of its content, not
+  a bare hash** — a bare hash of a short password or a token is an offline
+  dictionary-attack verifier for whoever holds the log.
+
+  Three things follow, and all three are deliberate:
+  - The key is **required**. If it cannot be read, or its mode is wider than `0600`,
+    the daemon **refuses to start**. Continuing would produce records carrying no
+    digest, and a record with no digest looks exactly like a record that was never
+    supposed to have one.
+  - **Delete the key and the daemon makes a new one.** Records written under the old key
+    can no longer be compared with new ones. Keep it if you verify the chain across a
+    restart, which is the point of the chain.
+  - **Back up the key separately from the log**, or not at all. A key beside a log you
+    sync somewhere is a key somewhere it should not be.
 - **Audit write failures warn once** and sessions carry on.
 - **Output-log write failures** stop new disk segments and keep the PTY on the
   64KB ring. `tyd doctor` reports `output.err` in the session dir. This is not

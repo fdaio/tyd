@@ -26,10 +26,10 @@ import (
 func runMCP(opts options) error {
 	if len(opts.rest) > 0 {
 		if opts.rest[0] == "help" {
-			writeMCPHelp(os.Stderr, colorEnabled(os.Stderr))
+			writeMCPHelp(os.Stderr, colorEnabled(os.Stderr), opts)
 			return nil
 		}
-		return fmt.Errorf("usage: tyd mcp [flags]\n\n%s", strings.TrimRight(mcpUsage(), "\n"))
+		return fmt.Errorf("usage: tyd mcp [flags]\n\n%s", strings.TrimRight(mcpUsage(opts), "\n"))
 	}
 	if len(opts.allowPeer) > 0 && opts.peer != "" {
 		return fmt.Errorf("--peer and --allow-peer are both given; --allow-peer already names the target")

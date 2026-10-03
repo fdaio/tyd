@@ -78,7 +78,9 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--archive-ttl D` | Hide a peer, or a closed session, unused this long: `7d`, `168h`, `off` (default `7d`; env `TYD_ARCHIVE_TTL`) |
-| `--read-only` | `mcp`: register only `session_list` and `session_read`. Not a permission boundary — the daemon's capability check is |
+| `--read-only` | `mcp`: register only `session_list`, `session_read` and `file_read`. Not a permission boundary — the daemon's capability check is |
+| `--file-root DIR` | `mcp`: the directory `file_read` and `file_write` work in. **Without it those two tools are not registered at all**, which is not the same as refusing them. `/` is refused with no switch; see below |
+| `--file-root-allow-home` | `mcp`: permit `--file-root` to be `$HOME`, which is otherwise refused. Prints a line on stderr saying the root includes ssh keys and cloud credentials |
 | `--max-sessions N` | `mcp`: sessions one process holds; `0` means the default, not no limit (default 8) |
 | `--close-on-exit` | `mcp`: close the sessions this process opened when it stops (default: they survive) |
 | `--allow-peer REF` | `mcp`: serve this peer too; repeat for several. Required before the tools take a `peer` argument. `local` is accepted here as well |

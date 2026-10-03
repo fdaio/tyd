@@ -100,3 +100,72 @@ func TestNoFileRootMeansNone(t *testing.T) {
 		t.Error("--file-root with nothing after it was accepted")
 	}
 }
+
+// The refusals have to happen on the path a daemon actually takes.
+//
+// resolveFileRoot is unit-tested above and was correct the whole time; it was called
+// from one place — the __live-agent child — while `tyd serve` and `tyd mcp` read
+// opts.fileRoot directly. So `--file-root /` was accepted by every command anyone runs,
+// and the tests passed, because they tested the helper rather than the wiring. These
+// go through run() so a second caller cannot quietly bypass it again.
+func TestTheFileRootRefusalsApplyToEveryCommand(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("no home directory here: %v", err)
+	}
+	for _, argv := range [][]string{
+		{"--file-root", "/", "mcp"},
+		{"--file-root", "/", "serve"},
+		{"--file-root", home, "mcp"},
+		{"--file-root", "/no/such/directory/anywhere", "mcp"},
+	} {
+		opts, err := parseArgs(argv)
+		if err != nil {
+			t.Fatalf("%v did not even parse: %v", argv, err)
+		}
+		err = run(opts)
+		if err == nil {
+			t.Errorf("%v was accepted; a command must not be able to bypass the refusals", argv)
+			continue
+		}
+		// The message has to say which flag, or an operator sees a refusal with nothing
+		// to act on.
+		if !strings.Contains(err.Error(), "--file-root") {
+			t.Errorf("%v was refused with %q, which does not name the flag", argv, err)
+		}
+	}
+}
+
+// A relative root is made absolute once, at the point it is resolved, so the value
+// handed to an agent is the same directory this process decided on.
+func TestARelativeFileRootIsResolvedBeforeItIsUsed(t *testing.T) {
+	dir := t.TempDir()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.MkdirAll("sub", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveFileRoot("sub", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("resolved to %q, which is still relative", got)
+	}
+	// Compared through EvalSymlinks because t.TempDir() sits under /var, which on
+	// macOS is a symlink to /private/var, so the two spellings differ while the
+	// directory is the same.
+	want, err := filepath.EvalSymlinks(filepath.Join(dir, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("resolved to %q, want %q", got, want)
+	}
+}

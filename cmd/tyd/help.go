@@ -122,7 +122,9 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"--as NAME", "Peer nickname when accepting an invite"},
 		{"--no-wait", "register/invite: exit after printing accept (no countdown)"},
 		{"--detach", "session create: print id only (do not attach)"},
-		{"--read-only", "mcp: register only session_list and session_read"},
+		{"--read-only", "mcp: register only session_list, session_read, and file_read"},
+		{"--file-root DIR", "mcp: directory the file tools work in; without it file_read and file_write are not registered"},
+		{"--file-root-allow-home", "mcp: permit --file-root to be $HOME, and say so on stderr"},
 		{"--close-on-exit", "mcp: close the sessions this process opened when it stops"},
 		{"--max-sessions N", "mcp: how many sessions one process holds (default 8)"},
 		{"--allow-peer REF", "mcp: serve this peer too; repeat for several (implies tools take a peer)"},
@@ -200,7 +202,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 // writeMCPHelp documents the MCP server. It is a stdio protocol, so the tool
 // names matter more than the flags: a person reads this to know what the model
 // can do.
-func writeMCPHelp(w io.Writer, color bool) {
+func writeMCPHelp(w io.Writer, color bool, opts options) {
 	fmt.Fprintln(w, "Serve tyd sessions to a model over MCP on stdio.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Usage:")
@@ -215,20 +217,32 @@ func writeMCPHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Limits:")
 	writeHelpRows(w, []helpRow{
-		{"--read-only", "Register only session_list and session_read"},
+		{"--read-only", "Register only session_list, session_read, and file_read"},
 		{"--max-sessions N", "Sessions one process holds; 0 means the default (8)"},
 		{"--close-on-exit", "Close the sessions this process opened when it stops (default: keep them)"},
 	}, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tools:")
-	writeHelpRows(w, []helpRow{
+	rows := []helpRow{
 		{"session_open", "Create a session without attaching; returns its first output"},
 		{"session_list", "Catalog rows plus a probe read for each state"},
 		{"session_send", "Type into an unattached session; returns what it printed"},
 		{"session_read", "Read from the last cursor, or re-read from a given one"},
 		{"session_interrupt", "Send Ctrl-C to a running command"},
 		{"session_close", "End a session"},
-	}, color)
+	}
+	// Listed only where they are registered. Help that lists a tool this invocation
+	// does not have is the same mistake as registering one that does not work: it
+	// tells the reader to look for something that is not there.
+	if opts.fileRoot != "" {
+		rows = append(rows, helpRow{"file_read", "Read a file under --file-root; returns bytes, size and a digest"})
+		if !opts.readOnly {
+			rows = append(rows, helpRow{
+				"file_write", "Create or replace a file under --file-root; one approval each, spent either way",
+			})
+		}
+	}
+	writeHelpRows(w, rows, color)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Tips:")
 	fmt.Fprintln(w, "  claude mcp add tyd -- $(command -v tyd) mcp --peer laptop")
@@ -241,9 +255,9 @@ func writeMCPHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "  Progress and per-call notes go to stderr; stdout carries the protocol only.")
 }
 
-func mcpUsage() string {
+func mcpUsage(opts options) string {
 	var b strings.Builder
-	writeMCPHelp(&b, false)
+	writeMCPHelp(&b, false, opts)
 	return b.String()
 }
 

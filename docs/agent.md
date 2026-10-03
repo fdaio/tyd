@@ -235,9 +235,40 @@ tool call.
 | `session_interrupt` | Sends Ctrl-C to whatever is running |
 | `session_close` | Ends a session |
 
-`--read-only` registers only `session_list` and `session_read`. `--close-on-exit`
-closes what this process opened; without it the sessions outlive the server, so a
-model can come back to the same shell.
+`--read-only` registers only `session_list`, `session_read` and `file_read`.
+`--close-on-exit` closes what this process opened; without it the sessions outlive the
+server, so a model can come back to the same shell.
+
+### File tools
+
+`file_read` and `file_write` exist **only** where the operator gave the daemon a
+`--file-root`. Without it they are not registered at all — not registered and refused,
+which is a different thing: a model that cannot see a tool does not try it and cannot
+be surprised by a refusal.
+
+| Tool | What it does |
+|------|--------------|
+| `file_read` | Reads a file under the root, returning bytes as they are plus the size, the modification time and a digest of the **whole** file |
+| `file_write` | Creates or replaces one. `mode` is `create` or `replace`; there is no mode that does both |
+
+Both take an optional `root` to narrow the session's directory for one call, and
+`session_open {root}` narrows it for the session and everything later done on it. A
+root can only ever narrow — a path outside the operator's directory is refused by the
+agent, which is the only party that decides.
+
+`file_write` also takes `expected_sha256`, the digest `file_read` returned. Pass it and
+the write is refused if the content changed since, so two writers cannot silently undo
+each other. It is a concurrency guard, not a permission.
+
+**Each call is one operation and needs one approval**, where the shell equivalent of the
+same work would need two. The approval is spent when the operation runs, whether or not
+it succeeds — a refused write still uses it up. So a failed write is not worth retrying
+on its own: the reason says whether the content changed, the path was refused, or an
+operator has to approve the next attempt.
+
+The root is not a sandbox. A model with `session_send` has a shell and the shell reaches
+wherever the daemon's user reaches. What the root protects is narrower: the write that
+happens is the one that was approved.
 
 ### A person can always take over
 

@@ -91,6 +91,21 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - `status` shows CP registration, peers, recent, session aliases, and daemon connections
 - Create-then-attach (optional `--detach`); SSH-style `--verbose` connect debug; client-local session catalog for `list`
 
+### Step 4a — File tools for a model
+
+- `file_read` / `file_write` MCP tools, so a model stops shelling out to `cat`
+- `--file-root DIR` sets the ceiling; **without it neither tool is registered**. `/` is
+  refused with no switch, `$HOME` needs `--file-root-allow-home` and says so
+- Resolution by `os.Root`: nothing above the root is reachable. A symlinked final
+  component is refused by the kernel as part of the open; a symlinked directory inside
+  the root is followed (recorded, not accidental — `docs/requirements/file-tools.md`)
+- Writes are atomic — temp file, flush, permissions on the descriptor, rename — and a
+  failed write leaves the original untouched
+- One approval per operation, bound to path, mode and size, so an approval for one file
+  is not spent by another. The approval is spent whether or not the write succeeds
+- Content is never audited; a keyed digest is, under `PATH.key` beside the log
+- Not in v1: directory listing, delete, rename, chmod, streaming, wildcard allowlists
+
 ### Step 5 — Revoke and hardening
 
 - `tyd revoke <peer-id|nickname>` — either side drops the pair on CP and locally

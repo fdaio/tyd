@@ -37,6 +37,20 @@ func run(opts options) error {
 	if err := applyAttachShortcut(&opts); err != nil {
 		return err
 	}
+	// Resolved once, here, for every command — including the daemon ones.
+	//
+	// It used to be resolved only inside __live-agent, which is the child process. The
+	// daemon and `tyd mcp` read opts.fileRoot directly, so on the path anyone actually
+	// runs, `--file-root /` was not refused, $HOME was not refused without the switch,
+	// and the path was never made absolute or checked. The helper was correct and fully
+	// unit-tested, which is exactly how that stayed invisible: nothing tested the wiring.
+	if opts.fileRoot != "" {
+		root, err := resolveFileRoot(opts.fileRoot, opts.fileRootAllowHome)
+		if err != nil {
+			return err
+		}
+		opts.fileRoot = root
+	}
 	switch opts.cmd {
 	case "__live-agent":
 		return runLiveAgent(opts)
@@ -104,15 +118,9 @@ func runLiveAgent(opts options) error {
 	if opts.dir == "" {
 		return fmt.Errorf("__live-agent requires --dir")
 	}
-	cfg := live.Config{}
-	if opts.fileRoot != "" {
-		root, err := resolveFileRoot(opts.fileRoot, opts.fileRootAllowHome)
-		if err != nil {
-			return err
-		}
-		cfg.FileRoot = root
-	}
-	return live.Run(opts.dir, cfg)
+	// Already resolved by run, on the same path every other command takes. Resolving it
+	// again here would print the $HOME warning twice for a daemon that spawns agents.
+	return live.Run(opts.dir, live.Config{FileRoot: opts.fileRoot})
 }
 
 // resolveFileRoot applies the two refusals the design fixes, and returns an absolute
