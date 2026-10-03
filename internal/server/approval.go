@@ -72,9 +72,7 @@ func fileApprovalDigest(op, sessionID, path, mode string, size int64) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// shortDigest is what an operator is shown. Enough to tell two pending requests
-// apart, not enough to be worth attacking.
-func shortDigest(d string) string {
+func legacyShort(d string) string {
 	if len(d) <= 12 {
 		return d
 	}
@@ -207,7 +205,7 @@ func ambiguousApproval(sessionID string, waiting []PendingApproval) error {
 	fmt.Fprintf(&b, "session %s has %d requests waiting for approval, so approving all of them "+
 		"would decide requests you were not shown. Name the one you mean:", sessionID, len(waiting))
 	for _, w := range waiting {
-		fmt.Fprintf(&b, "\n  %s  %s  (%s)", shortDigest(w.Digest), w.Request, w.Principal)
+		fmt.Fprintf(&b, "\n  %s  %s  (%s)", w.Digest, w.Request, w.Principal)
 	}
 	fmt.Fprintf(&b, "\n  tyd session approve %s --digest <hex>", sessionID)
 	return fmt.Errorf("%s", b.String())

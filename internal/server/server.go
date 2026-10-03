@@ -263,7 +263,7 @@ func (s *Server) requestApproval(st *connState, sessionID, digest, op string, si
 	// blind is no longer possible: the line names the operation and its size, and
 	// `tyd session approve` lists it again with the digest it needs to match.
 	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants to %s [%s] (tyd session approve %s)\n",
-		req.principal, describeRequest(op, sessionID, size), shortDigest(digest), sessionID)
+		req.principal, describeRequest(op, sessionID, size), digest, sessionID)
 	return nil
 }
 
@@ -746,7 +746,7 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 		return err
 	}
 	return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
-		op, describeRequest(op, sessionID, size), shortDigest(digest), sessionID)
+		op, describeRequest(op, sessionID, size), digest, sessionID)
 }
 
 // handleFile forwards one file operation to the session's agent.
@@ -801,7 +801,7 @@ func (s *Server) handleFile(st *connState, f protocol.Frame) error {
 			return err
 		}
 		return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
-			op, describeFileRequest(f, size), shortDigest(digest), f.SessionID)
+			op, describeFileRequest(f, size), digest, f.SessionID)
 	}
 
 	res, err := sess.File(fileFrameForAgent(f))
@@ -1061,7 +1061,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			if n == 0 {
 				if len(f.Data) != 0 {
 					return fmt.Errorf("no request %q is waiting for approval on session %s; "+
-						"run 'tyd session approve %s' to see what is", shortDigest(string(f.Data)), f.SessionID, f.SessionID)
+						"run 'tyd session approve %s' to see what is", string(f.Data), f.SessionID, f.SessionID)
 				}
 				return fmt.Errorf("session %s has nothing waiting for approval", f.SessionID)
 			}
