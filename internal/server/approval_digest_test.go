@@ -197,7 +197,7 @@ func TestAmbiguityIsRefusedWithTheList(t *testing.T) {
 		t.Fatalf("%d waiting", len(waiting))
 	}
 	err := ambiguousApproval(sid, waiting)
-	for _, want := range []string{"2 requests", shortDigest(approvalDigest(opRead, sid, 0)), "--digest"} {
+	for _, want := range []string{"2 requests", approvalDigest(opRead, sid, 0), "--digest"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal does not mention %q:\n%v", want, err)
 		}

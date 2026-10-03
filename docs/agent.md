@@ -315,7 +315,9 @@ attached" instead of "the target is broken".
   operation, the session and the byte count, so an approval you gave for one read
   is not spent by a different read, and approving a create does not release a later
   send. When several requests are waiting, `tyd session approve <id>` lists them and
-  refuses to pick one for you; `--digest <hex>` names it. The operator's line shows
+  refuses to pick one for you; `--digest HEX` names it, and the hex it prints **is**
+  the hex it accepts — the value shown is the value to pass, not a label for it. The
+  operator's line shows
   the operation and the size and never the content. The trade is more prompts than
   "approve the session once" would need — the prompts were already one per request,
   and what changes is that each one now covers the request it named.
