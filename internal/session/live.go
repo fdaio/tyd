@@ -160,7 +160,7 @@ func spawnAgentWith(root, execPath string, starter live.Starter, id, owner strin
 	if err := live.SaveMeta(dir, meta); err != nil {
 		return "", nil, err
 	}
-	cmd, err := starter(execPath, dir)
+	cmd, err := starter(execPath, dir, opts.FileRoot)
 	if err != nil {
 		live.RemoveDir(dir)
 		return "", nil, fmt.Errorf("start live-agent: %w", err)

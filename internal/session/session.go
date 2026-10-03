@@ -41,6 +41,9 @@ type CreateOpts struct {
 	Owner    string
 	OwnerPub string // base64 ed25519 public key; restored after daemon restart
 	PeerID   string // optional; recorded for post-approval audit
+	// FileRoot is the operator's ceiling for this session's agent, resolved by the
+	// daemon from its own --file-root. Empty means the file operations do not exist.
+	FileRoot string
 }
 
 // ClosedInfo is emitted when a live session transitions to CLOSED (not pending reject).

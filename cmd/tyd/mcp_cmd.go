@@ -73,6 +73,9 @@ func runMCP(opts options) error {
 			Peers:       mcpPeerLabels(targets),
 			MaxSessions: opts.maxSessions,
 			CloseOnExit: opts.closeOnExit,
+			// From this machine's own resolved option, never from anything a caller
+			// says. It decides whether the file tools exist in tools/list at all.
+			FileRootConfigured: opts.fileRoot != "",
 		})
 }
 

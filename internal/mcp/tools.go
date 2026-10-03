@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,6 +62,10 @@ type Options struct {
 	MaxSessions int
 	// CloseOnExit ends the sessions this process opened when it stops.
 	CloseOnExit bool
+	// FileRootConfigured says the operator gave the local daemon a --file-root. It
+	// decides whether the file tools are registered at all, so it is set from the
+	// daemon's own resolved option rather than inferred from anything a caller says.
+	FileRootConfigured bool
 }
 
 // server holds the tool set and the per-session state.
@@ -71,6 +77,18 @@ type server struct {
 	// rest are absent from tools/list, not merely refused: a model that cannot
 	// see a tool does not try it.
 	readOnly bool
+	// fileRootConfigured records that the operator gave this machine a
+	// --file-root, which is what decides whether the file tools exist here.
+	//
+	// **This machine's configuration, and only this machine's.** A session may live on
+	// a remote peer, whose agent is opened by that machine's operator with its own
+	// root — or none. The daemon cannot know, so a remote session without a root gets
+	// `unavailable` from the agent, which is a different answer from "that file is not
+	// there" on purpose.
+	fileRootConfigured bool
+	// roots maps a session key to the narrowing it was opened with. See storedRoot for
+	// why it is separate from the session state and guarded only by s.mu.
+	roots map[string]string
 	// peers are the targets this process serves. A tool takes a peer argument
 	// only when there is more than one, because letting a model choose the
 	// machine is a privilege.
@@ -211,14 +229,15 @@ func newServer(b Backend, log *logger, cfg Options) *server {
 		max = maxSessions
 	}
 	return &server{
-		backend:     b,
-		log:         log,
-		readOnly:    cfg.ReadOnly,
-		peers:       peers,
-		maxSessions: max,
-		closeOnExit: cfg.CloseOnExit,
-		sessions:    map[string]*sessionState{},
-		aliases:     map[string]string{},
+		backend:            b,
+		log:                log,
+		readOnly:           cfg.ReadOnly,
+		fileRootConfigured: cfg.FileRootConfigured,
+		peers:              peers,
+		maxSessions:        max,
+		closeOnExit:        cfg.CloseOnExit,
+		sessions:           map[string]*sessionState{},
+		aliases:            map[string]string{},
 	}
 }
 
@@ -248,6 +267,13 @@ func (s *server) adopt(reserved *sessionState, sess Session) {
 	s.sessions[key] = reserved
 	s.aliases[reserved.aliasName] = key
 	reserved.session = sess
+	// Recorded under s.mu, which is the only lock storedRoot takes. See its comment.
+	if sess.Root != "" {
+		if s.roots == nil {
+			s.roots = map[string]string{}
+		}
+		s.roots[key] = sess.Root
+	}
 }
 
 // openedByUs reports whether this process created a session. A session it only
@@ -310,7 +336,28 @@ func (s *server) resolve(ctx context.Context, a args) (Session, error) {
 	}
 	// The call's own context, not a fresh Background: a backend that has to wait
 	// for something must be able to be cancelled with the call that asked.
-	return s.backend.Resolve(ctx, ref, peer)
+	sess, err := s.backend.Resolve(ctx, ref, peer)
+	if err != nil {
+		return sess, err
+	}
+	// The narrowing this session was opened with is ours, not the backend's: it came
+	// from a session_open argument and the backend resolves by reference, so without
+	// this it would be dropped on every call and a file tool would start from the
+	// operator's whole ceiling instead of the subdirectory the model chose.
+	sess.Root = s.storedRoot(sess)
+	return sess, nil
+}
+
+// storedRoot is the narrowing recorded against a session, empty when it has none.
+//
+// Guarded by s.mu alone and deliberately **not** by the session's own lock: resolve is
+// reached from readLocked, which holds st.mu, so taking it here would deadlock against
+// itself. The root is immutable for the life of a session — it is set once at adopt
+// and never changed — so it does not need the per-session lock to be safe.
+func (s *server) storedRoot(sess Session) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.roots[sess.Key()]
 }
 
 // open creates a session without attaching to it.
@@ -332,6 +379,9 @@ func (s *server) open(ctx context.Context, a args) (string, any, error) {
 	if req.Peer, err = s.peerArg(a); err != nil {
 		return "", nil, err
 	}
+	// The root is remembered on the session rather than passed per call, so a later
+	// file tool cannot be handed a wider root than the session was opened with.
+	req.Root = strings.TrimSpace(a.stringOr("root", ""))
 	req.Name = strings.TrimSpace(req.Name)
 	st, err := s.reserve(req.Name)
 	if err != nil {
@@ -346,6 +396,7 @@ func (s *server) open(ctx context.Context, a args) (string, any, error) {
 		s.dropReserved(req.Name)
 		return "", nil, mapError(err, Session{Alias: req.Name})
 	}
+	opened.Session.Root = req.Root
 	s.adopt(st, opened.Session)
 	s.logf("session_open alias=%s session=%s peer=%s shell=%q",
 		st.aliasName, opened.Session.ID, opened.Session.Peer, req.Shell)
@@ -969,3 +1020,146 @@ func orLocal(peer string) string {
 	}
 	return peer
 }
+
+// fileRead reads a file beneath the session's root.
+//
+// The path is passed through, not interpreted. This tool resolves the session and
+// nothing else: the agent holding the root is the only party that can say what a path
+// means, and a check here would be a policy decision on a machine that has no say in
+// it.
+func (s *server) fileRead(ctx context.Context, a args) (string, any, error) {
+	sess, err := s.resolve(ctx, a)
+	if err != nil {
+		return "", nil, err
+	}
+	path, err := a.str("path")
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", nil, invalidParams("path is required, relative to the session's root")
+	}
+	// The session's narrowing is the starting point; a call may narrow further but
+	// never back out to the ceiling.
+	root, err := s.fileRootFor(sess, a)
+	if err != nil {
+		return "", nil, err
+	}
+	rawOffset, hasOffset, err := a.uint("offset")
+	if err != nil {
+		return "", nil, err
+	}
+	if hasOffset && rawOffset > math.MaxInt64 {
+		return "", nil, invalidParams("offset is out of range")
+	}
+	offset := int64(rawOffset)
+	maxBytes, _, err := a.uint("max_bytes")
+	if err != nil {
+		return "", nil, err
+	}
+	if maxBytes == 0 {
+		maxBytes = defaultFileReadBytes
+	}
+
+	page, err := s.backend.FileRead(ctx, sess, FileRequest{
+		Path: path, Root: root, Offset: offset, MaxBytes: uint32(maxBytes),
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return "Read " + pageOf(page), map[string]any{
+		"path":        path,
+		"bytes":       len(page.Data),
+		"size":        page.Size,
+		"truncated":   page.Truncated,
+		"mtime":       page.MTime.Format(time.RFC3339),
+		"sha256":      page.SHA256,
+		"content_b64": base64.StdEncoding.EncodeToString(page.Data),
+	}, nil
+}
+
+// fileWrite creates or replaces a file beneath the session's root.
+func (s *server) fileWrite(ctx context.Context, a args) (string, any, error) {
+	sess, err := s.resolve(ctx, a)
+	if err != nil {
+		return "", nil, err
+	}
+	path, err := a.str("path")
+	if err != nil {
+		return "", nil, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", nil, invalidParams("path is required, relative to the session's root")
+	}
+	mode, err := a.str("mode")
+	if err != nil {
+		return "", nil, err
+	}
+	create, replace := mode == "create", mode == "replace"
+	if !create && !replace {
+		return "", nil, invalidParams(`mode is required and is either "create" or "replace"; ` +
+			"there is no mode that does both")
+	}
+	b64, err := a.str("content")
+	if err != nil {
+		return "", nil, err
+	}
+	content, derr := base64.StdEncoding.DecodeString(strings.TrimSpace(b64))
+	if derr != nil {
+		return "", nil, invalidParams("content must be base64: %v", derr)
+	}
+
+	root, err := s.fileRootFor(sess, a)
+	if err != nil {
+		return "", nil, err
+	}
+	res, err := s.backend.FileWrite(ctx, sess, FileWriteRequest{
+		Path: path, Root: root,
+		Create: create, Replace: replace, Content: content,
+		ExpectedSHA: strings.TrimSpace(a.stringOr("expected_sha256", "")),
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	verb := "Replaced"
+	if res.Created {
+		verb = "Created"
+	}
+	return fmt.Sprintf("%s %s (%d bytes)", verb, path, res.Written), map[string]any{
+		"path":          path,
+		"bytes_written": res.Written,
+		"created":       res.Created,
+		"sha256":        res.SHA256,
+	}, nil
+}
+
+// fileRootFor is the root one file call runs against: the session's own narrowing,
+// with the call's own narrowing applied on top if it gave one.
+//
+// The two are joined rather than replaced, so a call cannot ask for a wider root than
+// the session was opened with — and an absolute path or a `..` in the call's claim
+// cannot escape, because the agent resolves the result with os.Root rather than
+// because anything here checked it.
+func (s *server) fileRootFor(sess Session, a args) (string, error) {
+	claim := strings.TrimSpace(a.stringOr("root", ""))
+	if claim == "" {
+		return sess.Root, nil
+	}
+	if sess.Root == "" {
+		return claim, nil
+	}
+	return sess.Root + "/" + claim, nil
+}
+
+// pageOf describes a page for the text a model reads first.
+func pageOf(p FilePage) string {
+	s := fmt.Sprintf("%d bytes of %d", len(p.Data), p.Size)
+	if p.Truncated {
+		s += ", truncated"
+	}
+	return s
+}
+
+// defaultFileReadBytes is a read's default window: enough for a source file, small
+// enough that asking for more is a decision.
+const defaultFileReadBytes = 64 << 10

@@ -30,6 +30,10 @@ type Session struct {
 	// Peer is the target label, empty for the local daemon. It is part of the
 	// identity because the same alias on two targets is two sessions.
 	Peer string
+	// Root is the narrowing this session was opened with, empty for the operator's
+	// whole ceiling. It is remembered rather than passed per call so a file tool
+	// cannot be handed a wider root than the session was opened with.
+	Root string
 }
 
 // Key is the per-session lock and cursor key. Two sessions that share it are
@@ -44,6 +48,14 @@ type OpenRequest struct {
 	Shell string
 	// Peer is empty for the default target.
 	Peer string
+	// Root narrows the operator's ceiling for this session, relative to it. It may
+	// only narrow: the agent derives the sub-root with os.Root.OpenRoot, so a claim
+	// that leaves the ceiling fails there rather than being compared against a prefix
+	// here.
+	//
+	// Recorded on the session so every later file call on it starts from the same
+	// place, rather than each call re-asserting a root.
+	Root string
 }
 
 // Opened is a session the backend just created, recorded locally so a human
@@ -92,6 +104,43 @@ func (w Wait) Any() bool { return w.Match != "" || w.IdleMS > 0 || w.MaxBytes > 
 
 // ReadRequest is one read. Cursor and Epoch are zero for a session this process
 // has not touched.
+// FileRequest is one read beneath a session's root.
+type FileRequest struct {
+	Path     string
+	Root     string
+	Offset   int64
+	MaxBytes uint32
+}
+
+// FilePage is what a read returned. Data is raw bytes: no cleaner, no escape
+// processing, no terminal semantics, because a file read is not a terminal read.
+type FilePage struct {
+	Data      []byte
+	Size      int64
+	Truncated bool
+	MTime     time.Time
+	// SHA256 digests the whole file, so it is usable as a later expected_sha256 even
+	// when this call returned only part of it.
+	SHA256 string
+}
+
+// FileWriteRequest is one write beneath a session's root.
+type FileWriteRequest struct {
+	Path        string
+	Root        string
+	Create      bool
+	Replace     bool
+	Content     []byte
+	ExpectedSHA string
+}
+
+// FileWritten is what a write did.
+type FileWritten struct {
+	Written int
+	Created bool
+	SHA256  string
+}
+
 type ReadRequest struct {
 	Session Session
 	Cursor  uint64
@@ -166,6 +215,14 @@ type Backend interface {
 	Send(ctx context.Context, s Session, data []byte, secret bool) (Sent, error)
 	// Read pulls one page of output.
 	Read(ctx context.Context, req ReadRequest) (Page, error)
+	// FileRead reads a file beneath the session's root, and FileWrite creates or
+	// replaces one. Both reach the agent that holds the root, which is the only party
+	// that can say what a path means; nothing here interprets one.
+	//
+	// The path is relative to the root. Root narrows it for one call and may only
+	// narrow.
+	FileRead(ctx context.Context, s Session, req FileRequest) (FilePage, error)
+	FileWrite(ctx context.Context, s Session, req FileWriteRequest) (FileWritten, error)
 	// Close ends a session.
 	Close(ctx context.Context, s Session) error
 }

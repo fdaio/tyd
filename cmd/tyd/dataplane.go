@@ -125,6 +125,7 @@ func runUp(opts options) error {
 		ApprovalMode:       approvalMode,
 		Audit:              auditSink,
 		AuditKey:           auditKey,
+		FileRoot:           opts.fileRoot,
 		SessionIdleTimeout: opts.sessionIdle,
 	})
 	if err := srv.Start(); err != nil {

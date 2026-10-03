@@ -375,9 +375,11 @@ func killLiveAgents(root string) {
 //
 // -test.run=^$ is belt and braces: if the environment did not arrive, the child
 // runs no test rather than the suite.
-func testLiveStarter(_, dir string) (*exec.Cmd, error) {
+func testLiveStarter(_, dir, fileRoot string) (*exec.Cmd, error) {
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
-	cmd.Env = append(os.Environ(), "TYD_TEST_LIVE_AGENT=1", "TYD_TEST_LIVE_DIR="+dir)
+	// The ceiling is forwarded, so a test that configures --file-root gets an agent
+	// that really has it rather than only ever exercising the no-root path.
+	cmd.Env = append(os.Environ(), "TYD_TEST_LIVE_AGENT=1", "TYD_TEST_LIVE_DIR="+dir, "TYD_TEST_LIVE_FILE_ROOT="+fileRoot)
 	logf, err := os.OpenFile(live.LogPath(dir), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err

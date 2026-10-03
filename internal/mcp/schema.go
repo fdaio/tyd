@@ -37,6 +37,23 @@ func (s *server) dispatch(ctx context.Context, name string, a args) (string, any
 			return "", nil, unknownTool(name)
 		}
 		return s.close(ctx, a)
+	case "file_read":
+		// Registered only when a root is configured, so reaching here means it is. The
+		// check is repeated anyway, because dispatch is reachable by name and the
+		// registration is not the only thing that decides.
+		if !s.fileRootConfigured {
+			return "", nil, unknownTool(name)
+		}
+		return s.fileRead(ctx, a)
+	case "file_write":
+		// Both gates, and they are not the same gate. Registration is what a model
+		// sees; this is what stops a call that names the tool anyway. A tool that is
+		// merely absent can still be invoked by name, so the read-only refusal cannot
+		// live only in the tool list.
+		if !s.fileRootConfigured || s.readOnly {
+			return "", nil, unknownTool(name)
+		}
+		return s.fileWrite(ctx, a)
 	default:
 		return "", nil, unknownTool(name)
 	}
@@ -94,6 +111,74 @@ func (s *server) definitions() []toolDef {
 		},
 	}
 
+	// The file tools exist only where the operator configured a root. Absent rather
+	// than refused: a model that cannot see a tool does not try it, and cannot be
+	// surprised by a refusal it has to interpret.
+	//
+	// **This machine's configuration.** A session on a remote peer belongs to that
+	// machine's operator, whose root this process cannot see, so a remote session
+	// without one answers `unavailable` at call time — which is deliberately a
+	// different answer from "that file is not there".
+	if s.fileRootConfigured {
+		tools = append(tools,
+			toolDef{
+				Name:  "file_read",
+				Title: "Read a file",
+				Description: "Read a file from the directory this session is rooted at, " +
+					"instead of shelling out to cat. Returns the bytes as they are, " +
+					"with the file's size and the digest of the whole file, so a later " +
+					"file_write can pass that digest and be refused if the content moved on. " +
+					"offset and max_bytes page through a large file; without them you get the first " +
+					"page and truncated says whether there is more. " +
+					"Each call is one operation and needs one approval.",
+				InputSchema: s.schema(map[string]any{
+					sessionProp: s.stringProp("Which session's root to read in, by alias or by id."),
+					"path":      s.stringProp("File to read, relative to the session's root. An absolute path is refused."),
+					"root":      s.stringProp("Narrow the session's root to this subdirectory for this call. Optional; it can only narrow."),
+					"offset":    s.uintProp("Byte offset to start at. Optional; the default is the beginning.", 0),
+					"max_bytes": s.uintProp("Largest page to return. Optional.", 1),
+				}, sessionProp),
+				Annotations: &annotations{ReadOnlyHint: true, OpenWorldHint: true},
+			},
+		)
+		if !s.readOnly {
+			tools = append(tools, toolDef{
+				Name:  "file_write",
+				Title: "Write a file",
+				Description: "Create or replace a file in the directory this session is rooted at. " +
+					"content is base64. mode says whether to create (which fails if the file is already there, " +
+					"so it never overwrites by accident) or replace (which fails if it is not). " +
+					"expected_sha256 is the digest file_read returned earlier: pass it and the write is " +
+					"refused if the content changed since, so two writers cannot silently undo each other. " +
+					"The write is atomic, and the file keeps the permissions it already had. " +
+					"\n\nEach call is one operation and needs one approval, and the approval is spent " +
+					"whether or not the write succeeds — a refusal still uses it up. If a write comes back " +
+					"failed, do not simply try again: the reason says whether the content changed, the path " +
+					"was refused, or an operator has to approve the next attempt.",
+				InputSchema: s.schema(map[string]any{
+					sessionProp: s.stringProp("Which session's root to write in, by alias or by id."),
+					"path":      s.stringProp("File to write, relative to the session's root. An absolute path is refused."),
+					"root":      s.stringProp("Narrow the session's root to this subdirectory for this call. Optional; it can only narrow."),
+					"mode": map[string]any{
+						"type": "string",
+						"enum": []string{"create", "replace"},
+						"description": "create fails if the file is there; replace fails if it is not. " +
+							"There is no mode that does both.",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "The bytes to write, base64 encoded. Text is not guessed: base64 what you mean.",
+					},
+					"expected_sha256": map[string]any{
+						"type":        "string",
+						"description": "Optional. The digest file_read returned for this path. The write is refused if it no longer matches, so a file that changed under you is not overwritten.",
+					},
+				}, sessionProp),
+				Annotations: &annotations{OpenWorldHint: true},
+			})
+		}
+	}
+
 	if s.readOnly {
 		return tools
 	}
@@ -102,11 +187,8 @@ func (s *server) definitions() []toolDef {
 		toolDef{
 			Name:        "session_open",
 			Title:       "Open a shell session",
-			Description: "Create a shell session on a target and return its first output. It does not attach, so the session stays writable from here. Give it a name to refer to it later; without one it is called agent-1, agent-2 and so on.",
-			InputSchema: s.schema(map[string]any{
-				"name":  s.stringProp("Alias for this session, for example build. Optional: one is assigned when it is absent."),
-				"shell": s.stringProp("Command to run instead of the login shell, for example bash -l. Optional: the target picks the login shell. The target validates it."),
-			}),
+			Description: "Create a shell session on a target and return its first output. It does not attach, so the session stays writable from here. Give it a name to refer to it later; without one it is called agent-1, agent-2 and so on." + s.rootHint(),
+			InputSchema: s.schema(s.openProps(), s.openRequired()...),
 			Annotations: &annotations{OpenWorldHint: true},
 		},
 		toolDef{
@@ -217,6 +299,40 @@ func objectSchema(props map[string]any, required []string) map[string]any {
 
 func (s *server) stringProp(desc string) map[string]any {
 	return map[string]any{"type": "string", "description": desc}
+}
+
+// openProps is session_open's schema.
+//
+// `root` is added only where file tools exist. A root argument that silently does
+// nothing is worse than no argument at all: a model would pass one and believe it had
+// narrowed something. Built here rather than passed as a nil map, because a nil entry
+// marshals to `"root": null` and an empty required name marshals to `""` — both of
+// which are a changed schema rather than an absent one.
+func (s *server) openProps() map[string]any {
+	props := map[string]any{
+		"name":  s.stringProp("Alias for this session, for example build. Optional: one is assigned when it is absent."),
+		"shell": s.stringProp("Command to run instead of the login shell, for example bash -l. Optional: the target picks the login shell. The target validates it."),
+	}
+	if s.fileRootConfigured {
+		props["root"] = s.stringProp("Directory the file tools work in for this session, relative to " +
+			"the one the operator configured. Optional, and it can only narrow: a path outside the " +
+			"operator's directory is refused. Every later file_read and file_write on this session " +
+			"starts here.")
+	}
+	return props
+}
+
+// openRequired is session_open's required list, which never includes an optional
+// argument — so it is empty unless a caller made root required, which none does.
+func (s *server) openRequired() []string { return nil }
+
+// rootHint is the sentence added to session_open's description where a root exists.
+func (s *server) rootHint() string {
+	if !s.fileRootConfigured {
+		return ""
+	}
+	return " root narrows the directory the file tools work in, for this session and everything " +
+		"later done on it; it can only narrow, so a root outside the operator's is refused."
 }
 
 func (s *server) uintProp(desc string, min float64) map[string]any {
