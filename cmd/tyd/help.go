@@ -83,6 +83,8 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"approval", "Show or set approval mode (full|pre|post)"},
 		{"audit", "Verify the audit log's hash chain"},
 		{"doctor", "Check state files and disk; --fix rebuilds peers.json"},
+		{"version", "Print the build version"},
+		{"upgrade", "Download and install the latest release"},
 		{"serve", "Deprecated alias for up"},
 	}, color)
 	fmt.Fprintln(w)
@@ -291,7 +293,7 @@ func sessionCommands() []string {
 }
 
 func rootCommands() []string {
-	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "mcp", "help"}
+	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "version", "upgrade", "mcp", "help"}
 }
 
 func peerCommands() []string {
