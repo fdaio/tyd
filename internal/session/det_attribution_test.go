@@ -65,7 +65,7 @@ func TestDetReadReasonIsMatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Reason != "match" {
-		t.Fatalf("expected read reason %q, got %q", "match", res.Reason)
+	if res.Reason != live.ReasonMatch {
+		t.Fatalf("expected read reason %q, got %q", live.ReasonMatch, res.Reason)
 	}
 }

@@ -134,10 +134,10 @@ func (d *AgentDriver) sendAndWait(cmd string) (body, code string) {
 	return "", ""
 }
 
-// Run sends cmd and returns exactly the output the command produced,
-// attributed by cursor. It does not guess: completion is declared via a
-// unique marker line ("<marker>:<code>"), and the read starts at the
-// cursor Send returned.
+// Run sends cmd and returns everything the PTY emitted after the cursor
+// Send returned — the input echo plus the command's output, up to the
+// marker line. Attribution is by cursor (nothing from earlier commands
+// leaks in); completion is declared via the marker line, never guessed.
 func (d *AgentDriver) Run(cmd string) string {
 	d.t.Helper()
 	body, _ := d.sendAndWait(cmd)
@@ -154,7 +154,7 @@ func (d *AgentDriver) RunOK(cmd string) string {
 	return body
 }
 
-// OutputContains fails unless the last Run output contains want.
+// OutputContains fails unless out contains want.
 func (d *AgentDriver) OutputContains(out, want string) {
 	d.t.Helper()
 	if !strings.Contains(out, want) {

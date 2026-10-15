@@ -44,6 +44,33 @@ func TestDetWaitMatchWakesOnTime(t *testing.T) {
 	}
 }
 
+func TestDetWaitMaxBytesCapsData(t *testing.T) {
+	_, s, _, cleanup := newLiveSession(t)
+	defer cleanup()
+
+	// Produce more output than the cap, then read with MaxBytes.
+	// The read must come back BECAUSE the cap was hit
+	// (Reason == "max-bytes") with at most MaxBytes of data —
+	// a declared bound, not a guess about "enough output".
+	reply, err := s.Send([]byte("seq 1 10000\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const cap = 100
+	res, err := s.Read(reply.Cursor, reply.Epoch, 5*time.Second, live.ReadConditions{
+		MaxBytes: cap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Reason != live.ReasonMaxBytes {
+		t.Fatalf("expected read reason %q, got %q", live.ReasonMaxBytes, res.Reason)
+	}
+	if len(res.Data) > cap {
+		t.Fatalf("MaxBytes violated: got %d bytes, cap %d", len(res.Data), cap)
+	}
+}
+
 func TestDetWaitIdleDetectsQuiet(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
@@ -60,7 +87,7 @@ func TestDetWaitIdleDetectsQuiet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Reason != "idle" {
-		t.Fatalf("expected read reason %q, got %q", "idle", res.Reason)
+	if res.Reason != live.ReasonIdle {
+		t.Fatalf("expected read reason %q, got %q", live.ReasonIdle, res.Reason)
 	}
 }
