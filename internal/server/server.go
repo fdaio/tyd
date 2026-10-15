@@ -860,7 +860,7 @@ func fileFailure(reason, approvalNote string) error {
 	return fmt.Errorf("%s (%s)", reason, approvalNote)
 }
 
-// auditFileResult is the result string a refusal carries. Named rather than inlined so
+// refusalResult is the result string a refusal carries. Named rather than inlined so
 // the audit and its test cannot drift apart, and so it is obvious at the call site that
 // a refusal is a recorded outcome and not a missing record.
 const refusalResult = "refused"

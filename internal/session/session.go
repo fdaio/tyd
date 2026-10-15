@@ -674,9 +674,6 @@ var ErrSendUnsupported = fmt.Errorf("send is not supported on in-process session
 // It deliberately does not say who.
 var ErrSessionInUse = fmt.Errorf("session in use: attached elsewhere")
 
-// Send injects keystrokes without taking the exclusive attach slot. It never
-// starts a shell: an exited or pending session is an error, so a send cannot
-// run a command the caller did not ask for.
 // checkSecretPossible refuses a write asked to be secret when this session's agent
 // cannot be relied on to honour it.
 //
@@ -721,9 +718,6 @@ func (s *Session) noteAgentVersion(v int) {
 	s.mu.Unlock()
 }
 
-// Send writes to the session's terminal. secret asks the agent to refuse the
-// write unless the terminal is not echoing, which it decides where the PTY is
-// held; see internal/live.
 // File forwards one file operation to this session's agent.
 //
 // The guards are Send's, for the same reasons: a session that is pending approval
@@ -752,6 +746,11 @@ func (s *Session) File(req protocol.Frame) (live.FileResult, error) {
 	return live.DialFile(dir, req)
 }
 
+// Send injects keystrokes into the session's terminal without taking the
+// exclusive attach slot. It never starts a shell: an exited or pending session
+// is an error, so a send cannot run a command the caller did not ask for.
+// secret asks the agent to refuse the write unless the terminal is not echoing,
+// which it decides where the PTY is held; see internal/live.
 func (s *Session) Send(p []byte, secret bool) (live.SendReply, error) {
 	if len(p) == 0 {
 		return live.SendReply{}, fmt.Errorf("send requires data")

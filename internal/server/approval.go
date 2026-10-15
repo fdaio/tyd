@@ -63,8 +63,9 @@ func approvalDigest(op, sessionID string, size int64) string {
 func fileApprovalDigest(op, sessionID, path, mode string, size int64) string {
 	h := sha256.New()
 	// NUL separated so no combination of fields can be read as another one. A path
-	// can contain anything except NUL and a slash separator, so the separation has to
-	// be explicit rather than positional.
+	// can contain slashes and any other byte except NUL, so neither a slash nor a
+	// positional convention would separate the fields reliably: the separator is an
+	// explicit NUL.
 	for _, part := range []string{op, sessionID, path, mode, strconv.FormatInt(size, 10)} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})

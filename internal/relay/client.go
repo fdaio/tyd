@@ -31,11 +31,10 @@ func dialRelay(ctx context.Context, relayURL string) (net.Conn, error) {
 	return websocket.NetConn(context.Background(), ws, websocket.MessageBinary), nil
 }
 
-// Offer keeps a control connection registered for daemonID and calls onTicket
-// for each incoming client. Blocks until ctx is cancelled or the control conn dies.
-// Offer keeps a rendezvous on the relay for daemonID. onTicket is called for
+// Offer keeps a rendezvous on the relay for daemonID and calls onTicket for
 // each client dialing in; observed is the relay's view of that client's
-// post-NAT address, or "" when the relay cannot determine one.
+// post-NAT address, or "" when the relay cannot determine one. Blocks until
+// ctx is cancelled or the control conn dies.
 //
 // The server never dials observed -- it is recorded for diagnostics and for the
 // direct-dial work in requirements/dataplane-networking.md (Phase 4b).

@@ -13,7 +13,7 @@ func Levenshtein(a, b string) int {
 	if b == "" {
 		return len(a)
 	}
-	// Optimize when lengths differ a lot — still compute fully; inputs are tiny.
+	// Two-row DP; inputs are tiny, so no early exits needed.
 	prev := make([]int, len(b)+1)
 	curr := make([]int, len(b)+1)
 	for j := range prev {

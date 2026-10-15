@@ -31,11 +31,10 @@ func deadRelayURL(t *testing.T) string {
 	return "http://" + addr
 }
 
-// startRelayOffer runs a relay and keeps an offer for daemonID on it, returning
-// the relay URL and the server identity key directory.
-// startRelayOffer returns the relay URL, a client identity, and the server's
-// public key: the client pins that key to authenticate the relay's peer, since
-// the relay path has no certificate fingerprint to pin.
+// startRelayOffer runs a relay and keeps an offer for daemonID on it,
+// returning the relay URL, a client identity, and the server's public key: the
+// client pins that key to authenticate the relay's peer, since the relay path
+// has no certificate fingerprint to pin.
 func startRelayOffer(t *testing.T, daemonID string) (string, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
 	lnAddr, closeFn, err := relay.ListenAndServe("127.0.0.1:0")
