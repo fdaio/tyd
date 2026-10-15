@@ -12,7 +12,7 @@ inside tyd. Keys reuse the existing Ed25519 pair identity.
 | Phase | Transport | Status |
 |-------|-----------|--------|
 | **1** | **QUIC direct** | Done — clients try published candidates in order, then use the Phase 3 relay if every candidate fails |
-| **2** | WireGuard | Planned |
+| **2** | WireGuard | Dropped 2026-10-15 — all-userland, zero root is the design; use QUIC over an existing WG link instead |
 | **3** | Relay | MVP done — WebSocket on CP `/relay` (+ optional `tyd-relay`); direct first, relay as fallback |
 
 ## Hard rules
