@@ -72,13 +72,6 @@ func fileApprovalDigest(op, sessionID, path, mode string, size int64) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func legacyShort(d string) string {
-	if len(d) <= 12 {
-		return d
-	}
-	return d[:12]
-}
-
 // approval is a spent-or-spendable decision. The digest is kept so a mismatch can
 // be told apart from a missing approval: one is "you approved something else" and
 // the other is "nothing was approved".
@@ -126,16 +119,6 @@ const (
 // identical requests share one record for free.
 func approvalKey(sessionID string, pub string, digest string) string {
 	return sessionID + "|" + pub + "|" + digest
-}
-
-// splitApprovalKey recovers the session id from a key, which is what forgetSession
-// and the listing need.
-func splitApprovalKey(key string) (sessionID, pub, digest string) {
-	parts := strings.SplitN(key, "|", 3)
-	if len(parts) != 3 {
-		return key, "", ""
-	}
-	return parts[0], parts[1], parts[2]
 }
 
 // gatePub is the principal half of a gate key, or empty for an unauthenticated

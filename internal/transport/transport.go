@@ -9,9 +9,9 @@ import (
 type Kind string
 
 const (
-	KindUnix Kind = "unix"
-	KindTLS  Kind = "tls"
-	KindQUIC Kind = "quic"
+	KindUnix  Kind = "unix"
+	KindTLS   Kind = "tls"
+	KindQUIC  Kind = "quic"
 	KindRelay Kind = "relay"
 )
 

@@ -110,12 +110,10 @@ func TestThePendingErrorCarriesTheSameDigest(t *testing.T) {
 	if found == "" {
 		t.Fatalf("the pending error carries no digest: %q", msg)
 	}
-	shown := strings.SplitN(msg, found, 2)[1]
 	n, derr := srv.decideForTest("sess1", found, true)
 	if derr != nil || n != 1 {
 		t.Errorf("the digest in the pending error (%s) does not approve anything: n=%d err=%v", found, n, derr)
 	}
-	_ = shown
 }
 
 // gateFileRequest runs the gate exactly as handleFile runs it — same digest, same

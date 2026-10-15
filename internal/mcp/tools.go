@@ -417,14 +417,14 @@ func (s *server) open(ctx context.Context, a args) (string, any, error) {
 		// approval or that the target closed says what to do about it.
 		readErr := mapError(rerr, opened.Session)
 		return fmt.Sprintf("opened %s (session %s) on %s, but the first read failed: %s\n%s",
-			opened.Session.Label(), opened.Session.ID, orLocal(opened.Session.Peer), readErr,
-			opened.HumanAttach), &result{
-			Reason:       "read_failed",
-			SessionState: stateOf(opened.State),
-			Session:      opened.Session.Label(),
-			Peer:         orLocal(opened.Session.Peer),
-			HumanAttach:  opened.HumanAttach,
-		}, nil
+				opened.Session.Label(), opened.Session.ID, orLocal(opened.Session.Peer), readErr,
+				opened.HumanAttach), &result{
+				Reason:       "read_failed",
+				SessionState: stateOf(opened.State),
+				Session:      opened.Session.Label(),
+				Peer:         orLocal(opened.Session.Peer),
+				HumanAttach:  opened.HumanAttach,
+			}, nil
 	}
 
 	text, res := render(opened.Session, page, 0, opened.HumanAttach)
@@ -827,14 +827,14 @@ func (s *server) interrupt(ctx context.Context, a args) (string, any, error) {
 					"is not known here, so read the session"), written, 1)
 		}
 		return st.withNote(fmt.Sprintf("sent the interrupt to %s, but the read that followed failed: %v",
-			sess.Label(), rerr)), &result{
-			Reason:       "read_failed",
-			SessionState: stateOf(sent.State),
-			Cursor:       sent.Cursor,
-			Written:      &written,
-			Session:      sess.Label(),
-			Peer:         orLocal(sess.Peer),
-		}, nil
+				sess.Label(), rerr)), &result{
+				Reason:       "read_failed",
+				SessionState: stateOf(sent.State),
+				Cursor:       sent.Cursor,
+				Written:      &written,
+				Session:      sess.Label(),
+				Peer:         orLocal(sess.Peer),
+			}, nil
 	}
 	text, res := render(sess, page, sent.Cursor, sent.HumanAttach)
 	res.Session = sess.Label()
