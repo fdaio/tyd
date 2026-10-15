@@ -31,6 +31,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	// Background update check: notice-only, never blocks.
+	if shouldCheckForUpdate(opts.cmd) {
+		checkForUpdateNotice()
+	}
 }
 
 func run(opts options) error {
@@ -107,6 +111,13 @@ func run(opts options) error {
 		return runApproval(opts)
 	case "doctor":
 		return runDoctor(opts)
+	case "version":
+		return runVersion(opts)
+	case "upgrade":
+		if err := refuseIfInSession("upgrade"); err != nil {
+			return err
+		}
+		return runUpgrade(opts)
 	case "create", "list", "attach", "close", "watch":
 		return fmt.Errorf("unknown command %q; use: tyd session %s", opts.cmd, opts.cmd)
 	default:
