@@ -289,7 +289,6 @@ func (f *fakeBackend) Read(ctx context.Context, req ReadRequest) (Page, error) {
 			return Page{}, err
 		}
 	}
-	_ = exited
 
 	// Taken again for the gate: the seam above released the lock so a blocking
 	// hook could not hold it, and this section still needs it for the counters.
@@ -499,7 +498,6 @@ func (f *fakeBackend) setTargets(ts ...Target) {
 // The seams a fan-out test needs: per-machine read delays, a machine that accepts
 // and then stops answering, a hook that runs inside a read, and the high-water mark
 // of simultaneous parked reads.
-var _ = 0
 
 // peerOf is the machine a read is for, which the fake keys its per-machine seams by.
 func peerOf(req ReadRequest) string {

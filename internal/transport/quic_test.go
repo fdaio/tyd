@@ -231,4 +231,3 @@ func TestPreferNonLoopback(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
-
