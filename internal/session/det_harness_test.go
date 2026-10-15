@@ -28,6 +28,7 @@ package session
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -42,10 +43,8 @@ var detMarkerSeq atomic.Uint64
 // every operation is attributed by cursor, completion is declared
 // (unique marker), never guessed.
 type AgentDriver struct {
-	t      *testing.T
-	s      *Session
-	cursor uint64
-	epoch  uint64
+	t *testing.T
+	s *Session
 }
 
 func NewAgentDriver(t *testing.T, s *Session) *AgentDriver {
@@ -54,6 +53,9 @@ func NewAgentDriver(t *testing.T, s *Session) *AgentDriver {
 }
 
 // freshMarker returns a token no command output could plausibly contain.
+// The token is also regex-safe, but callers must still pass it through
+// regexp.QuoteMeta: Match is compiled as a regexp, and the token format
+// is an implementation detail that must not become a latent dependency.
 func freshMarker() string {
 	n := detMarkerSeq.Add(1)
 	return fmt.Sprintf("__TYD_DET_%d_%d__", time.Now().UnixNano(), n)
@@ -90,15 +92,27 @@ func extractMarker(out, marker string) (body, code string, ok bool) {
 	return out[:idx], rest[:i], true
 }
 
-// waitMarker reads until the driver's marker protocol line appears.
-// It returns the command's output body and exit code.
-func (d *AgentDriver) waitMarker(cursor, epoch uint64, marker string) (string, string) {
+// sendAndWait types cmd plus a marker line into the session and reads
+// until the marker protocol line appears. It returns the command's
+// output body (attributed by the cursor Send returned) and its exit
+// code. Completion is declared, never guessed.
+func (d *AgentDriver) sendAndWait(cmd string) (body, code string) {
 	d.t.Helper()
+	marker := freshMarker()
+	reply, err := d.s.Send([]byte(cmd+"\necho "+marker+":$?\n"), false)
+	if err != nil {
+		d.t.Fatalf("send failed: %v", err)
+	}
+	// Start reading at the cursor Send reported: output before this point
+	// belongs to earlier commands, not this one. QuoteMeta because Match
+	// is compiled as a regexp.
+	cursor, epoch := reply.Cursor, reply.Epoch
+	match := regexp.QuoteMeta(marker)
 	deadline := time.Now().Add(15 * time.Second)
 	var acc []byte
 	for time.Now().Before(deadline) {
 		res, err := d.s.Read(cursor, epoch, 2*time.Second, live.ReadConditions{
-			Match: marker,
+			Match: match,
 		})
 		if err != nil {
 			d.t.Fatalf("read failed: %v", err)
@@ -110,7 +124,6 @@ func (d *AgentDriver) waitMarker(cursor, epoch uint64, marker string) (string, s
 		cursor, epoch = res.CursorNext, res.Epoch
 		acc = append(acc, res.Data...)
 		if body, code, ok := extractMarker(string(acc), marker); ok {
-			d.cursor, d.epoch = cursor, epoch
 			return body, code
 		}
 		if res.Exited {
@@ -127,26 +140,14 @@ func (d *AgentDriver) waitMarker(cursor, epoch uint64, marker string) (string, s
 // cursor Send returned.
 func (d *AgentDriver) Run(cmd string) string {
 	d.t.Helper()
-	marker := freshMarker()
-	reply, err := d.s.Send([]byte(cmd+"\necho "+marker+":$?\n"), false)
-	if err != nil {
-		d.t.Fatalf("send failed: %v", err)
-	}
-	// Start reading at the cursor Send reported: output before this point
-	// belongs to earlier commands, not this one.
-	body, _ := d.waitMarker(reply.Cursor, reply.Epoch, marker)
+	body, _ := d.sendAndWait(cmd)
 	return body
 }
 
 // RunOK runs cmd and fails the test unless its exit code was 0.
 func (d *AgentDriver) RunOK(cmd string) string {
 	d.t.Helper()
-	marker := freshMarker()
-	reply, err := d.s.Send([]byte(cmd+"\necho "+marker+":$?\n"), false)
-	if err != nil {
-		d.t.Fatalf("send failed: %v", err)
-	}
-	body, code := d.waitMarker(reply.Cursor, reply.Epoch, marker)
+	body, code := d.sendAndWait(cmd)
 	if code != "0" {
 		d.t.Fatalf("command %q exited with code %s, output: %q", cmd, code, body)
 	}

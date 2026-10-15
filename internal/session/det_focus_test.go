@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"tyd/internal/live"
 )
 
 // Dimension 5: focus recovery ("不失焦").
@@ -67,8 +69,18 @@ func TestDetSurvivesManagerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach after restart failed: %v", err)
 	}
-	// Give the re-adopted session a moment to settle.
-	time.Sleep(300 * time.Millisecond)
+	// Wait until the re-adopted session is actually readable, with a
+	// declared condition — no sleep-then-hope.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res, err := s2.Read(0, 0, time.Second, live.ReadConditions{})
+		if err == nil && (len(res.Data) > 0 || res.AtEnd) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("re-adopted session never became readable: %v", err)
+		}
+	}
 	d2 := NewAgentDriver(t, s2)
 	out := d2.Run("pwd")
 	d2.OutputContains(out, dir)
