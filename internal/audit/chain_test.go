@@ -124,8 +124,8 @@ func TestVerifyDetectsAnAppendedRecord(t *testing.T) {
 	}
 }
 
-// Truncating the tail and continuing is what a restart does; Verify must not
-// complain about a chain this program wrote.
+// Continuing the chain across restarts is normal; Verify must not complain
+// about a chain this program wrote.
 func TestChainedLogContinuesAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.log")

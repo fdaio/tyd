@@ -642,10 +642,6 @@ func (a *agent) checkSecret() error {
 	}
 }
 
-// awaitSend owns the whole send: the single-send slot, the cancellation an
-// attach uses, and the wait. The caller's reply is produced by its own
-// deadline, so a PTY that will not accept input delays the writer, never the
-// caller and never an attach.
 func boolPtr(b bool) *bool { return &b }
 
 // echoState reads the line discipline of the session's terminal. The agent holds
@@ -670,6 +666,10 @@ func (a *agent) echoState() *ttyutil.EchoState {
 	return &st
 }
 
+// awaitSend owns the whole send: the single-send slot, the cancellation an
+// attach uses, and the wait. The caller's reply is produced by its own
+// deadline, so a PTY that will not accept input delays the writer, never the
+// caller and never an attach.
 func (a *agent) awaitSend(data []byte, secret bool) (written int, err error) {
 	if len(data) > sendQueueMax {
 		return 0, errSendTooLarge

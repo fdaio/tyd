@@ -88,7 +88,7 @@ func TestAKeyReadableByOthersIsRefused(t *testing.T) {
 			t.Errorf("a key at mode %04o was accepted", mode)
 		}
 	}
-	// Put it back so the deferred cleanup is not fighting the test.
+	// Back to 0600: the next check must show an acceptable key still loads.
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}

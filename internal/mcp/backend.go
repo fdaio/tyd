@@ -102,8 +102,6 @@ type Wait struct {
 // return at once, which is the opposite of what the caller asked for.
 func (w Wait) Any() bool { return w.Match != "" || w.IdleMS > 0 || w.MaxBytes > 0 }
 
-// ReadRequest is one read. Cursor and Epoch are zero for a session this process
-// has not touched.
 // FileRequest is one read beneath a session's root.
 type FileRequest struct {
 	Path     string
@@ -141,6 +139,8 @@ type FileWritten struct {
 	SHA256  string
 }
 
+// ReadRequest is one read. Cursor and Epoch are zero for a session this process
+// has not touched.
 type ReadRequest struct {
 	Session Session
 	Cursor  uint64
