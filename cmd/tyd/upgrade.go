@@ -24,11 +24,14 @@ func runUpgrade(opts options) error {
 	current := version.Version
 	fmt.Printf("current: tyd %s\n", current)
 
-	info := version.CheckForUpdate()
+	// LatestRelease, not CheckForUpdate: upgrade works on dev builds too.
+	info := version.LatestRelease()
 	if info == nil {
-		// Either up to date, check failed, or dev build. Distinguish
-		// "up to date" from "couldn't check" when we can.
-		fmt.Println("already up to date (or no newer release found)")
+		fmt.Println("could not check for updates (network error?)")
+		return nil
+	}
+	if !version.IsNewer(current, info.Tag) && current != "dev" {
+		fmt.Println("already up to date")
 		return nil
 	}
 	fmt.Printf("latest:  %s\n", info.Tag)

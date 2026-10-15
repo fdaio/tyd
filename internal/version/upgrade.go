@@ -27,7 +27,7 @@ import (
 // aside to .old → rename new into place → remove .old. If the swap
 // fails, .old is renamed back (rollback).
 func Upgrade(info *Info) (string, error) {
-	if info == nullInfo() {
+	if info == nil {
 		return "", fmt.Errorf("no release info")
 	}
 	// Refuse if installed via a package manager: we don't know who owns
@@ -63,8 +63,6 @@ func Upgrade(info *Info) (string, error) {
 	}
 	return info.Tag, nil
 }
-
-func nullInfo() *Info { return nil }
 
 // isManagedInstall reports whether the binary lives under a known
 // package manager prefix.

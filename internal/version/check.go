@@ -28,16 +28,28 @@ type checkCache struct {
 // It caches the result for 24h; failures are silent (nil, nil) so a
 // broken network never blocks tyd. Set TYD_NO_UPDATE_CHECK=1 to skip.
 func CheckForUpdate() *Info {
+	return checkForUpdate(false)
+}
+
+// LatestRelease returns the latest release info regardless of the
+// current version. Used by `tyd upgrade`, which works even on dev
+// builds (the user explicitly asked to upgrade).
+func LatestRelease() *Info {
+	return checkForUpdate(true)
+}
+
+func checkForUpdate(force bool) *Info {
 	if os.Getenv("TYD_NO_UPDATE_CHECK") != "" {
 		return nil
 	}
-	// Dev builds have no meaningful "latest" to compare against.
-	if Version == "dev" {
+	// Dev builds have no meaningful "latest" to compare against,
+	// unless the user explicitly asked (tyd upgrade).
+	if Version == "dev" && !force {
 		return nil
 	}
 	cached := readCache()
 	if cached != nil && time.Since(cached.CheckedAt) < checkInterval {
-		if IsNewer(Version, cached.LatestTag) {
+		if force || IsNewer(Version, cached.LatestTag) {
 			return &Info{Tag: cached.LatestTag, URL: downloadURL(cached.LatestTag)}
 		}
 		return nil
@@ -47,7 +59,7 @@ func CheckForUpdate() *Info {
 		return nil
 	}
 	writeCache(info.Tag)
-	if IsNewer(Version, info.Tag) {
+	if force || IsNewer(Version, info.Tag) {
 		return info
 	}
 	return nil
@@ -68,7 +80,9 @@ type githubRelease struct {
 }
 
 func fetchLatest() *Info {
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Short timeout: this runs after every command. A slow network
+	// should fail fast and silently, not delay the user's command.
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(githubAPI)
 	if err != nil {
 		return nil
