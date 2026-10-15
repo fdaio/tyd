@@ -49,7 +49,10 @@ func TestCompare(t *testing.T) {
 		{"v1.2.4", "v1.2.3", 1},
 		{"v1.3.0", "v1.2.9", 1},
 		{"v2.0.0", "v1.9.9", 1},
-		{"v1.2.3", "v1.2.3-rc1", 0}, // pre-release stripped
+		{"v1.2.3-rc1", "v1.2.3", -1}, // pre-release older than release
+		{"v1.2.3", "v1.2.3-rc1", 1},
+		{"v1.2.3-rc1", "v1.2.3-rc2", -1},
+		{"v1.2.3-rc1", "v1.2.3-rc1", 0},
 		{"dev", "v1.0.0", -1},
 		{"v1.0.0", "dev", 1},
 		{"dev", "dev", 0},

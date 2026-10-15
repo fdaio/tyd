@@ -27,31 +27,49 @@ type Info struct {
 	SHA256 string
 }
 
-// Parse splits "v1.2.3" (or "1.2.3") into major, minor, patch.
-// Pre-release suffixes (e.g. "-rc1") are stripped.
+// parsedVersion is a semantic version with pre-release info preserved
+// for ordering (a pre-release is older than the release itself).
+type parsedVersion struct {
+	major, minor, patch int
+	pre                 string // "" for releases, e.g. "rc1" for v1.2.3-rc1
+}
+
+// Parse splits "v1.2.3" (or "1.2.3", "v1.2.3-rc1") into its parts.
 func Parse(v string) (major, minor, patch int, err error) {
+	pv, err := parseFull(v)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return pv.major, pv.minor, pv.patch, nil
+}
+
+func parseFull(v string) (parsedVersion, error) {
+	var pv parsedVersion
 	v = strings.TrimPrefix(v, "v")
 	if i := strings.Index(v, "-"); i >= 0 {
+		pv.pre = v[i+1:]
 		v = v[:i]
 	}
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
-		return 0, 0, 0, fmt.Errorf("invalid version %q: want major.minor.patch", v)
+		return pv, fmt.Errorf("invalid version %q: want major.minor.patch", v)
 	}
-	if major, err = strconv.Atoi(parts[0]); err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid major in %q: %w", v, err)
+	var err error
+	if pv.major, err = strconv.Atoi(parts[0]); err != nil {
+		return pv, fmt.Errorf("invalid major in %q: %w", v, err)
 	}
-	if minor, err = strconv.Atoi(parts[1]); err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid minor in %q: %w", v, err)
+	if pv.minor, err = strconv.Atoi(parts[1]); err != nil {
+		return pv, fmt.Errorf("invalid minor in %q: %w", v, err)
 	}
-	if patch, err = strconv.Atoi(parts[2]); err != nil {
-		return 0, 0, 0, fmt.Errorf("invalid patch in %q: %w", v, err)
+	if pv.patch, err = strconv.Atoi(parts[2]); err != nil {
+		return pv, fmt.Errorf("invalid patch in %q: %w", v, err)
 	}
-	return major, minor, patch, nil
+	return pv, nil
 }
 
 // Compare returns -1 if a < b, 0 if a == b, +1 if a > b.
 // "dev" is always considered older than any release.
+// A pre-release (v1.2.3-rc1) is older than the release (v1.2.3).
 // Invalid versions sort as equal (0) rather than erroring, so a
 // malformed tag never blocks the update check.
 func Compare(a, b string) int {
@@ -64,18 +82,34 @@ func Compare(a, b string) int {
 	if b == "dev" {
 		return 1
 	}
-	amaj, amin, apat, aerr := Parse(a)
-	bmaj, bmin, bpat, berr := Parse(b)
+	pa, aerr := parseFull(a)
+	pb, berr := parseFull(b)
 	if aerr != nil || berr != nil {
 		return 0
 	}
-	if amaj != bmaj {
-		return cmpInt(amaj, bmaj)
+	if pa.major != pb.major {
+		return cmpInt(pa.major, pb.major)
 	}
-	if amin != bmin {
-		return cmpInt(amin, bmin)
+	if pa.minor != pb.minor {
+		return cmpInt(pa.minor, pb.minor)
 	}
-	return cmpInt(apat, bpat)
+	if pa.patch != pb.patch {
+		return cmpInt(pa.patch, pb.patch)
+	}
+	// Same triple: a pre-release is older than the release.
+	// Two pre-releases compare lexically (rc1 < rc2).
+	switch {
+	case pa.pre == pb.pre:
+		return 0
+	case pa.pre == "":
+		return 1 // a is the release, b is pre-release
+	case pb.pre == "":
+		return -1 // b is the release, a is pre-release
+	case pa.pre < pb.pre:
+		return -1
+	default:
+		return 1
+	}
 }
 
 func cmpInt(a, b int) int {

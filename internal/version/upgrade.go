@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -58,10 +59,33 @@ func Upgrade(info *Info) (string, error) {
 	if err := extractBinary(tarball, newBin); err != nil {
 		return "", fmt.Errorf("extract: %w", err)
 	}
+	// Smoke test: the new binary must run and report the expected
+	// version. Catches wrong-architecture or corrupt binaries before
+	// we replace the working one.
+	if err := smokeTest(newBin, info.Tag); err != nil {
+		return "", fmt.Errorf("smoke test: %w", err)
+	}
 	if err := swapBinary(newBin); err != nil {
 		return "", fmt.Errorf("replace: %w", err)
 	}
 	return info.Tag, nil
+}
+
+// smokeTest runs `newBin version` and checks it reports the expected
+// tag. The binary was built with -X tyd/internal/version.Version=<tag>.
+func smokeTest(newBin, wantTag string) error {
+	cmd := exec.Command(newBin, "version")
+	cmd.Env = append(os.Environ(), "TYD_NO_UPDATE_CHECK=1")
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("new binary failed to run: %w", err)
+	}
+	// Output is "tyd <version>\n".
+	got := strings.TrimSpace(strings.TrimPrefix(string(out), "tyd "))
+	if got != strings.TrimPrefix(wantTag, "v") && "v"+got != wantTag && got != wantTag {
+		return fmt.Errorf("version mismatch: binary reports %q, want %q", got, wantTag)
+	}
+	return nil
 }
 
 // isManagedInstall reports whether the binary lives under a known
