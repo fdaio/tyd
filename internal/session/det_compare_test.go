@@ -85,13 +85,6 @@ func (d *NaiveDriver) guessCwd(cmd string) {
 	d.cwd = filepath.Clean(d.cwd)
 }
 
-func (d *NaiveDriver) assertContains(out, want string) {
-	d.t.Helper()
-	if !strings.Contains(out, want) {
-		d.t.Fatalf("naive output missing %q:\n%s", want, out)
-	}
-}
-
 // compareResult is one row of the benchmark table.
 type compareResult struct {
 	task     string
@@ -102,12 +95,12 @@ type compareResult struct {
 }
 
 func (r compareResult) String() string {
-	return fmt.Sprintf("%-28s | %-24s | %-10s", r.task, r.naive, r.tyd)
+	return fmt.Sprintf("%-24s | %-28s | %-10s", r.task, r.naive, r.tyd)
 }
 
 func printCompareTable(t *testing.T, rows []compareResult) {
 	t.Helper()
-	t.Logf("\n%-28s | %-24s | %-10s", "task", "naive (guess)", "tyd")
+	t.Logf("\n%-24s | %-28s | %-10s", "task", "naive (guess)", "tyd")
 	t.Logf("%s", strings.Repeat("-", 70))
 	for _, r := range rows {
 		t.Logf("%s", r.String())
@@ -273,47 +266,35 @@ func compareFailedCd(t *testing.T) compareResult {
 
 func compareCdNoise(t *testing.T) compareResult {
 	t.Helper()
-	r := compareResult{task: "cd-like text in output"}
+	r := compareResult{task: "cd that never executes"}
 
 	dir := t.TempDir()
 
-	// Naive: a command whose output contains "cd /wrong" text.
-	// The parser scans the COMMAND string, not output, so this
-	// particular noise does not fool it — but a command like
-	// `echo cd /wrong` WOULD if the parser were dumber. Instead,
-	// use a cd with a variable: the parser cannot resolve $X.
+	// Naive: `false && cd /wrongplace` — the cd NEVER executes
+	// (false short-circuits the &&), but the parser sees the tokens
+	// "cd /wrongplace" and updates the tracked cwd anyway.
+	// Silent divergence, same class as the failed cd.
 	nd := NewNaiveDriver(t, "/tmp")
 	nd.Run("cd " + dir)
-	nd.Run("X=sub; cd $X") // parser sees "$X", skips; cwd stays dir — correct by luck
+	nd.Run("false && cd /wrongplace")
 	out := nd.Run("pwd")
-	if strings.Contains(out, dir) {
-		// Now the real trap: conditional cd.
-		nd2 := NewNaiveDriver(t, "/tmp")
-		nd2.Run("cd " + dir)
-		nd2.Run("test -d sub || mkdir sub; cd sub")
-		// Parser sees "cd sub" and updates to dir/sub — but did the
-		// mkdir succeed? Was sub already there? The parser cannot know
-		// whether the cd actually happened.
-		out2 := nd2.Run("pwd")
-		r.naiveOut = fmt.Sprintf("tracked=%q out=%q", nd2.cwd, out2)
-		if strings.Contains(out2, "sub") {
-			r.naive = "PASS (lucky)"
-		} else {
-			r.naive = "FAIL (parser wrong)"
-		}
+	if nd.cwd == "/wrongplace" {
+		r.naive = "FAIL (parsed unexecuted cd)"
+	} else if strings.Contains(out, dir) {
+		r.naive = "PASS"
 	} else {
-		r.naive = "FAIL"
-		r.naiveOut = out
+		r.naive = "FAIL (confused)"
 	}
+	r.naiveOut = fmt.Sprintf("tracked=%q out=%q", nd.cwd, out)
 
-	// tyd: the session is the source of truth; no parsing at all.
+	// tyd: the session knows the cd never ran; no parsing involved.
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 	d := NewAgentDriver(t, s)
 	d.RunOK("cd " + dir)
-	d.RunOK("test -d sub || mkdir sub; cd sub")
+	d.Run("false && cd /wrongplace") // exits 1; cd never executes
 	tout := d.Run("pwd")
-	if strings.Contains(tout, "sub") {
+	if strings.Contains(tout, dir) {
 		r.tyd = "PASS"
 	} else {
 		r.tyd = "FAIL"
