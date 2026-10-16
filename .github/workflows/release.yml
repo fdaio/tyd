@@ -117,13 +117,20 @@ jobs:
               tar -C "dist/$os-$arch" -czf "dist/tyd-relay-$os-$arch.tar.gz" tyd-relay
             done
           done
+          # tyd upgrade verifies the tarball against checksums.txt published
+          # alongside the release (fail closed: no checksum, no upgrade), so
+          # the release must carry it. Generate it here, over exactly the
+          # archives the release will publish.
+          (cd dist && sha256sum tyd-*.tar.gz > checksums.txt)
           ls -lh dist
 
       - name: Upload archives
         uses: actions/upload-artifact@v4
         with:
           name: tyd-${{ needs.plan.outputs.version }}
-          path: dist/tyd-*.tar.gz
+          path: |
+            dist/tyd-*.tar.gz
+            dist/checksums.txt
 
   publish:
     name: publish
@@ -171,6 +178,8 @@ jobs:
           target_commitish: ${{ needs.plan.outputs.sha }}
           name: ${{ needs.plan.outputs.version }}
           body_path: release-notes.md
-          files: artifacts/*.tar.gz
+          files: |
+            artifacts/*.tar.gz
+            artifacts/checksums.txt
           prerelease: true
           make_latest: false
