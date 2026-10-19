@@ -97,7 +97,11 @@ jobs:
             local os="$1" arch="$2"
             echo "==> $os/$arch"
             mkdir -p "dist/$os-$arch"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
+            # Stamp the release version into the binary: `tyd upgrade`
+            # smoke-tests the downloaded binary with `tyd version` and
+            # refuses on mismatch, so a release built without the stamp
+            # reports "dev" and can never be upgraded to.
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X tyd/internal/version.Version=${{ needs.plan.outputs.version }}" \
               -o "dist/$os-$arch/tyd" ./cmd/tyd
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" \
               -o "dist/$os-$arch/tyd-relay" ./cmd/relay
