@@ -164,8 +164,9 @@ for why the relay cannot be clustered today.
 
 | Item | Notes |
 |------|--------|
-| Tailcat / NetBird / STUN / custom relay | Superseded by [dataplane-networking.md](requirements/dataplane-networking.md): Phase 1 QUIC direct, Phase 2 WG, Phase 3 relay |
-| WireGuard data plane | Phase 2 after QUIC direct |
+| Tailcat / NetBird / STUN / custom relay | Superseded by [dataplane-networking.md](requirements/dataplane-networking.md): Phase 1 QUIC direct + Phase 3 relay (native WireGuard dropped, see below) |
+| WireGuard data plane | Dropped 2026-10-15 — deliberate: tyd stays all-userland with zero root; peers that already have WG connectivity dial the peer's WG IP directly (QUIC over WG works today with no code changes) |
+| Native Windows support | Not planned — use WSL2; PTY is tyd's core and ConPTY is a separate API set (different signal and window-size semantics), so a native port is a parallel implementation we will not maintain |
 | Bind TLS on `0.0.0.0` by default | Default stays off / loopback when TLS is enabled |
 | SSH protocol or sshd dependency | Out of scope |
 | Switch shell to another Unix user (setuid) | Not implemented |
