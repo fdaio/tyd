@@ -107,9 +107,10 @@ and how long the record is good for — is signed by the daemon and checked by t
 client against the key pinned at pairing, so the Control Panel can forward a
 record, withhold one, or let it expire, but not rewrite one. A client ignores the
 copy the Control Panel reports beside the signature and dials the signed values,
-and it refuses a record it has already seen, so an old endpoint cannot be brought
-back to life. A peer with no pinned key (see below) is the exception: there is
-nothing to check against, and tyd says so on every dial.
+and it refuses a record older than the newest one it has accepted, so an old
+endpoint cannot be brought back to life. A peer with no usable pairing record
+(see below) is the exception: there is nothing to check against, and tyd says so
+on every dial.
 
 It cannot grant a daemon trust in a new peer. Trust comes
 from `paired.json`, a local file written only by pairing and verified with a

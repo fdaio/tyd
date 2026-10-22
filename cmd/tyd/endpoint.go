@@ -36,43 +36,11 @@ func endpoint(opts options) (client.Endpoint, string, error) {
 			Address: opts.socket,
 		}, "", nil
 	}
-	relays := relayURLs(opts)
-	platform, err := platformFor(opts)
+	ep, err := endpointFromCPPeer(opts, peerID)
 	if err != nil {
 		return client.Endpoint{}, "", err
 	}
-	cli := cpclient.New(platform)
-	ep, err := cli.GetEndpointFull(peerID)
-	if err != nil {
-		if len(relays) > 0 {
-			return relayEndpoint(opts, relays, peerID), peerID, nil
-		}
-		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: %w", peerID, err)
-	}
-	kind := transport.KindTLS
-	if strings.EqualFold(ep.Transport, "quic") {
-		kind = transport.KindQUIC
-	}
-	addrs := endpointDialOrder(ep)
-	if len(addrs) == 0 {
-		if len(relays) > 0 {
-			return relayEndpoint(opts, relays, peerID), peerID, nil
-		}
-		return client.Endpoint{}, "", fmt.Errorf("peer %s endpoint: no dial candidates", peerID)
-	}
-	return client.Endpoint{
-		Kind:       kind,
-		Address:    addrs[0],
-		CertFP:     ep.CertFP,
-		Candidates: addrs[1:],
-		RelayURL:   firstOrEmpty(relays),
-		RelayURLs:  relays,
-		PeerID:     peerID,
-		// The relay is a fallback on this endpoint, not a separate one, so the
-		// key that identifies the peer has to travel with it. Without this the
-		// fallback cannot verify the peer it reached.
-		PeerPublic: peerPublicKey(opts, peerID),
-	}, peerID, nil
+	return ep, peerID, nil
 }
 
 func firstOrEmpty(v []string) string {
@@ -264,10 +232,17 @@ func relayEndpoint(opts options, relays []string, peerID string) client.Endpoint
 // endpoint. The peer's identity comes from pairing and is already the anchor
 // for every other peer, so the inner TLS session is bound to it instead.
 func peerPublicKey(opts options, idOrNick string) ed25519.PublicKey {
-	idOrNick = strings.TrimSpace(idOrNick)
-	if idOrNick == "" {
+	pub, _, exists, err := pinnedEndpointKey(opts, idOrNick)
+	if err != nil {
 		return nil
 	}
+	if exists {
+		return pub
+	}
+	// No pairing file means this is an upgrade from before pairing records.
+	// peers.json is all there is, and its trust already rests on the Control
+	// Panel. Never consult it after a pairing file exists: that file is the
+	// only thing the Control Panel cannot rewrite.
 	doc, err := peers.Load(opts.peers)
 	if err != nil {
 		return nil
@@ -276,11 +251,56 @@ func peerPublicKey(opts options, idOrNick string) ed25519.PublicKey {
 	if err != nil {
 		return nil
 	}
-	pub, err := auth.DecodePublic(p.PublicKey)
+	pub, err = auth.DecodePublic(p.PublicKey)
 	if err != nil {
 		return nil
 	}
 	return pub
+}
+
+// pinnedEndpointKey returns the key learned from the local pairing record.
+//
+// exists reports whether that record is present at all. A missing file means a
+// pre-pairing upgrade; a present file with no entry means the Control Panel is
+// naming a peer this machine never paired, and that must not fall back to the
+// Control Panel's copy of the key. legacy reports a record that predates
+// pairing proofs, whose trust still rests on the Control Panel.
+func pinnedEndpointKey(opts options, idOrNick string) (pub ed25519.PublicKey, legacy, exists bool, err error) {
+	idOrNick = strings.TrimSpace(idOrNick)
+	if idOrNick == "" {
+		return nil, false, false, fmt.Errorf("empty peer")
+	}
+	path := pairedPath(opts)
+	f, err := peers.LoadPaired(path)
+	if err != nil {
+		return nil, false, false, err
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		if os.IsNotExist(statErr) {
+			return nil, false, false, nil
+		}
+		return nil, false, false, statErr
+	}
+	var p peers.PairedPeer
+	found := false
+	for _, candidate := range f.Peers {
+		if candidate.ID == idOrNick {
+			p = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, false, true, fmt.Errorf("peer %s is not in the local pairing record", idOrNick)
+	}
+	key, keyErr := auth.DecodePublic(p.PublicKey)
+	if keyErr != nil || len(key) == 0 {
+		if p.Legacy() {
+			return nil, true, true, nil
+		}
+		return nil, false, true, fmt.Errorf("the local pairing record for %s has no key", idOrNick)
+	}
+	return key, p.Legacy(), true, nil
 }
 
 func endpointFromRecord(rec catalog.Record) (client.Endpoint, bool) {
@@ -332,49 +352,71 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 // the sequence come from the signed record too, so a Control Panel cannot
 // extend a record's life or replay an old one.
 //
-// A peer with no pinned key -- paired before pairing records existed -- falls
-// back to the previous behaviour with a warning, because that trust still rests
-// on the Control Panel and a signature cannot fix it.
-func verifyEndpointRecord(opts options, ep *cpclient.Endpoint) (auth.EndpointRecord, error) {
-	peerPub := peerPublicKey(opts, ep.DaemonID)
-	if len(peerPub) == 0 {
-		peerPub = peerPublicKey(opts, "")
+// A peer with no usable pairing record -- an upgrade from before those records
+// existed -- falls back to the previous behaviour with a warning, because that
+// trust still rests on the Control Panel and a signature cannot fix it.
+func verifyEndpointRecord(opts options, peerID string, ep *cpclient.Endpoint) (auth.EndpointRecord, error) {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return auth.EndpointRecord{}, fmt.Errorf("empty peer id")
+	}
+	if ep == nil {
+		return auth.EndpointRecord{}, fmt.Errorf("no endpoint for %s", peerID)
+	}
+	if got := strings.TrimSpace(ep.DaemonID); got != peerID {
+		return auth.EndpointRecord{}, fmt.Errorf("endpoint response is for %s, not %s", got, peerID)
+	}
+	peerPub, legacy, exists, err := pinnedEndpointKey(opts, peerID)
+	if err != nil {
+		return auth.EndpointRecord{}, err
+	}
+	if !exists {
+		fmt.Fprintf(os.Stderr, "tyd: no local pairing record for %s; its endpoint cannot be verified "+
+			"and its trust still rests on the Control Panel\n", peerID)
+		return auth.EndpointRecord{}, nil
 	}
 	if len(peerPub) == 0 {
-		fmt.Fprintf(os.Stderr, "tyd: no pinned key for the peer publishing %s; its endpoint cannot be verified "+
-			"and its trust still rests on the Control Panel\n", ep.DaemonID)
+		if legacy {
+			fmt.Fprintf(os.Stderr, "tyd: the pairing record for %s has no usable key; its endpoint cannot be verified\n", peerID)
+		} else {
+			fmt.Fprintf(os.Stderr, "tyd: no local pairing record for %s; its endpoint cannot be verified\n", peerID)
+		}
 		return auth.EndpointRecord{}, nil
 	}
 	if ep.Proof == nil {
-		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s carries no signature", ep.DaemonID)
+		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s carries no signature", peerID)
 	}
 	sig, err := auth.DecodeBytes(ep.Proof.Sig)
 	if err != nil {
 		return auth.EndpointRecord{}, fmt.Errorf("endpoint signature is unreadable: %w", err)
 	}
 	rec := ep.Proof.Record
-	if rec.DaemonID != "" && rec.DaemonID != ep.DaemonID {
-		return auth.EndpointRecord{}, fmt.Errorf("endpoint record is for %s, not %s", rec.DaemonID, ep.DaemonID)
+	if rec.DaemonID != peerID {
+		return auth.EndpointRecord{}, fmt.Errorf("endpoint record is for %s, not %s", rec.DaemonID, peerID)
 	}
 	if err := rec.Verify(peerPub, sig); err != nil {
 		return auth.EndpointRecord{}, err
 	}
 	if rec.Expired(time.Now()) {
 		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s expired at %s",
-			ep.DaemonID, rec.ExpiresAt.Format(time.RFC3339))
+			peerID, rec.ExpiresAt.Format(time.RFC3339))
 	}
-	// Replay: a record the client has already moved past is not a new one,
-	// however well signed.
-	seen, err := seenEndpointSeq(opts, ep.DaemonID)
+	// A lower sequence is a record the client has already moved past. The same
+	// sequence is the current record: the Control Panel stores one of them, so
+	// every lookup and every retry sees the same number until the peer
+	// republishes.
+	seen, err := seenEndpointSeq(opts, peerID)
 	if err != nil {
 		return auth.EndpointRecord{}, err
 	}
-	if rec.Seq <= seen {
+	if rec.Seq < seen {
 		return auth.EndpointRecord{}, fmt.Errorf("the published endpoint for %s is a replay (sequence %d, already seen %d)",
-			ep.DaemonID, rec.Seq, seen)
+			peerID, rec.Seq, seen)
 	}
-	if err := noteEndpointSeq(opts, ep.DaemonID, rec.Seq); err != nil {
-		return auth.EndpointRecord{}, err
+	if rec.Seq > seen {
+		if err := noteEndpointSeq(opts, peerID, rec.Seq); err != nil {
+			return auth.EndpointRecord{}, err
+		}
 	}
 	return rec, nil
 }
@@ -433,7 +475,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	// Everything the Control Panel said about where to dial came from it, so
 	// without this it could point us anywhere -- and the values actually dialled
 	// below come from the signed record, not from the copy beside it.
-	rec, err := verifyEndpointRecord(opts, ep)
+	rec, err := verifyEndpointRecord(opts, peerID, ep)
 	if err != nil {
 		if len(relays) > 0 {
 			fmt.Fprintf(os.Stderr, "tyd: not dialling the published endpoint for %s: %v; falling back to the relay\n", peerID, err)

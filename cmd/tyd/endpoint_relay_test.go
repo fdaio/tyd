@@ -68,6 +68,13 @@ func pinnedOpts(t *testing.T, platform, peerID string, pub ed25519.PublicKey) op
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	// The pairing record is the trust anchor for the endpoint signature and the
+	// relay binding. peers.json is only the Control Panel's view.
+	if err := peers.SavePaired(opts.paired, &peers.PairedFile{Peers: []peers.PairedPeer{
+		{ID: peerID, PublicKey: auth.EncodePublic(pub), Nickname: "box", Direction: "outbound"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
 	return opts
 }
 
