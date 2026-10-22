@@ -166,7 +166,7 @@ jobs:
             echo
           } > release-notes.md
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: tyd-${{ needs.plan.outputs.version }}
           path: artifacts
