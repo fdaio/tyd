@@ -221,6 +221,7 @@ non-goals, then [docs/connect.md](docs/connect.md) to pair.
 | [docs/cli.md](docs/cli.md) | Command and flag reference |
 | [docs/protocol.md](docs/protocol.md) | Frame protocol, auth handshake, capabilities |
 | [docs/roadmap.md](docs/roadmap.md) | What exists today, what is deliberately absent |
+| [ACCESSIBILITY.md](ACCESSIBILITY.md) | Accessibility scope, known limits, and how to report a barrier |
 | [docs/requirements/control-plane-pairing.md](docs/requirements/control-plane-pairing.md) · [dataplane-networking.md](docs/requirements/dataplane-networking.md) | Pairing and data-plane requirements |
 
 ## Build from source
