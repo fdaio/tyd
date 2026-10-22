@@ -176,7 +176,7 @@ jobs:
       # become what new installs get: .github/workflows/promote.yml runs the smoke
       # test and promotes a build once it is verified. `tyd --channel edge` is how
       # to ask for the newest build before then.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.version }}
           target_commitish: ${{ needs.plan.outputs.sha }}
