@@ -116,6 +116,26 @@ func TestThePendingErrorCarriesTheSameDigest(t *testing.T) {
 	}
 }
 
+// A file request has to be described by the fields the digest binds. The listing is
+// where the operator chooses between requests, so a root or a path that is missing
+// there is a request the operator approved without seeing.
+func TestThePendingListNamesTheFileRootAndPath(t *testing.T) {
+	srv, st := preServer(t)
+	f := fileRequestFrame("notes.txt")
+	f.Root = "sub"
+	gateFileRequest(srv, st, f)
+
+	waiting := srv.PendingApprovals()
+	if len(waiting) != 1 {
+		t.Fatalf("%d pending", len(waiting))
+	}
+	for _, want := range []string{"notes.txt", "sub", "4096"} {
+		if !strings.Contains(waiting[0].Request, want) {
+			t.Errorf("the listing %q does not mention %q", waiting[0].Request, want)
+		}
+	}
+}
+
 // gateFileRequest runs the gate exactly as handleFile runs it — same digest, same
 // summary, same pending record — and returns what the caller would have been told.
 //
@@ -132,8 +152,8 @@ func gateFileRequest(srv *Server, st *connState, f protocol.Frame) error {
 	if f.Type == protocol.TypeFileWrite {
 		op = opFileWrite
 	}
-	digest := fileApprovalDigest(op, f.SessionID, f.Path, f.Mode, size)
-	if err := srv.requestApproval(st, f.SessionID, digest, op, size); err != nil {
+	digest := fileApprovalDigest(op, f.SessionID, f.Root, f.Path, f.Mode, size)
+	if err := srv.requestApproval(st, f.SessionID, digest, describeFileRequest(f, size), op, size); err != nil {
 		return err
 	}
 	return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",

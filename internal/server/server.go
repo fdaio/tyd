@@ -72,7 +72,7 @@ type Config struct {
 	ApprovalTTL time.Duration
 }
 
-// PendingApproval is a remote attach waiting for a local decision.
+// PendingApproval is a remote request waiting for a local decision.
 type PendingApproval struct {
 	SessionID  string
 	Principal  string
@@ -110,11 +110,13 @@ type pendingAttach struct {
 	transport  string
 	remoteAddr string
 	at         time.Time
-	// digest is what an approval has to match, and op and size are what the
-	// operator is shown. No content: see describeRequest.
-	digest string
-	op     string
-	size   int64
+	// digest is what an approval has to match, op and size are what the operator
+	// is shown, and request is the operator-facing summary of the whole request.
+	// No content: see describeRequest.
+	digest  string
+	op      string
+	size    int64
+	request string
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
@@ -225,8 +227,10 @@ func (s *Server) consumeApproval(key, digest string) bool {
 	return time.Now().Before(got.expires)
 }
 
-// requestApproval records a waiting attach so the operator can approve it.
-func (s *Server) requestApproval(st *connState, sessionID, digest, op string, size int64) error {
+// requestApproval records a waiting request so the operator can approve it. The
+// request text is built by the caller from the same fields as the digest, so the
+// operator sees exactly what the approval will cover.
+func (s *Server) requestApproval(st *connState, sessionID, digest, request, op string, size int64) error {
 	req := &pendingAttach{
 		sessionID:  sessionID,
 		transport:  string(st.info.Transport),
@@ -235,6 +239,7 @@ func (s *Server) requestApproval(st *connState, sessionID, digest, op string, si
 		digest:     digest,
 		op:         op,
 		size:       size,
+		request:    request,
 	}
 	if st.principal != nil {
 		req.principal = st.principal.Name
@@ -260,14 +265,14 @@ func (s *Server) requestApproval(st *connState, sessionID, digest, op string, si
 	e.SessionID = sessionID
 	s.audit(e)
 	// What the operator is shown is exactly what the approval binds, so approving
-	// blind is no longer possible: the line names the operation and its size, and
+	// blind is no longer possible: the line names the request and its size, and
 	// `tyd session approve` lists it again with the digest it needs to match.
 	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants to %s [%s] (tyd session approve %s)\n",
-		req.principal, describeRequest(op, sessionID, size), digest, sessionID)
+		req.principal, req.request, digest, sessionID)
 	return nil
 }
 
-// PendingApprovals lists attach requests still waiting for a decision.
+// PendingApprovals lists requests still waiting for a decision.
 func (s *Server) PendingApprovals() []PendingApproval {
 	now := time.Now()
 	s.mu.Lock()
@@ -299,7 +304,7 @@ func (s *Server) PendingApprovals() []PendingApproval {
 			Digest:     req.digest,
 			Op:         req.op,
 			Size:       req.size,
-			Request:    describeRequest(req.op, req.sessionID, req.size),
+			Request:    req.request,
 		})
 	}
 	s.mu.Unlock()
@@ -742,7 +747,7 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 	if s.consumeApproval(approvalKey(sessionID, gatePub(st.principal), digest), digest) {
 		return nil
 	}
-	if err := s.requestApproval(st, sessionID, digest, op, size); err != nil {
+	if err := s.requestApproval(st, sessionID, digest, describeRequest(op, sessionID, size), op, size); err != nil {
 		return err
 	}
 	return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
@@ -754,8 +759,9 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 // Two things are decided here and two things are forwarded.
 //
 // Decided: that the caller may attempt it, and that an approval covers **this**
-// operation — this path, this mode, this size. That is the digest's whole job, and
-// without the path an approval for reading one file is spent by reading another.
+// operation — this root, this path, this mode, this size. That is the digest's whole
+// job, and without the root or the path an approval for reading one file is spent by
+// reading another.
 //
 // Forwarded: the frame itself, both directions, whole. The request copy cannot lose
 // the root claim or the mode, and the reply cannot lose the ID, because neither is
@@ -795,9 +801,9 @@ func (s *Server) handleFile(st *connState, f protocol.Frame) error {
 	if f.Type == protocol.TypeFileRead {
 		size = int64(f.MaxBytes)
 	}
-	digest := fileApprovalDigest(op, f.SessionID, f.Path, f.Mode, size)
+	digest := fileApprovalDigest(op, f.SessionID, f.Root, f.Path, f.Mode, size)
 	if !s.consumeApproval(approvalKey(f.SessionID, gatePub(st.principal), digest), digest) {
-		if err := s.requestApproval(st, f.SessionID, digest, op, size); err != nil {
+		if err := s.requestApproval(st, f.SessionID, digest, describeFileRequest(f, size), op, size); err != nil {
 			return err
 		}
 		return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
@@ -907,9 +913,12 @@ func (s *Server) auditFile(st *connState, f protocol.Frame, res protocol.Frame, 
 	s.audit(e)
 }
 
-// describeFileRequest is the operator-facing summary. It names the path and the mode
-// because those are what the digest binds, and an operator shown only "file_write"
-// cannot tell one pending request from another.
+// describeFileRequest is the operator-facing summary. It names the root, the path
+// and the mode because those are what the digest binds, and an operator shown only
+// "file_write" cannot tell one pending request from another.
+//
+// The root and path come from the peer, so both are quoted: a newline or a terminal
+// escape in a path must not be able to forge another line in the approval prompt.
 func describeFileRequest(f protocol.Frame, size int64) string {
 	verb := "read"
 	if f.Type == protocol.TypeFileWrite {
@@ -918,7 +927,11 @@ func describeFileRequest(f protocol.Frame, size int64) string {
 	if f.Path == "" {
 		return fmt.Sprintf("%s (no path)", verb)
 	}
-	return fmt.Sprintf("%s %s (%d bytes)", verb, f.Path, size)
+	root := ""
+	if f.Root != "" {
+		root = fmt.Sprintf(" in root %q", f.Root)
+	}
+	return fmt.Sprintf("%s %q%s (%d bytes)", verb, f.Path, root, size)
 }
 
 func maxInt64(a, b int64) int64 {

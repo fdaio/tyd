@@ -373,9 +373,9 @@ Content is base64 in both directions; text-versus-binary is not guessed.
 `unknownTool`. That is already what happens to `session_send`,
 `session_interrupt` and `session_close`, so there is nothing new to decide.
 
-The approval prompt shows operation, relative path, byte count and
-create-or-replace. **Not** the content — and content shown would be content in a
-place that is not the audit log.
+The approval prompt shows operation, relative path, byte count, create-or-replace
+and the root claim when it narrows the ceiling. **Not** the content — and content
+shown would be content in a place that is not the audit log.
 
 ## 10. Where the work happens
 
