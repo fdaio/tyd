@@ -384,7 +384,7 @@ func waitForInviteAccept(opts options, cli *cpclient.Client, key ed25519.Private
 				// the Control Panel saying so. Only a pairing record this host
 				// can check against its own secret is a pairing.
 				if err := acceptPairedPeer(opts, key, p, secret, inviteID); err != nil {
-					fmt.Fprintf(os.Stderr, "refused %s: %v\n", p.ID, err)
+					fmt.Fprintf(os.Stderr, "refused %q: %v\n", p.ID, err)
 					continue
 				}
 				doc.MergePeers(cpPeersToLocal(remote))
@@ -507,10 +507,11 @@ func runRevoke(opts options) error {
 }
 
 func peerSuffix(p *peers.Peer) string {
-	if p.Nickname == "" {
+	name := safePeerNickname(p.Nickname)
+	if name == "" {
 		return ""
 	}
-	return fmt.Sprintf(" (%s)", p.Nickname)
+	return fmt.Sprintf(" (%s)", name)
 }
 
 func pluralSessions(n int) string {
