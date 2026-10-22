@@ -101,7 +101,7 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
   the root is followed (recorded, not accidental — `docs/requirements/file-tools.md`)
 - Writes are atomic — temp file, flush, permissions on the descriptor, rename — and a
   failed write leaves the original untouched
-- One approval per operation, bound to path, mode and size, so an approval for one file
+- One approval per operation, bound to root, path, mode and size, so an approval for one file
   is not spent by another. The approval is spent whether or not the write succeeds
 - Content is never audited; a keyed digest is, under `PATH.key` beside the log
 - Not in v1: directory listing, delete, rename, chmod, streaming, wildcard allowlists

@@ -47,26 +47,32 @@ func approvalDigest(op, sessionID string, size int64) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// fileApprovalDigest is approvalDigest with the two fields a file operation needs and
-// a session operation does not: **which path, and whether it creates or replaces**.
+// fileApprovalDigest is approvalDigest with the fields a file operation needs and
+// a session operation does not: **which root the path is relative to, which path,
+// and whether it creates or replaces**.
 //
 // Without the path the digest does not name the thing being acted on. A session id
 // names a session, so (op, session, size) is enough for `send` and `attach`; but an
 // approval granted for reading notes.txt would be spent by a read of authorized_keys,
 // which is the exact hole §5 of the file-tools design exists to close.
 //
+// The root claim is part of the same identity: it selects the directory that the
+// path is resolved against, so the same relative path under a different root is a
+// different file. Approving "read notes.txt" without binding the root would let that
+// approval read the notes.txt of every sub-root the agent can open.
+//
 // `size` is the request and not the result: a write's content length is known before
 // anything is sent, and a read has no content, so what goes in is the requested
 // max_bytes. The page an agent returns is the agent's decision and is deliberately
 // left out — binding it would mean predicting a file's size before reading it, and a
 // digest nobody can compute in advance is not something an operator can approve.
-func fileApprovalDigest(op, sessionID, path, mode string, size int64) string {
+func fileApprovalDigest(op, sessionID, root, path, mode string, size int64) string {
 	h := sha256.New()
 	// NUL separated so no combination of fields can be read as another one. A path
 	// can contain slashes and any other byte except NUL, so neither a slash nor a
 	// positional convention would separate the fields reliably: the separator is an
 	// explicit NUL.
-	for _, part := range []string{op, sessionID, path, mode, strconv.FormatInt(size, 10)} {
+	for _, part := range []string{op, sessionID, root, path, mode, strconv.FormatInt(size, 10)} {
 		h.Write([]byte(part))
 		h.Write([]byte{0})
 	}
