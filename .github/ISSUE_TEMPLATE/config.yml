@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/fdaio/tyd/blob/main/CONTRIBUTING.md#security-reports
+    about: Do not open a public issue for a vulnerability. Report it privately.
+  - name: Documentation
+    url: https://github.com/fdaio/tyd/tree/main/docs
+    about: Architecture, pairing, CLI, protocol, and operations.
