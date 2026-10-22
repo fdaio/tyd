@@ -67,6 +67,9 @@ replace the daemon on the machine.
   has several inputs.
 - Comments should explain why: a constraint, an invariant, or a non-obvious
   behaviour. Do not restate what the code already says.
+- Keep the CLI and documentation usable with assistive technology: plain text,
+  no meaning carried by color alone, real headings, and descriptive link text.
+  See [ACCESSIBILITY.md](ACCESSIBILITY.md).
 - A change to user-visible behaviour needs a documentation update in `docs/`
   and, when the install or the CLI surface changes, in `README.md`.
 - A change to the frame protocol or the handshake needs an update to
