@@ -79,7 +79,7 @@ Not a path string — a path can be re-pointed. Not the shell's current director
 The manual version of this was going to be `openat2(RESOLVE_BENEATH |
 RESOLVE_NO_SYMLINKS)` on Linux and a per-component `openat` walk elsewhere, with
 symlinks refused outright. **Go's `os.Root` already is that**, and
-`go.mod` requires 1.26, well past the 1.24 that introduced it. It has `OpenFile`,
+`go.mod` requires 1.27, well past the 1.24 that introduced it. It has `OpenFile`,
 `Lstat`, `Stat`, `ReadFile`, `WriteFile`, `Create`, `Rename`, `Chmod`, `Chown` —
 everything this design needs — and it is safe for concurrent use, which matters
 because the agent serves requests in parallel.

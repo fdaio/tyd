@@ -25,10 +25,10 @@ existing behaviour can go straight to a pull request.
 
 ## Requirements
 
-- Go 1.26 or newer. The module declares `go 1.26.0`.
+- Go 1.27.3 or newer. The module declares `go 1.27.3`.
 - `git`, a POSIX shell, and `python3` for the acceptance script.
-- Linux or macOS for the full local loop. Release builds also cover FreeBSD on
-  amd64 and arm64. Windows is not supported.
+- Linux or macOS 13 Ventura or later for the full local loop. Release builds
+  also cover FreeBSD on amd64 and arm64. Windows is not supported.
 
 The unit tests do not need a running daemon. The acceptance script starts one
 in a temporary `HOME`, so it does not touch `~/.tyd`.

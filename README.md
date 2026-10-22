@@ -69,9 +69,9 @@ Per-user install, no sudo. What it does:
   and keeps state in `~/.tyd`;
 - starts a per-user daemon that keeps running after your shell exits —
   `systemd --user` (with `loginctl enable-linger`) on Linux, a LaunchAgent on
-  macOS, `nohup` elsewhere. Nothing restarts the `nohup` fallback, so it does not
-  come back after a reboot; on a host with neither systemd nor launchd, start
-  `tyd up` again yourself or install a service of your own;
+  macOS 13 or later, `nohup` elsewhere. Nothing restarts the `nohup` fallback,
+  so it does not come back after a reboot; on a host with neither systemd nor
+  launchd, start `tyd up` again yourself or install a service of your own;
 - in a TTY, asks whether to mint a pairing invite. It does **not** touch your
   shell profile, and never uses `sudo`.
 
@@ -97,8 +97,8 @@ curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --agent
 curl -fsSL https://app.getfda.dev/install.sh | sh -s -- --client --accept TOKEN
 ```
 
-Supported platforms: Linux, macOS, FreeBSD on amd64 and arm64. Windows is not
-supported.
+Supported platforms: Linux, macOS 13 Ventura or later, FreeBSD on amd64 and
+arm64. Windows is not supported.
 
 > **Agent?** See [docs/agent.md](docs/agent.md) — one-line install, `--agent` / `--client --accept` recipes, tool model, and troubleshooting for LLM agents.
 
