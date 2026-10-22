@@ -1,0 +1,99 @@
+name: Bug report
+description: Report something that does not work as documented
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Fill in every required
+        field; a report without a version, platform, and reproduction is hard
+        to act on.
+
+        Do not report a security vulnerability here. See
+        [Security reports](https://github.com/fdaio/tyd/blob/main/CONTRIBUTING.md#security-reports)
+        instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: tyd version
+      description: Paste the output of `tyd version`.
+      placeholder: 2026.10.21-abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      description: The OS release and CPU architecture where tyd runs.
+      placeholder: macOS 15.1 arm64
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install tyd?
+      options:
+        - Install script
+        - Release archive
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use the smallest sequence that shows the problem.
+      placeholder: |
+        1. Run `tyd up`
+        2. Run `tyd invite`
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+      description: Include the exact error or output, if there is one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Remove tokens, keys, hostnames, and session content before posting.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Approval mode, relay or self-hosted Control Panel, peer setup, and anything else that matters.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched the existing issues and found no duplicate.
+          required: true
+        - label: I removed credentials and session content from anything I pasted.
+          required: true

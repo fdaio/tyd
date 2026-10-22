@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a change in behaviour or a new capability
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read [docs/overview.md](https://github.com/fdaio/tyd/blob/main/docs/overview.md)
+        and [docs/roadmap.md](https://github.com/fdaio/tyd/blob/main/docs/roadmap.md)
+        first. They describe the design and what is deliberately absent.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way? Describe the situation, not only the missing command.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should tyd do instead? Include the command or flag you expect, if you have one in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other designs you tried or rejected.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Platform, peers, relay or self-hosted Control Panel, and anything else that affects the request.
+    validations:
+      required: false

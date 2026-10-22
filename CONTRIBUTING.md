@@ -8,11 +8,14 @@ For what tyd is and what it deliberately does not do, read
 
 ## Before you start
 
-- Report a reproducible bug in an issue. Include the `tyd version` output, the
-  operating system and architecture, the command you ran, and what happened
-  instead.
-- Open an issue before a change that affects the wire protocol, pairing,
-  approval, the CLI surface, or more than one package. Agreeing on scope first
+- Report a reproducible bug with the
+  [bug report form](https://github.com/fdaio/tyd/issues/new?template=bug_report.yml).
+  Include the `tyd version` output, the operating system and architecture, the
+  command you ran, and what happened instead.
+- Propose a larger change with the
+  [feature request form](https://github.com/fdaio/tyd/issues/new?template=feature_request.yml)
+  before you write code. This matters for the wire protocol, pairing, approval,
+  the CLI surface, or a change across several packages; agreeing on scope first
   saves a rewrite.
 - Do not open a public issue for a security problem. See
   [Security reports](#security-reports) instead.
