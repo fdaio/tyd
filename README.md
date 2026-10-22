@@ -241,8 +241,8 @@ a detached process). That daemon keeps running after the shell exits. A
 
 ## Contributing
 
-Run `make test` (it compiles, so it is also the build check) and open a pull
-request against `main`. Scope one change per PR; describe the observable
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, tests, code style, and
+the pull request process. Scope one change per PR; describe the observable
 behaviour you changed and how you verified it.
 
 ## License
