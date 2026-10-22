@@ -300,6 +300,39 @@ func TestTheGateNeverCarriesSendContent(t *testing.T) {
 	}
 }
 
+// The name in the approval prompt comes from pairing metadata, which the Control
+// Panel can control. It must not be able to add a line or an escape sequence to
+// the prompt the operator reads.
+func TestTheApprovalLineQuotesThePrincipal(t *testing.T) {
+	srv, st := gatedServer(t)
+	const sid = "sess1"
+	st.principal.Name = "alice\n\x1b[31mforged"
+	line := captureStderr(t, func() {
+		if err := srv.requestApproval(st, sid, approvalDigest(opRead, sid, 0), "read 4 bytes", opRead, 0); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Count(line, "\n") != 1 || strings.Contains(line, "\x1b") {
+		t.Fatalf("the principal added output to the approval line: %q", line)
+	}
+	if !strings.Contains(line, fmt.Sprintf("%q", st.principal.Name)) {
+		t.Fatalf("the line does not show the quoted principal: %q", line)
+	}
+}
+
+func TestTheAmbiguousApprovalListQuotesPrincipals(t *testing.T) {
+	name := "alice\n\x1b[31mforged"
+	err := ambiguousApproval("sess1", []PendingApproval{{
+		Digest: "abc123", Request: "read 4 bytes", Principal: name,
+	}})
+	if strings.Contains(err.Error(), "\x1b") || strings.Contains(err.Error(), name) {
+		t.Fatalf("the principal added output to the listing:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%q", name)) {
+		t.Fatalf("the listing does not show the quoted principal:\n%v", err)
+	}
+}
+
 // An approving client that does not say which version it is may be a build from
 // before approvals were bound to a request. Refusing it is the point: falling back
 // to "approve whatever is pending" would leave the defect in place for exactly the

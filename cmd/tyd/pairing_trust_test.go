@@ -134,6 +134,39 @@ func TestControlPanelCannotAddAPeerToTheTrustSet(t *testing.T) {
 	}
 }
 
+// A legacy nickname is untrusted text from an older Control Panel. It may
+// still be trusted as a peer, but it must not become the name the approval
+// prompt prints just because it is not empty.
+func TestLegacyUnsafeNicknameFallsBackToID(t *testing.T) {
+	dir := t.TempDir()
+	opts := options{
+		identity: filepath.Join(dir, "id_ed25519"),
+		peers:    filepath.Join(dir, "peers.json"),
+		paired:   filepath.Join(dir, "paired.json"),
+	}
+	pub, priv := keyPair(t)
+	enc := auth.EncodePublic(pub)
+	if err := peers.SavePaired(opts.paired, &peers.PairedFile{Peers: []peers.PairedPeer{{
+		ID: "legacy", PublicKey: enc, Nickname: "line\n\x1b[31mforged",
+		Direction: "inbound", Proof: &auth.PairingProof{Legacy: true},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	store := auth.NewStore()
+	injectPeerTrust(opts, store, &peers.File{Peers: []peers.Peer{{
+		ID: "legacy", PublicKey: enc, Direction: "inbound",
+	}}})
+	nonce := []byte("challenge")
+	p, err := store.Authenticate(nonce, pub, ed25519.Sign(priv, auth.AuthPayload(nonce, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Name != "legacy" {
+		t.Fatalf("an unsafe legacy nickname became the principal name: %q", p.Name)
+	}
+}
+
 // A record that does not verify is not a weaker case, it is a broken one. It
 // must not be trusted, even though a legacy peer sitting next to it is.
 func TestUnverifiableRecordIsNotTrustedButLegacyIs(t *testing.T) {

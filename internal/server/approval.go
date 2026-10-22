@@ -195,7 +195,9 @@ func ambiguousApproval(sessionID string, waiting []PendingApproval) error {
 	fmt.Fprintf(&b, "session %s has %d requests waiting for approval, so approving all of them "+
 		"would decide requests you were not shown. Name the one you mean:", sessionID, len(waiting))
 	for _, w := range waiting {
-		fmt.Fprintf(&b, "\n  %s  %s  (%s)", w.Digest, w.Request, w.Principal)
+		// The principal is paired metadata, not terminal output. Quote it for
+		// the same reason the stderr prompt does: it must not add a line.
+		fmt.Fprintf(&b, "\n  %s  %s  (%q)", w.Digest, w.Request, w.Principal)
 	}
 	fmt.Fprintf(&b, "\n  tyd session approve %s --digest <hex>", sessionID)
 	return fmt.Errorf("%s", b.String())

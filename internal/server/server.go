@@ -267,7 +267,10 @@ func (s *Server) requestApproval(st *connState, sessionID, digest, request, op s
 	// What the operator is shown is exactly what the approval binds, so approving
 	// blind is no longer possible: the line names the request and its size, and
 	// `tyd session approve` lists it again with the digest it needs to match.
-	fmt.Fprintf(os.Stderr, "tyd approval needed: %s wants to %s [%s] (tyd session approve %s)\n",
+	// The principal name comes from pairing metadata and can be controlled by
+	// the Control Panel. Quote it so a newline or escape cannot forge a line in
+	// the prompt the operator uses to decide.
+	fmt.Fprintf(os.Stderr, "tyd approval needed: %q wants to %s [%s] (tyd session approve %s)\n",
 		req.principal, req.request, digest, sessionID)
 	return nil
 }

@@ -20,6 +20,7 @@ import (
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/peerstate"
+	"tyd/internal/strutil"
 )
 
 func loadIdentity(path string) (ed25519.PrivateKey, error) {
@@ -569,6 +570,18 @@ func runAccept(opts options) error {
 	if err != nil {
 		return err
 	}
+	// Never carry a Control Panel-supplied nickname into a command or the
+	// pairing file. The CP is allowed to omit it, not to make tyd print a
+	// second line.
+	acc.PeerNickname = safePeerNickname(acc.PeerNickname)
+	// The id is printed and used as a command argument too. It is generated as
+	// hex, so a value that is not one inert shell word is not an id.
+	if !strutil.ShellSafe(acc.PeerID) {
+		return fmt.Errorf("accept: Control Panel returned an unusable peer id")
+	}
+	if acc.SelfID != "" && !strutil.ShellSafe(acc.SelfID) {
+		return fmt.Errorf("accept: Control Panel returned an unusable self id")
+	}
 
 	// The Control Panel just told us who the inviter is. Check it against the
 	// hash the inviter put in the token the operator carried over: a Control
@@ -674,6 +687,12 @@ func acceptPairedPeer(opts options, key ed25519.PrivateKey, p controlpanel.Peer,
 	if p.Proof == nil {
 		return fmt.Errorf("no pairing record; the Control Panel listed this peer but the other host did not prove it holds the invite secret -- upgrade it and pair again")
 	}
+	if !strutil.ShellSafe(p.ID) {
+		return fmt.Errorf("the Control Panel returned an unusable peer id")
+	}
+	// The nickname is not covered by the pairing proof. Drop anything that could
+	// add a line or a shell word rather than rejecting an otherwise valid pair.
+	p.Nickname = safePeerNickname(p.Nickname)
 	acceptorPub, err := auth.DecodePublic(p.PublicKey)
 	if err != nil {
 		return fmt.Errorf("unusable peer key: %w", err)
@@ -747,29 +766,44 @@ func peerHasLiveEndpoint(cli *cpclient.Client, peerID string) bool {
 	return err == nil
 }
 
+// safePeerNickname keeps a nickname from the Control Panel from being rendered
+// into a command or a terminal line. The Control Panel is allowed to withhold
+// metadata, so an unusable value is dropped rather than made fatal.
+func safePeerNickname(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if err := peers.ValidateNickname(name); err != nil {
+		return ""
+	}
+	return name
+}
+
 func sessionCreateCommand(peerID, nickname string) string {
-	target := nickname
+	target := safePeerNickname(nickname)
 	if target == "" {
 		target = peerID
 	}
-	if target == "" {
+	if target == "" || !strutil.ShellSafe(target) {
 		return ""
 	}
 	return "tyd session create --peer " + target
 }
 
 func printAcceptResult(errW, outW io.Writer, acc *controlpanel.AcceptResponse, live bool) {
+	nick := safePeerNickname(acc.PeerNickname)
 	if acc.AlreadyPaired {
 		label := acc.PeerID
-		if acc.PeerNickname != "" {
-			label = fmt.Sprintf("%s (%s)", acc.PeerID, acc.PeerNickname)
+		if nick != "" {
+			label = fmt.Sprintf("%s (%s)", acc.PeerID, nick)
 		}
 		fmt.Fprintf(errW, "already paired with %s\n", label)
 	} else {
 		fmt.Fprintf(errW, "paired with %s\n", acc.PeerID)
 	}
 	if live {
-		cmd := sessionCreateCommand(acc.PeerID, acc.PeerNickname)
+		cmd := sessionCreateCommand(acc.PeerID, nick)
 		if cmd != "" {
 			fmt.Fprintln(errW)
 			fmt.Fprintln(errW, "Connect with:")
