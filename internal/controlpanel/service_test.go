@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"tyd/internal/auth"
+	"tyd/internal/peers"
 )
 
 func TestRegisterAllocateIDAndDefaultApproval(t *testing.T) {
@@ -111,6 +112,29 @@ func TestAcceptExchangesPeerKeys(t *testing.T) {
 	}
 	if len(clientPeers) != 1 || clientPeers[0].PublicKey != "server-pub" || clientPeers[0].Nickname != "work" {
 		t.Fatalf("client peers %+v", clientPeers)
+	}
+}
+
+func TestAcceptRejectsUnsafeNickname(t *testing.T) {
+	for _, nick := range []string{
+		"line\nbreak",
+		"\x1b[31mred",
+		"two words",
+		"path/name",
+		peers.ReservedNickname,
+	} {
+		s := New()
+		reg, err := s.Register(RegisterRequest{PublicKey: "server-pub"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv, err := s.CreateInvite(CreateInviteRequest{DaemonID: reg.ID, PublicKey: "server-pub"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Accept(AcceptRequest{Token: inv.Token, PublicKey: "client-pub", Nickname: nick}); err == nil {
+			t.Errorf("accepted unsafe nickname %q", nick)
+		}
 	}
 }
 

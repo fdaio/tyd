@@ -746,7 +746,10 @@ func injectPeerTrust(opts options, trust *auth.Store, doc *peers.File) {
 			legacy++
 		}
 		name := p.Nickname
-		if name == "" {
+		if name == "" || peers.ValidateNickname(name) != nil {
+			// Legacy records and older Control Panels can carry a nickname that
+			// predates the local rule. Trust is the key, not the label, so fall
+			// back to the id instead of rejecting the peer.
 			name = p.ID
 		}
 		trust.EnsurePeer(name, pub, auth.AllGlobal)

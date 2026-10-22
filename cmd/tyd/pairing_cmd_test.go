@@ -48,6 +48,30 @@ func TestPrintAcceptResult(t *testing.T) {
 	}
 }
 
+func TestUnsafePeerNicknameIsDropped(t *testing.T) {
+	if got := safePeerNickname("work-laptop"); got != "work-laptop" {
+		t.Fatalf("valid nickname changed: %q", got)
+	}
+	for _, name := range []string{"line\nbreak", "\x1b[31mred", "two words", "path/name", "local"} {
+		if got := safePeerNickname(name); got != "" {
+			t.Errorf("unsafe nickname %q became %q", name, got)
+		}
+	}
+	if got := sessionCreateCommand("peer1", "line\nbreak"); strings.Contains(got, "\n") || !strings.Contains(got, "--peer peer1") {
+		t.Errorf("an unsafe nickname reached the command: %q", got)
+	}
+	if got := sessionCreateCommand("peer\nid", ""); got != "" {
+		t.Errorf("an unsafe peer id reached the command: %q", got)
+	}
+	var errBuf, outBuf bytes.Buffer
+	printAcceptResult(&errBuf, &outBuf, &controlpanel.AcceptResponse{
+		PeerID: "peer1", PeerNickname: "line\nbreak", AlreadyPaired: true,
+	}, true)
+	if strings.Contains(errBuf.String(), "line\nbreak") || strings.Contains(errBuf.String(), "\x1b") {
+		t.Errorf("an unsafe nickname reached the terminal: %q", errBuf.String())
+	}
+}
+
 func TestFormatAcceptCommand(t *testing.T) {
 	tok := "abc123"
 	if got := formatAcceptCommand(paths.DefaultPlatform(), tok); got != "tyd accept "+tok {

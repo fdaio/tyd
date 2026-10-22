@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"tyd/internal/auth"
+	"tyd/internal/peers"
 	"tyd/internal/relay"
 	"tyd/scripts"
 )
@@ -495,6 +496,14 @@ func (s *Service) Accept(req AcceptRequest) (*AcceptResponse, error) {
 		return nil, ErrInvalidPublicKey
 	}
 	nick := strings.TrimSpace(req.Nickname)
+	// The nickname is rendered into a command and a terminal line on the other
+	// side. Apply the same rule the local accept command applies, so a caller
+	// that talks to this API directly cannot store a line break or escape.
+	if nick != "" {
+		if err := peers.ValidateNickname(nick); err != nil {
+			return nil, fmt.Errorf("invalid nickname: %w", err)
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
