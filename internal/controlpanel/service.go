@@ -836,11 +836,14 @@ func (s *Service) GetEndpoint(daemonID string) (*EndpointResponse, error) {
 		return nil, ErrNotFound
 	}
 	return &EndpointResponse{
+		DaemonID:   ep.DaemonID,
+		PublicKey:  ep.PublicKey,
 		Addr:       ep.Addr,
 		CertFP:     ep.CertFP,
 		Transport:  ep.Transport,
 		Candidates: append([]string(nil), ep.Candidates...),
 		ExpiresAt:  ep.ExpiresAt,
+		Proof:      ep.Proof,
 	}, nil
 }
 

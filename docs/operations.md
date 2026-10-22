@@ -291,7 +291,8 @@ stop it.
   record, and can shorten its life, but it cannot alter one, and a client that
   receives a record with no usable signature falls back to the relay rather than
   dialling it. The highest sequence already accepted per peer is kept in
-  `paired.json`, so a replayed-but-authentic record is refused across restarts.
+  `paired.json`, so an authentic record older than that is refused across
+  restarts.
 - **Archiving hides, it never withdraws.** A peer or a closed session that has
   been unused past `--archive-ttl` (default `7d`, env `TYD_ARCHIVE_TTL`) drops out
   of `peer list` and `session list` and is counted in a footer, but it keeps its

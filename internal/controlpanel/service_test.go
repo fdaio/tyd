@@ -185,6 +185,12 @@ func TestEndpointPublishFetchExpire(t *testing.T) {
 	if err != nil || got.Addr != pub.Addr || got.CertFP != pub.CertFP {
 		t.Fatalf("got %+v err %v", got, err)
 	}
+	if got.DaemonID != reg.ID || got.PublicKey != pub.PublicKey || got.Proof == nil {
+		t.Fatalf("client lookup lost the signed endpoint: %+v", got)
+	}
+	if got.Proof.Record.Addr != got.Addr || got.Proof.Record.CertFP != got.CertFP {
+		t.Fatalf("served proof does not cover the served endpoint: %+v", got.Proof.Record)
+	}
 
 	// Overwrite on republish.
 	if _, err := s.PublishEndpoint(reg.ID, signedEndpoint(t, reg.ID, epPub, epPriv, "127.0.0.1:9", "ef01", now, 60, 2)); err != nil {

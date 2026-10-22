@@ -33,8 +33,8 @@ type PairedPeer struct {
 	PairedAt  time.Time          `json:"paired_at"`
 	Proof     *auth.PairingProof `json:"proof,omitempty"`
 	// EndpointSeq is the highest publish sequence already accepted from this
-	// peer. It is what makes a replayed -- but correctly signed -- endpoint
-	// record detectable, across restarts.
+	// peer. A correctly signed record below it is older than one this client
+	// has already accepted, and is refused across restarts.
 	EndpointSeq uint64 `json:"endpoint_seq,omitempty"`
 }
 
