@@ -26,6 +26,7 @@ import (
 	"tyd/internal/relay"
 	"tyd/internal/server"
 	"tyd/internal/session"
+	"tyd/internal/strutil"
 	"tyd/internal/transport"
 )
 
@@ -830,10 +831,16 @@ func syncPeersFromCP(opts options, state *peerstate.State) error {
 func cpPeersToLocal(list []controlpanel.Peer) []peers.Peer {
 	out := make([]peers.Peer, 0, len(list))
 	for _, p := range list {
+		// The Control Panel chooses these fields. Drop an id that is not one
+		// inert shell word, and clear a nickname that could add terminal output.
+		// A peer with no usable id cannot be addressed by the local commands.
+		if !strutil.ShellSafe(p.ID) {
+			continue
+		}
 		out = append(out, peers.Peer{
 			ID:        p.ID,
 			PublicKey: p.PublicKey,
-			Nickname:  p.Nickname,
+			Nickname:  safePeerNickname(p.Nickname),
 			Direction: p.Direction,
 			PairedAt:  p.PairedAt,
 		})

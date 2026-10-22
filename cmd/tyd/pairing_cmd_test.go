@@ -48,6 +48,23 @@ func TestPrintAcceptResult(t *testing.T) {
 	}
 }
 
+func TestControlPanelPeersAreSanitizedBeforeStorage(t *testing.T) {
+	got := cpPeersToLocal([]controlpanel.Peer{
+		{ID: "peer1", Nickname: "laptop", Direction: "outbound"},
+		{ID: "peer2", Nickname: "line\nbreak", Direction: "outbound"},
+		{ID: "bad\nid", Nickname: "other", Direction: "outbound"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("stored %d peers, want 2: %+v", len(got), got)
+	}
+	if got[0].Nickname != "laptop" {
+		t.Errorf("valid nickname changed: %q", got[0].Nickname)
+	}
+	if got[1].Nickname != "" {
+		t.Errorf("unsafe nickname was stored: %q", got[1].Nickname)
+	}
+}
+
 func TestUnsafePeerNicknameIsDropped(t *testing.T) {
 	if got := safePeerNickname("work-laptop"); got != "work-laptop" {
 		t.Fatalf("valid nickname changed: %q", got)
