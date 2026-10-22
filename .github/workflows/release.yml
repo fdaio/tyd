@@ -32,7 +32,7 @@ jobs:
       sha: ${{ steps.plan.outputs.sha }}
       reason: ${{ steps.plan.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -47,7 +47,7 @@ jobs:
     if: needs.plan.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
 
@@ -77,7 +77,7 @@ jobs:
     if: needs.plan.outputs.publish == 'true' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
 
@@ -142,7 +142,7 @@ jobs:
     if: needs.plan.outputs.publish == 'true' && needs.dist.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.plan.outputs.sha }}
           fetch-depth: 0
