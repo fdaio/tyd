@@ -39,8 +39,16 @@ done
 SID=$("$BIN" session create --detach)
 "$BIN" session send "$SID" "pwd; id -u; test -f $HOME/.tyd/id_ed25519 && echo HOST_KEY_VISIBLE || echo HOST_KEY_HIDDEN; echo SANDBOX_OK
 "
-sleep 1
-OUT=$("$BIN" session read "$SID" --wait 2s)
+OUT=""
+i=0
+while [ "$i" -lt 15 ]; do
+  OUT=$("$BIN" session read "$SID" --wait 2s)
+  if printf '%s\n' "$OUT" | tr -d '\r' | grep -qx SANDBOX_OK; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 1
+done
 "$BIN" session close "$SID"
 
 fail=0

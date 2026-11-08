@@ -80,6 +80,32 @@ jobs:
       - name: Build
         run: go build -o tyd ./cmd/tyd
 
+  sandbox:
+    name: sandbox (docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: |
+          for i in 1 2 3 4 5; do
+            go mod download && exit 0
+            echo "go mod download failed (attempt $i); retrying..."
+            sleep $((i * 5))
+          done
+          exit 1
+
+      - name: Pull image
+        run: docker pull debian:bookworm
+
+      - name: Acceptance (container session)
+        run: make acceptance-sandbox
+
   dist:
     needs: [test-linux]
     runs-on: ubuntu-latest
