@@ -107,6 +107,27 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - `--session-max-lifetime` closes an aged session and audits `lifetime_close`
 - Refusals are audited as `denied` and name the limit and the current count
 
+### Step 4d — Peer roles
+
+- `policy.json` beside `peers.json`; local, mode 0600, never granted by the Control Panel
+- `list`, `viewer` (watch/read any session), `operator` (create and own), `admin`
+- `tyd peer role <id|nick> <role>`; `tyd peer show` prints the role
+- Missing file migrates existing inbound peers to `operator`, new peers to `list`
+
+### Step 4e — Approval leases
+
+- `tyd session approve <id> --lease 15m` covers attach, watch, read, and send for up to one hour
+- Leases are memory-only, per session and principal, cleared by close and restart
+- `tyd session lease <id>` lists them; `session lease revoke <id>` removes them
+- Audited as `lease_grant`, `lease_expire`, and `lease_revoke`
+
+### Step 4f — Scripted output
+
+- `session create --json` prints the id, state, and peer; implies `--detach`
+- `session list --json` returns `sessions` and `hidden`
+- `session close --json` returns the final state
+- `send --json` and `read --json` keep their cursor/page shape
+
 ### Step 5 — Revoke and hardening
 
 - `tyd revoke <peer-id|nickname>` — either side drops the pair on CP and locally
