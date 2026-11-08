@@ -163,6 +163,11 @@ output it caused. Use `read` for the next page, by cursor, and `watch` to follow
 along. `send` is refused while a person is attached, which is how an agent and a
 human avoid fighting over one shell.
 
+For a machine-readable reply, add `--json` to `create`, `list`, or `close`
+(`create --json` implies `--detach`). `send --json` returns the cursor it wrote
+at, and `read --json` returns one page per line. Errors stay on stderr with a
+non-zero exit code.
+
 Traps an agent should know about:
 
 - `send` has a size cap and refuses anything over it rather than splitting. Send
