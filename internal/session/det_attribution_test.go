@@ -52,7 +52,7 @@ func TestDetReadReasonIsMatch(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 
-	reply, err := s.Send([]byte("echo reason-probe-token\n"), false)
+	reply, err := s.Send([]byte("echo reason-probe-token\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

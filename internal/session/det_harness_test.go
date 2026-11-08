@@ -99,7 +99,7 @@ func extractMarker(out, marker string) (body, code string, ok bool) {
 func (d *AgentDriver) sendAndWait(cmd string) (body, code string) {
 	d.t.Helper()
 	marker := freshMarker()
-	reply, err := d.s.Send([]byte(cmd+"\necho "+marker+":$?\n"), false)
+	reply, err := d.s.Send([]byte(cmd + "\necho " + marker + ":$?\n"))
 	if err != nil {
 		d.t.Fatalf("send failed: %v", err)
 	}

@@ -181,17 +181,14 @@ func DialRead(dir string, cursor, epoch uint64, waitMS, idleMS uint32, pattern s
 		return ReadResult{}, fmt.Errorf("unexpected read reply %q", f.Type)
 	}
 	return ReadResult{
-		Data:         append([]byte(nil), f.Data...),
-		CursorNext:   f.CursorNext,
-		Dropped:      f.Dropped,
-		AtEnd:        f.AtEnd,
-		Epoch:        f.Epoch,
-		CursorAhead:  f.CursorAhead,
-		Exited:       f.Exited,
-		Reason:       f.Reason,
-		Echo:         f.Echo,
-		Icanon:       f.Icanon,
-		AgentVersion: f.AgentVersion,
+		Data:        append([]byte(nil), f.Data...),
+		CursorNext:  f.CursorNext,
+		Dropped:     f.Dropped,
+		AtEnd:       f.AtEnd,
+		Epoch:       f.Epoch,
+		CursorAhead: f.CursorAhead,
+		Exited:      f.Exited,
+		Reason:      f.Reason,
 	}, nil
 }
 
@@ -201,19 +198,16 @@ type SendReply struct {
 	Written int
 	Cursor  uint64
 	Epoch   uint64
-	// AgentVersion is what build the agent is. Zero means it did not say, which is
-	// an agent older than the field existed.
-	AgentVersion int
 }
 
 // DialSend injects keystrokes without taking the attach slot.
-func DialSend(dir string, data []byte, secret bool) (SendReply, error) {
+func DialSend(dir string, data []byte) (SendReply, error) {
 	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
 	if err != nil {
 		return SendReply{}, err
 	}
 	defer nc.Close()
-	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data, Secret: secret}); err != nil {
+	if err := protocol.WriteFrame(nc, protocol.Frame{Type: protocol.TypeSend, Data: data}); err != nil {
 		return SendReply{}, err
 	}
 	f, err := protocol.ReadFrame(nc)
@@ -331,67 +325,4 @@ func (c *Conn) Close() {
 
 func (c *Conn) closeOut() {
 	c.closeOnce.Do(func() { close(c.closed) })
-}
-
-// FileResult is what a file operation returned. It is a whole frame rather than a
-// struct of fields, on purpose — see DialFile.
-type FileResult = protocol.Frame
-
-// DialFile forwards one file operation to the agent that holds the session's
-// directory descriptor, and returns the agent's answer.
-//
-// **The frame goes across as it arrived and the answer comes back as it was sent.**
-// No field is re-listed in either direction, so none can be dropped by forgetting
-// it: the request copy cannot lose the path or the root claim, and the reply cannot
-// lose the ID or the digest. Re-listing is how #118's `secret` flag came to be
-// nearly fail-open, and the comment on the read path in the server says the same
-// thing about a frame rebuilt field by field.
-//
-// The agent is the authority here. This function validates nothing about the path: a
-// root claim arriving from a daemon is a claim, and the agent decides.
-func DialFile(dir string, req protocol.Frame) (FileResult, error) {
-	if !Alive(dir) {
-		return FileResult{}, fmt.Errorf("session has no running agent; file operations need one")
-	}
-	nc, err := net.DialTimeout("unix", SockPath(dir), time.Second)
-	if err != nil {
-		return FileResult{}, err
-	}
-	defer nc.Close()
-	if err := protocol.WriteFrame(nc, req); err != nil {
-		return FileResult{}, err
-	}
-	f, err := protocol.ReadFrame(nc)
-	if err != nil {
-		return FileResult{}, err
-	}
-	if f.Type == protocol.TypeError {
-		return FileResult{}, fmt.Errorf("%s", f.Error)
-	}
-	if f.Type != protocol.TypeFileResult {
-		return FileResult{}, fmt.Errorf("unexpected file reply %q", f.Type)
-	}
-	// A result carrying an error is a **failure**, not a result.
-	//
-	// This check is here only because the file path is the one that needs it: the agent
-	// reports a refusal by setting Error on the result frame rather than by sending
-	// TypeError, so that the ID survives on the reply and the caller can match it. The
-	// four other dials in this file send TypeError and are shaped correctly without it —
-	// they were checked, and none of them decodes a success-typed frame that carries an
-	// error.
-	//
-	// **The two sides are coupled.** If the agent ever answers a file operation with
-	// TypeError instead, this check becomes dead and a refusal starts arriving as a
-	// result with no data; if a caller ever stops needing the ID on a refusal, the
-	// agent should switch to TypeError and this should go. Change both or neither.
-	if f.Error != "" {
-		return FileResult{}, fmt.Errorf("%s", f.Error)
-	}
-	// Checked rather than assumed. A reply that arrived without the ID cannot be
-	// matched to its request, and a caller that cannot match it waits out a timeout
-	// to attribute the failure.
-	if f.ID != req.ID {
-		return FileResult{}, fmt.Errorf("file reply carried id %q, request was %q", f.ID, req.ID)
-	}
-	return f, nil
 }

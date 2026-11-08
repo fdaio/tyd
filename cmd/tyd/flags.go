@@ -45,12 +45,6 @@ type options struct {
 	key                string
 	noWait             bool
 	detach             bool
-	readOnly           bool
-	fileRoot           string
-	fileRootAllowHome  bool
-	closeOnExit        bool
-	maxSessions        int
-	allowPeer          []string
 	all                bool
 	verbose            bool
 	force              bool
@@ -349,51 +343,12 @@ func parseArgs(args []string) (options, error) {
 			}
 			i++
 			opts.as = args[i]
-		case strings.HasPrefix(a, "--file-root="):
-			opts.fileRoot = strings.TrimPrefix(a, "--file-root=")
 		case strings.HasPrefix(a, "--as="):
 			opts.as = strings.TrimPrefix(a, "--as=")
 		case a == "--no-wait":
 			opts.noWait = true
 		case a == "--detach":
 			opts.detach = true
-		case a == "--read-only":
-			opts.readOnly = true
-		case a == "--file-root":
-			if i+1 >= len(args) {
-				return options{}, fmt.Errorf("%s requires a directory", a)
-			}
-			i++
-			opts.fileRoot = args[i]
-		case a == "--file-root-allow-home":
-			opts.fileRootAllowHome = true
-		case a == "--close-on-exit":
-			opts.closeOnExit = true
-		case a == "--allow-peer":
-			if i+1 >= len(args) {
-				return options{}, fmt.Errorf("%s requires a peer id or nickname", a)
-			}
-			i++
-			opts.allowPeer = append(opts.allowPeer, args[i])
-		case strings.HasPrefix(a, "--allow-peer="):
-			opts.allowPeer = append(opts.allowPeer, strings.TrimPrefix(a, "--allow-peer="))
-		case a == "--max-sessions":
-			if i+1 >= len(args) {
-				return options{}, fmt.Errorf("%s requires a number", a)
-			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 0 {
-				return options{}, fmt.Errorf("%s must be a number, got %q", a, args[i])
-			}
-			opts.maxSessions = n
-		case strings.HasPrefix(a, "--max-sessions="):
-			n, err := strconv.Atoi(strings.TrimPrefix(a, "--max-sessions="))
-			if err != nil || n < 0 {
-				return options{}, fmt.Errorf("--max-sessions must be a number, got %q",
-					strings.TrimPrefix(a, "--max-sessions="))
-			}
-			opts.maxSessions = n
 		case a == "--all":
 			opts.all = true
 		case a == "--verbose":

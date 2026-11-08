@@ -30,15 +30,6 @@ import (
 	"tyd/internal/transport"
 )
 
-// auditKeyPath is where the content key lives: beside the log, named after it.
-//
-// Beside rather than inside, because the log is appended to and read by tools that
-// have no business holding a key, and a key in a directory an operator syncs or backs
-// up is a key that ends up somewhere it should not be.
-func auditKeyPath(logPath string) string {
-	return logPath + ".key"
-}
-
 func runUp(opts options) error {
 	if _, err := ensureIdentity(opts); err != nil {
 		return err
@@ -94,7 +85,6 @@ func runUp(opts options) error {
 		fmt.Fprintf(os.Stderr, "tyd restored %d live session(s)\n", n)
 	}
 	var auditSink audit.Sink
-	var auditKey *audit.Key
 	if opts.auditLog != "" {
 		af, err := audit.OpenFile(opts.auditLog)
 		if err != nil {
@@ -102,18 +92,6 @@ func runUp(opts options) error {
 		}
 		defer af.Close()
 		auditSink = af
-
-		// The content key lives beside the log it protects and is loaded whenever a
-		// log is. **A failure here stops startup.** An unreadable key, or one whose
-		// mode is wider than 0600, means every file write from here on would be
-		// recorded with no MAC — and a record with no MAC looks the same as a record
-		// that was never supposed to have one. Carrying on would make the absence
-		// silent, which is the one thing §7 rules out.
-		key, err := audit.LoadOrCreateKey(auditKeyPath(opts.auditLog))
-		if err != nil {
-			return fmt.Errorf("audit content key: %w", err)
-		}
-		auditKey = &key
 	}
 	srv := server.NewWithConfig(server.Config{
 		Socket:             opts.socket,
@@ -125,8 +103,6 @@ func runUp(opts options) error {
 		Trust:              trust,
 		ApprovalMode:       approvalMode,
 		Audit:              auditSink,
-		AuditKey:           auditKey,
-		FileRoot:           opts.fileRoot,
 		SessionIdleTimeout: opts.sessionIdle,
 	})
 	if err := srv.Start(); err != nil {

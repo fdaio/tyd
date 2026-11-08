@@ -595,14 +595,14 @@ type SendReply struct {
 
 // Send injects keystrokes without taking the exclusive attach slot. It needs
 // the write capability but not attach. An error means nothing was written.
-func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte, secret bool) (SendReply, error) {
-	return SendContext(context.Background(), ep, key, sessionID, data, secret)
+func Send(ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
+	return SendContext(context.Background(), ep, key, sessionID, data)
 }
 
 // SendContext sends keystrokes under a caller-supplied context. Cancelling the
 // context closes the connection, so the daemon aborts the write and can report
 // how much landed.
-func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte, secret bool) (SendReply, error) {
+func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessionID string, data []byte) (SendReply, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		// Without a deadline a stuck daemon would hold the caller forever, and a
 		// send is bounded by how long the PTY takes to accept the bytes.
@@ -614,10 +614,6 @@ func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessi
 		Type:      protocol.TypeSend,
 		SessionID: sessionID,
 		Data:      data,
-		// Forwarded rather than set here: the far agent holds the PTY and is the
-		// only place the terminal state can be read. A dropped flag would be a
-		// silent fail-open, so this is asserted in the tests.
-		Secret: secret,
 	})
 	// A send that timed out or was preempted still reports how many bytes
 	// reached the PTY, so the caller can resume from there instead of
@@ -1251,95 +1247,4 @@ func dialCandidates(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, ad
 		return r.conn, errs, nil
 	}
 	return nil, errs, fmt.Errorf("every candidate address failed")
-}
-
-// FileResult is what a file operation returned: the page and its metadata for a read,
-// the count and digest for a write.
-type FileResult struct {
-	// Data is the page a read returned, raw bytes.
-	Data      []byte
-	Size      int64
-	Truncated bool
-	MTime     time.Time
-	// SHA256 is the digest of the whole file, so a later write can pass it as
-	// expected_sha256 and be refused if the content moved on.
-	SHA256 string
-	// Written, Created and SHA256 describe a write.
-	Written int
-	Created bool
-}
-
-// FileOptions is one file operation.
-type FileOptions struct {
-	// Path is relative to the session's root. An absolute path is refused by the
-	// agent.
-	Path string
-	// Root narrows the operator's ceiling for this operation. It may only narrow.
-	Root string
-	// Offset and MaxBytes are the read window.
-	Offset   int64
-	MaxBytes uint32
-	// Create and Replace say what a write expects. Exactly one.
-	Create  bool
-	Replace bool
-	// Content is a write's bytes.
-	Content []byte
-	// ExpectedSHA is a write's claim about the content already there. It is the
-	// writer's concurrency guard and is not shown to the operator.
-	ExpectedSHA string
-}
-
-// FileRead reads a file through the session's agent.
-func FileRead(ep Endpoint, key ed25519.PrivateKey, sessionID string, o FileOptions) (FileResult, error) {
-	return fileOp(ep, key, sessionID, protocol.TypeFileRead, o)
-}
-
-// FileWrite writes a file through the session's agent.
-func FileWrite(ep Endpoint, key ed25519.PrivateKey, sessionID string, o FileOptions) (FileResult, error) {
-	return fileOp(ep, key, sessionID, protocol.TypeFileWrite, o)
-}
-
-func fileOp(ep Endpoint, key ed25519.PrivateKey, sessionID string, typ protocol.Type, o FileOptions) (FileResult, error) {
-	mode := ""
-	switch {
-	case o.Create:
-		mode = "create"
-	case o.Replace:
-		mode = "replace"
-	}
-	resp, err := rpc(ep, key, protocol.Frame{
-		Type:        typ,
-		SessionID:   sessionID,
-		Path:        o.Path,
-		Root:        o.Root,
-		Mode:        mode,
-		Offset:      o.Offset,
-		MaxBytes:    o.MaxBytes,
-		ExpectedSHA: o.ExpectedSHA,
-		Data:        o.Content,
-	})
-	if err != nil {
-		return FileResult{}, err
-	}
-	// A refusal comes back as an error frame with the reason in it. That text is what
-	// the model reads, and it names the code and the root-relative path and nothing
-	// else — no absolute path, and never the content.
-	if resp.Type == protocol.TypeError {
-		return FileResult{}, errors.New(resp.Error)
-	}
-	if resp.Type != protocol.TypeFileResult {
-		return FileResult{}, fmt.Errorf("unexpected file reply %q", resp.Type)
-	}
-	if resp.Error != "" {
-		return FileResult{}, errors.New(resp.Error)
-	}
-	return FileResult{
-		Data:      resp.Data,
-		Size:      resp.Size,
-		Truncated: resp.Truncated,
-		MTime:     time.UnixMilli(resp.MTimeMS).UTC(),
-		SHA256:    resp.SHA256,
-		Written:   resp.Bytes,
-		Created:   resp.Created,
-	}, nil
 }

@@ -10,16 +10,10 @@ import (
 )
 
 // Starter starts a live-agent process for dir. Tests may override.
-//
-// fileRoot is the operator's ceiling, passed on the command line rather than read
-// from the session directory: a root that came out of dir would be a value the
-// session could have written, and the whole point is that this is the operator's
-// decision. Empty means no root, which means the file operations do not exist.
-type Starter func(execPath, dir, fileRoot string) (*exec.Cmd, error)
+type Starter func(execPath, dir string) (*exec.Cmd, error)
 
-// DefaultStarter launches `execPath __live-agent --dir <dir>` in a new session, with
-// --file-root when one is configured.
-func DefaultStarter(execPath, dir, fileRoot string) (*exec.Cmd, error) {
+// DefaultStarter launches `execPath __live-agent --dir <dir>` in a new session.
+func DefaultStarter(execPath, dir string) (*exec.Cmd, error) {
 	if execPath == "" {
 		var err error
 		execPath, err = os.Executable()
@@ -32,9 +26,6 @@ func DefaultStarter(execPath, dir, fileRoot string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	args := []string{"__live-agent", "--dir", dir}
-	if fileRoot != "" {
-		args = append(args, "--file-root", fileRoot)
-	}
 	cmd := exec.Command(execPath, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
