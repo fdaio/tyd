@@ -37,18 +37,11 @@ while [ ! -S "$HOME_DIR/.tyd/tyd.sock" ]; do
 done
 
 SID=$("$BIN" session create --detach)
-"$BIN" session send "$SID" "pwd; id -u; test -f $HOME/.tyd/id_ed25519 && echo HOST_KEY_VISIBLE || echo HOST_KEY_HIDDEN; echo SANDBOX_OK
+# The echoed command contains SANDBOX_""OK; its output contains SANDBOX_OK.
+# --until-match therefore waits for the result, not for the echo.
+"$BIN" session send "$SID" "pwd; id -u; test -f $HOME/.tyd/id_ed25519 && echo HOST_KEY_VISIBLE || echo HOST_KEY_HIDDEN; echo SANDBOX_\"\"OK
 "
-OUT=""
-i=0
-while [ "$i" -lt 15 ]; do
-  OUT=$("$BIN" session read "$SID" --wait 2s)
-  if printf '%s\n' "$OUT" | tr -d '\r' | grep -qx SANDBOX_OK; then
-    break
-  fi
-  i=$((i + 1))
-  sleep 1
-done
+OUT=$("$BIN" session read "$SID" --wait 30s --until-match 'SANDBOX_OK')
 "$BIN" session close "$SID"
 
 fail=0
