@@ -54,6 +54,34 @@ func TestGateAttachAcceptsALeaseWithoutPending(t *testing.T) {
 	}
 }
 
+func TestLeaseListAndRevoke(t *testing.T) {
+	s := NewWithConfig(Config{})
+	s.grantLease("sess", "peer-a", time.Minute)
+	s.grantLease("sess", "peer-b", time.Minute)
+	s.grantLease("other", "peer-a", time.Minute)
+
+	got := s.leasesFor("sess")
+	if len(got) != 2 {
+		t.Fatalf("leasesFor = %+v, want two", got)
+	}
+	if got[0].Principal != "peer-a" || got[1].Principal != "peer-b" {
+		t.Errorf("principals = %q, %q", got[0].Principal, got[1].Principal)
+	}
+	if len(got[0].Ops) == 0 {
+		t.Error("the listing has no operations")
+	}
+
+	if n := s.revokeLeases("sess"); n != 2 {
+		t.Errorf("revokeLeases = %d, want 2", n)
+	}
+	if got := s.leasesFor("sess"); len(got) != 0 {
+		t.Errorf("leases remain after revoke: %+v", got)
+	}
+	if got := s.leasesFor("other"); len(got) != 1 {
+		t.Error("revoke touched another session")
+	}
+}
+
 func TestPendingPrincipal(t *testing.T) {
 	s := NewWithConfig(Config{})
 	s.pending["k"] = &pendingAttach{sessionID: "sess", principal: "peer", digest: "abc"}

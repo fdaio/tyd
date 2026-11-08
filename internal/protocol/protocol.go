@@ -25,9 +25,12 @@ const (
 	TypeClose   Type = "close"
 	TypeApprove Type = "approve"
 	TypeReject  Type = "reject"
-	TypeAuth    Type = "auth"
-	TypeBound   Type = "bound" // server proves its identity over the relay TLS binding
-	TypeStatus  Type = "status"
+	// TypeLease lists or revokes the reusable approvals for one session. Its
+	// Data is "list" or "revoke"; a listing replies with a JSON array.
+	TypeLease  Type = "lease"
+	TypeAuth   Type = "auth"
+	TypeBound  Type = "bound" // server proves its identity over the relay TLS binding
+	TypeStatus Type = "status"
 
 	TypeChallenge   Type = "challenge"
 	TypeOK          Type = "ok"

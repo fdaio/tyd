@@ -15,6 +15,7 @@ the binary. This page is the map plus the defaults.
 | | `session read` | Pull output by cursor: `--cursor`, `--epoch`, `--wait`, `--until-match`, `--until-idle`, `--max-bytes`, `--json`, `--follow`. Live-agent sessions only |
 | | `session send` | Type into a session nobody is attached to; refuses while a human holds the keyboard. `--stdin` reads raw bytes, `--json` reports the cursor |
 | | `session approve` | Approve a PENDING session, or one waiting request on it (local unix only); `--lease D` also grants a reusable approval for attach/watch/read/send |
+| | `session lease` | List or revoke leases: `session lease <id>`, `session lease revoke <id>` (local unix only) |
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
 | | `session rm` | Forget a **closed** session in the local catalog (`--force`); its aliases go with it |
