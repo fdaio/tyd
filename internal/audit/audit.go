@@ -33,6 +33,7 @@ const (
 	KindApprovalExpired Kind = "approval_expired"
 	KindLeaseGrant      Kind = "lease_grant"
 	KindLeaseExpire     Kind = "lease_expire"
+	KindLeaseRevoke     Kind = "lease_revoke"
 	// KindRead marks a read that could not return a contiguous page: the
 	// cursor was reset, or the requested prefix was already gone. Paging
 	// through a log is not recorded, because a full drain is a thousand

@@ -171,6 +171,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 		{"read", "Pull output by cursor (--wait/--until-match/--until-idle/--max-bytes/--json/--follow)"},
 		{"send", "Inject keystrokes without attaching (--stdin for raw bytes)"},
 		{"approve", "Approve PENDING session (local unix only)"},
+		{"lease", "List or revoke approval leases: lease [revoke] <id>"},
 		{"reject", "Reject PENDING session (local unix only)"},
 		{"close", "Close a session (kept as history)"},
 		{"rm", "Remove a closed session from the local catalog (--force)"},
@@ -193,6 +194,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "                           more than one waiting, it refuses rather than")
 	fmt.Fprintln(w, "                           deciding requests you were not shown.")
 	fmt.Fprintln(w, "  approve --lease 15m       Also allow attach/watch/read/send for 15m.")
+	fmt.Fprintln(w, "  lease [revoke] <id>       List or revoke the leases for a session.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  rm [id|alias]             Forgets a CLOSED session here; needs --force.")
@@ -229,7 +231,7 @@ func sessionApproveUsage() string {
 }
 
 func sessionCommands() []string {
-	return []string{"create", "list", "attach", "watch", "read", "send", "approve", "reject", "close", "rm", "restore", "alias", "help"}
+	return []string{"create", "list", "attach", "watch", "read", "send", "approve", "reject", "close", "rm", "restore", "alias", "lease", "help"}
 }
 
 func rootCommands() []string {

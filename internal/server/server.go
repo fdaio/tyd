@@ -981,6 +981,34 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		info := sess.Info()
 		return st.send(protocol.Frame{Type: protocol.TypeOK, Session: &info})
 
+	case protocol.TypeLease:
+		if st.fromSession {
+			return sessionOriginRefusal("session lease")
+		}
+		if st.info.Transport != transport.KindUnix {
+			return fmt.Errorf("lease administration is only allowed on unix")
+		}
+		if f.SessionID == "" {
+			return fmt.Errorf("session_id required")
+		}
+		if err := s.require(st, auth.CapCreate, ""); err != nil {
+			return err
+		}
+		switch strings.TrimSpace(string(f.Data)) {
+		case "", "list":
+			b, err := json.Marshal(s.leasesFor(f.SessionID))
+			if err != nil {
+				return err
+			}
+			return st.send(protocol.Frame{Type: protocol.TypeOK, Data: b})
+		case "revoke":
+			n := s.revokeLeases(f.SessionID)
+			b, _ := json.Marshal(map[string]int{"revoked": n})
+			return st.send(protocol.Frame{Type: protocol.TypeOK, Data: b})
+		default:
+			return fmt.Errorf("lease action must be list or revoke, got %q", string(f.Data))
+		}
+
 	case protocol.TypeApprove:
 		if st.fromSession {
 			return sessionOriginRefusal("approve")

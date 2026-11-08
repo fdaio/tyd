@@ -398,6 +398,8 @@ is reusable until it expires (maximum one hour) and covers attach, watch, read,
 and send for that session and principal. It is held in memory, cleared by
 `close`, `revoke`, and a daemon restart, and audited as `lease_grant` and
 `lease_expire`. Without `--lease`, each request still needs its own approval.
+`tyd session lease <id>` lists the active leases and `tyd session lease revoke
+<id>` removes them, audited as `lease_revoke`; both run over the local socket.
 
 ### A peer that takes a long time to answer
 

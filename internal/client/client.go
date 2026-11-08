@@ -662,6 +662,22 @@ func Approve(ep Endpoint, key ed25519.PrivateKey, id, digest string, lease time.
 	return *resp.Session, nil
 }
 
+// Lease lists or revokes the reusable approvals for one session.
+func Lease(ep Endpoint, key ed25519.PrivateKey, id, action string) ([]byte, error) {
+	resp, err := rpc(ep, key, protocol.Frame{
+		Type:      protocol.TypeLease,
+		SessionID: id,
+		Data:      []byte(action),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.Type != protocol.TypeOK {
+		return nil, fmt.Errorf("lease %s: %s", action, resp.Type)
+	}
+	return resp.Data, nil
+}
+
 func Reject(ep Endpoint, key ed25519.PrivateKey, id string) error {
 	_, err := rpc(ep, key, protocol.Frame{Type: protocol.TypeReject, SessionID: id})
 	return err

@@ -258,6 +258,43 @@ func runSession(opts options) error {
 		}
 		fmt.Println(info.ID)
 		return nil
+	case "lease":
+		if err := refuseIfInSession("session lease"); err != nil {
+			return err
+		}
+		action := "list"
+		ref := firstArg(args)
+		if len(args) > 0 && args[0] == "revoke" {
+			action = "revoke"
+			ref = firstArg(args[1:])
+		}
+		sid, err := resolveSessionRef(opts, ref)
+		if err != nil {
+			return fmt.Errorf("usage: tyd session lease [revoke] <session_id|alias>: %w", err)
+		}
+		key, err := loadIdentity(opts.identity)
+		if err != nil {
+			return err
+		}
+		local := client.Endpoint{Kind: transport.KindUnix, Address: opts.socket}
+		if err := ensureLocalDaemon(opts, local); err != nil {
+			return err
+		}
+		data, err := client.Lease(local, key, sid, action)
+		if err != nil {
+			return err
+		}
+		if action == "revoke" {
+			fmt.Println(string(data))
+			return nil
+		}
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
+			return fmt.Errorf("lease list: %w", err)
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(v)
 	case "reject":
 		if err := refuseIfInSession("session reject"); err != nil {
 			return err

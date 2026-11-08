@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"tyd/internal/audit"
@@ -94,4 +96,61 @@ func (s *Server) pendingPrincipal(sessionID, digest string) string {
 		return req.principal
 	}
 	return ""
+}
+
+// LeaseInfo is one active lease, for the local list command.
+type LeaseInfo struct {
+	Principal string    `json:"principal"`
+	Expires   time.Time `json:"expires"`
+	Ops       []string  `json:"ops"`
+}
+
+// leasesFor lists the active leases for one session, dropping anything expired.
+func (s *Server) leasesFor(sessionID string) []LeaseInfo {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []LeaseInfo
+	for key, l := range s.leases {
+		if !strings.HasPrefix(key, sessionID+"|") {
+			continue
+		}
+		if now.After(l.expires) {
+			delete(s.leases, key)
+			continue
+		}
+		ops := make([]string, 0, len(l.ops))
+		for op := range l.ops {
+			ops = append(ops, op)
+		}
+		sort.Strings(ops)
+		out = append(out, LeaseInfo{
+			Principal: strings.TrimPrefix(key, sessionID+"|"),
+			Expires:   l.expires,
+			Ops:       ops,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Principal < out[j].Principal })
+	return out
+}
+
+// revokeLeases removes every lease for a session and reports how many.
+func (s *Server) revokeLeases(sessionID string) int {
+	s.mu.Lock()
+	n := 0
+	for key := range s.leases {
+		if strings.HasPrefix(key, sessionID+"|") {
+			delete(s.leases, key)
+			n++
+		}
+	}
+	s.mu.Unlock()
+	if n > 0 {
+		s.audit(audit.Event{
+			Kind:      audit.KindLeaseRevoke,
+			SessionID: sessionID,
+			Reason:    fmt.Sprintf("%d lease(s) revoked", n),
+		})
+	}
+	return n
 }
