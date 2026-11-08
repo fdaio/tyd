@@ -25,6 +25,7 @@ const (
 	KindDetach        Kind = "detach"
 	KindClose         Kind = "close"
 	KindIdleClose     Kind = "idle_close"
+	KindLifetimeClose Kind = "lifetime_close"
 	KindDenied        Kind = "denied"
 	// KindApprovalExpired is a request that timed out with nobody deciding.
 	// It is a denial, and it is recorded so that waiting out the TTL leaves a

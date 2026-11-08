@@ -151,6 +151,9 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--approval MODE` | Approval mode at register time: `full`, `pre`, `post` (default `full`) |
 | `--audit-log PATH` | `up`: record control events as JSON lines (e.g. `~/.tyd/audit.log`) |
 | `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
+| `--session-max-lifetime D` | `up`: close sessions older than this, e.g. `24h` (default off) |
+| `--max-sessions-per-peer N` | `up`: sessions one principal may hold (default `0` = unlimited; `8` for an agent host) |
+| `--max-sessions-total N` | `up`: sessions the daemon may hold (default `0` = unlimited; `32` for an agent host) |
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
 | `--sandbox MODE` | `up`: session runtime: `host`, `auto`, `docker`, or `podman` (default `host`) |

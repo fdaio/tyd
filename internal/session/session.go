@@ -210,6 +210,47 @@ func (m *Manager) List() []protocol.SessionInfo {
 	return out
 }
 
+// Count reports how many sessions the manager holds, including PENDING and
+// CLOSED rows.
+func (m *Manager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.sessions)
+}
+
+// CountByOwner reports how many sessions one principal owns. Pending sessions
+// count: the slot is already held.
+func (m *Manager) CountByOwner(owner string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, s := range m.sessions {
+		if s.Owner == owner {
+			n++
+		}
+	}
+	return n
+}
+
+// OlderThan returns the sessions created before the cutoff. The caller closes
+// them; this method does not mutate or audit.
+func (m *Manager) OlderThan(age time.Duration, now time.Time) []string {
+	if age <= 0 {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	for _, s := range m.sessions {
+		if s.CreatedAt.IsZero() || now.Sub(s.CreatedAt) < age {
+			continue
+		}
+		out = append(out, s.ID)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // IdleSince reports when the session became unattended. Zero means attached,
 // pending, closed, or exited.
 func (s *Session) IdleSince() time.Time {

@@ -63,6 +63,9 @@ tyd up --tls-cert /path/server.crt --tls-key /path/server.key
 tyd up --data-listen off                          # no peer data plane
 tyd up --audit-log ~/.tyd/audit.log               # control-event audit trail
 tyd up --session-idle-timeout 8h                  # reap unattended sessions
+tyd up --session-max-lifetime 24h                 # close sessions older than a day
+tyd up --max-sessions-per-peer 8                  # bound one principal's sessions
+tyd up --max-sessions-total 32                    # bound the daemon's sessions
 tyd up --session-output-log-max 64MB              # per-session output log cap (default)
 tyd up --session-send-timeout 5s                   # bound on one send to the PTY (max 30s)
 ```
