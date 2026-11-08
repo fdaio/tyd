@@ -45,6 +45,7 @@ type options struct {
 	key                string
 	noWait             bool
 	detach             bool
+	jsonOut            bool
 	all                bool
 	verbose            bool
 	force              bool
@@ -430,6 +431,8 @@ func parseArgs(args []string) (options, error) {
 			opts.noWait = true
 		case a == "--detach":
 			opts.detach = true
+		case a == "--json":
+			opts.jsonOut = true
 		case a == "--all":
 			opts.all = true
 		case a == "--verbose":

@@ -89,6 +89,30 @@ This is not a VM: the container shares the host kernel. Use a VM or a separate
 user when a kernel escape is in scope. The workdir is writable, and everything
 in it is visible to the session.
 
+## Scripted use
+
+`session create --json` prints one object and does not attach:
+
+```json
+{"id":"7f3a...","state":"DETACHED","peer":"build"}
+```
+
+`session list --json` returns `{"sessions":[...]}` plus `hidden` when archived
+rows are omitted. `session close --json` returns `{"id":"...","state":"CLOSED"}`.
+`session send --json` and `session read --json` return the cursor and one page
+per line. Errors stay on stderr with a non-zero exit code.
+
+A scripted loop:
+
+```bash
+SID=$(tyd --peer build session create --json | jq -r .id)
+tyd --peer build session send "$SID" --stdin --json <<'EOF'
+make test
+EOF
+tyd --peer build session read "$SID" --json --wait 60s --until-match 'PASS|FAIL'
+tyd --peer build session close "$SID" --json
+```
+
 ## Flags
 
 Accepted as `--flag value` or `--flag=value`, before or after the command.
@@ -141,6 +165,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--shell PATH` | `session create`: shell to run; must be listed in the **daemon's** `/etc/shells` (default: the daemon's own shell) |
 | `--detach` | `session create`: print the id only |
+| `--json` | `session create` / `list` / `close`: print one JSON object; `create` implies `--detach` |
 | `--all` | `peer list` / `session list`: include archived rows |
 | `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr; also reports a prune that could not write |
 | `--force` | `register`: replace an existing registration (invalidates peers); `revoke` / `session rm`: delete without asking |

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -55,6 +56,11 @@ func runSession(opts options) error {
 	st := newConnectStatus(os.Stderr, opts.verbose)
 	switch sub {
 	case "create":
+		// A JSON reply is for a script. Attaching would put terminal bytes on
+		// the same stream, so --json implies --detach.
+		if opts.jsonOut {
+			opts.detach = true
+		}
 		st.Log("Resolving endpoint.")
 		ep, peerID, err := endpoint(opts)
 		if err != nil {
@@ -86,12 +92,20 @@ func runSession(opts options) error {
 		markUsed(opts, peerID, info.ID)
 		if info.State == string(session.StatePending) {
 			st.Clear()
+			if opts.jsonOut {
+				writeCreatedJSON(os.Stdout, info.ID, info.State, peerID)
+				return nil
+			}
 			fmt.Fprintln(os.Stderr, "pending approval")
 			fmt.Println(info.ID)
 			return nil
 		}
 		if opts.detach {
 			st.Clear()
+			if opts.jsonOut {
+				writeCreatedJSON(os.Stdout, info.ID, info.State, peerID)
+				return nil
+			}
 			fmt.Println(info.ID)
 			return nil
 		}
@@ -206,6 +220,12 @@ func runSession(opts options) error {
 			rememberSession(opts, rec)
 		}
 		markUsed(opts, peerID, sid)
+		if opts.jsonOut {
+			_ = json.NewEncoder(os.Stdout).Encode(struct {
+				ID    string `json:"id"`
+				State string `json:"state"`
+			}{ID: sid, State: string(session.StateClosed)})
+		}
 		return nil
 	case "rm":
 		return runSessionRemove(opts, firstArg(args))
@@ -321,6 +341,9 @@ func runSessionList(opts options) error {
 			ID: it.ID, Alias: an, Peer: peer,
 			State: state, Created: catalog.CreatedDisplay(it),
 		})
+	}
+	if opts.jsonOut {
+		return writeSessionListJSON(os.Stdout, rows, hidden)
 	}
 	writeSessionList(os.Stdout, rows, colorEnabled(os.Stdout))
 	// A hidden row still exists, and one that is only hidden may still be
@@ -486,7 +509,26 @@ func runAlias(opts options) error {
 }
 
 type sessionListRow struct {
-	ID, Alias, Peer, State, Created string
+	ID      string `json:"id"`
+	Alias   string `json:"alias,omitempty"`
+	Peer    string `json:"peer,omitempty"`
+	State   string `json:"state"`
+	Created string `json:"created,omitempty"`
+}
+
+func writeSessionListJSON(w io.Writer, rows []sessionListRow, hidden int) error {
+	return json.NewEncoder(w).Encode(struct {
+		Sessions []sessionListRow `json:"sessions"`
+		Hidden   int              `json:"hidden,omitempty"`
+	}{Sessions: rows, Hidden: hidden})
+}
+
+func writeCreatedJSON(w io.Writer, id, state, peer string) {
+	_ = json.NewEncoder(w).Encode(struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+		Peer  string `json:"peer,omitempty"`
+	}{ID: id, State: state, Peer: peer})
 }
 
 func liveState(state string) bool {
