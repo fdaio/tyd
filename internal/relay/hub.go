@@ -67,8 +67,13 @@ func (h *Hub) handleOffer(conn net.Conn, msg Msg) {
 	}
 	o := &offer{daemonID: id, control: conn}
 	h.mu.Lock()
-	if old, ok := h.offers[id]; ok {
-		_ = old.control.Close()
+	if _, ok := h.offers[id]; ok {
+		// Do not displace a live offer. The id is public, and an offer is
+		// unauthenticated at this layer, so replacing it would let anyone
+		// who knows the id take the rendezvous away from the real daemon.
+		h.mu.Unlock()
+		_ = WriteMsg(conn, Msg{Type: TypeError, Error: "daemon already has an active offer"})
+		return
 	}
 	h.offers[id] = o
 	h.mu.Unlock()
