@@ -491,9 +491,40 @@ With `--addr`, the client uses TLS and ignores `--socket` for that command. It
 | `allow` | Global: only `list`, `create` |
 | `sessions` | Optional map of `session_id` → caps |
 
-Session caps: `attach`, `write`, `resize`, `signal`, `close`. `attach` does not
-imply `write`. A key that is not listed fails the handshake with
-`untrusted public key`.
+Session caps: `attach`, `watch`, `read`, `write`, `resize`, `signal`, `close`.
+`attach` does not imply `write`; `watch` and `read` do not take the attach slot.
+A key that is not listed fails the handshake with `untrusted public key`.
+
+### `policy.json`: the role for each pair
+
+The target assigns every inbound peer a role in `policy.json`, beside
+`peers.json`:
+
+```json
+{
+  "default_role": "list",
+  "peers": {
+    "<peer-id>": {"role": "operator"}
+  }
+}
+```
+
+| Role | Capabilities |
+|------|--------------|
+| `list` | `list` only |
+| `viewer` | `list`, plus watch and read on any session; no attach, write, resize, signal, or close |
+| `operator` | `list` and `create`; owner capabilities on sessions it creates |
+| `admin` | viewer and operator |
+
+`tyd peer role <id|nick> <role>` changes the file; `tyd peer show` prints the
+current role. The Control Panel cannot grant a role — it can only withhold a
+pairing. A downgrade takes effect on the next trust sync and keeps session
+grants the peer already holds, so a running session is not torn away.
+
+On the first run after an upgrade, a missing `policy.json` is created with every
+currently inbound peer as `operator` and `default_role` as `list`, so existing
+pairs keep working and new pairs start minimal. Delete the file to restore the
+legacy all-operator behavior.
 
 ## Testing trust and TLS locally
 

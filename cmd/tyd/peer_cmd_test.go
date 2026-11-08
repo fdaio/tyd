@@ -12,7 +12,7 @@ import (
 
 func TestWritePeerShowFieldsLabels(t *testing.T) {
 	var buf bytes.Buffer
-	writePeerShowFields(&buf, "abc", "amy", "outbound", "2026-09-16T09:53:22Z", "2pwNT1Vzrv7jw+1w…")
+	writePeerShowFields(&buf, "abc", "amy", "outbound", "2026-09-16T09:53:22Z", "2pwNT1Vzrv7jw+1w…", "operator")
 	out := buf.String()
 	for _, bad := range []string{"paired_at", "public_key"} {
 		if strings.Contains(out, bad) {

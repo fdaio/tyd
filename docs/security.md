@@ -14,6 +14,7 @@ boundary](#the-local-boundary) first.
 |---|---|
 | A remote peer attaching without being reviewed | Approval mode `pre`; every later remote look is reviewed again |
 | A peer you revoked reconnecting | The revocation is recorded locally; the Control Panel cannot re-grant it ([pairing](protocol.md#relay-path-security)) |
+| A paired peer doing more than its role | The target's local `policy.json`; the daemon refuses at authorization |
 | The Control Panel reading your session | The data plane is TLS 1.3, negotiated between the peers. The Control Panel is a courier. |
 | The Control Panel substituting a peer | Pairing is anchored to a secret it never sees; it may withdraw trust, never grant it |
 | The Control Panel rewriting where a peer lives | Published endpoints are signed by the peer and verified before dialling |
@@ -137,6 +138,14 @@ what ran in the session.** A `send` is recorded as a control event carrying
 the byte count and never the bytes. The output log does hold terminal bytes
 for `read`; treat the session dir as sensitive, the same way you treat the PTY
 itself.
+
+## Roles and capabilities
+
+The target assigns each pair a local role in `policy.json`, beside `peers.json`.
+`list` can only list; `viewer` can watch and read any session; `operator` can
+create and owns what it creates; `admin` can do both. The Control Panel cannot
+grant a role — it can only withhold a pairing. `tyd peer role` changes the file,
+and a downgrade takes effect on the next trust sync.
 
 ## Deployment tiers
 

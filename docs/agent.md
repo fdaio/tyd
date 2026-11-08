@@ -232,7 +232,9 @@ tyd revoke build-agent --force          # when it is finished
 ```
 
 It gets its own entry in `paired.json` and can be revoked without touching the
-pairing you use yourself.
+pairing you use yourself. A new pair starts at the `list` role: on the target,
+run `tyd peer role <id|nick> operator` before it can create sessions, or
+`viewer` if it only needs to watch and read.
 
 ## Troubleshooting for agents
 

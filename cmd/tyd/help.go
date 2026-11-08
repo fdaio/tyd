@@ -59,6 +59,7 @@ func writeRootHelp(w io.Writer, color bool) {
 		{"peer list", "List paired peers"},
 		{"peer show", "Show peer detail, endpoint, and reachability"},
 		{"peer alias", "Set or clear a peer nickname"},
+		{"peer role", "Set a peer's local role: list|viewer|operator|admin"},
 		{"peer restore", "Put an archived peer back in the list"},
 		{"revoke", "Revoke a paired peer, either side (--force)"},
 	}, color)
@@ -232,7 +233,7 @@ func rootCommands() []string {
 }
 
 func peerCommands() []string {
-	return []string{"list", "show", "alias", "restore", "help"}
+	return []string{"list", "show", "alias", "role", "restore", "help"}
 }
 
 func unknownCommandErr(kind, got string, candidates []string, usage string) error {

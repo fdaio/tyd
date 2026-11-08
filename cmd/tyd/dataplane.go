@@ -23,6 +23,7 @@ import (
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/peerstate"
+	"tyd/internal/policy"
 	"tyd/internal/relay"
 	"tyd/internal/server"
 	"tyd/internal/session"
@@ -714,6 +715,12 @@ func injectPeerTrust(opts options, trust *auth.Store, doc *peers.File) {
 
 	var keep []ed25519.PublicKey
 	var legacy int
+	type inbound struct {
+		id   string
+		name string
+		pub  ed25519.PublicKey
+	}
+	var peersIn []inbound
 	for _, p := range paired.Peers {
 		// Only inbound peers are granted session access, as before. An outbound
 		// entry is the server this daemon dials; trusting it here would let it
@@ -740,8 +747,28 @@ func injectPeerTrust(opts options, trust *auth.Store, doc *peers.File) {
 			// back to the id instead of rejecting the peer.
 			name = p.ID
 		}
-		trust.EnsurePeer(name, pub, auth.AllGlobal)
-		keep = append(keep, pub)
+		peersIn = append(peersIn, inbound{id: p.ID, name: name, pub: pub})
+	}
+
+	ids := make([]string, 0, len(peersIn))
+	for _, p := range peersIn {
+		ids = append(ids, p.id)
+	}
+	pol, err := policy.Ensure(policy.PathFor(opts.peers), ids)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "tyd trust: policy unreadable (%v); no peer is trusted\n", err)
+		trust.DropUnlistedPeers(nil)
+		return
+	}
+	for _, p := range peersIn {
+		role := pol.RoleFor(p.id)
+		caps, err := policy.Caps(role)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tyd trust: peer %s has %v; using list\n", p.id, err)
+			caps = []auth.Cap{auth.CapList}
+		}
+		trust.SetPeer(p.name, p.pub, caps)
+		keep = append(keep, p.pub)
 	}
 	trust.DropUnlistedPeers(keep)
 	if legacy > 0 {
