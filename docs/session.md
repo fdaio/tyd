@@ -341,8 +341,14 @@ separately on purpose.
 ## Who may do what
 
 `attach` does not imply `write`. A key granted only `attach` can follow output
-(via `attach`, `watch`, or `read`) but cannot type. An identity with `create` receives
-owner caps (`attach`, `write`, `resize`, `signal`, `close`) on the session it just
-created — in the running daemon's memory, re-derived on restore, never written
-back to `trusted.json`. The trust file format is in
-[operations.md](operations.md).
+(via `attach`, `watch`, or `read`) but cannot type. `watch` and `read` are
+separate capabilities: they do not take the exclusive attach slot. An identity
+with `create` receives owner caps (`attach`, `watch`, `read`, `write`, `resize`,
+`signal`, `close`) on the session it just created — in the running daemon's
+memory, re-derived on restore, never written back to `trusted.json`. The trust
+file format is in [operations.md](operations.md).
+
+The target also assigns each paired peer a local role in `policy.json`: `list`
+(no session access), `viewer` (watch and read any session), `operator` (`create`
+and owner caps on its own sessions), or `admin` (both). `tyd peer role` changes
+it; the Control Panel cannot grant a role.

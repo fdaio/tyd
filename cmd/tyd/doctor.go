@@ -14,6 +14,7 @@ import (
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/peerstate"
+	"tyd/internal/policy"
 	"tyd/internal/safefile"
 )
 
@@ -111,6 +112,10 @@ func doctorChecks(opts options) (out []check, peersBroken bool) {
 		{"aliases", opts.aliases, false, parseJSON},
 		{"sessions", opts.sessions, false, parseJSON},
 		{"recent", opts.recent, false, parseJSON},
+		{"policy", policy.PathFor(opts.peers), false, func(p string) error {
+			_, err := policy.Load(p)
+			return err
+		}},
 	} {
 		c, broken := fileCheck(f.name, f.path, f.required, f.parse)
 		out = append(out, c)

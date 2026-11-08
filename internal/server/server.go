@@ -1017,7 +1017,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
+		if err := s.require(st, auth.CapWatch, f.SessionID); err != nil {
 			return err
 		}
 		if err := s.gateAttach(st, f.SessionID, opWatch, 0); err != nil {
@@ -1061,7 +1061,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err != nil {
 			return err
 		}
-		if err := s.require(st, auth.CapAttach, f.SessionID); err != nil {
+		if err := s.require(st, auth.CapRead, f.SessionID); err != nil {
 			return err
 		}
 		if err := s.gateAttach(st, f.SessionID, opRead, 0); err != nil {

@@ -113,13 +113,20 @@ Server accepts only public keys present in the trust store. Bad signature → `a
 |------------|-------|-------|
 | `list` | global | Also required for `status` |
 | `create` | global | On success, creator gets owner caps on the new session (in memory) |
-| `attach` | per session | Read/follow output (`attach`, `watch`, or `read`); **not** write. `read` can return up to the on-disk log (default 64MB), not only the 64KB attach ring. |
+| `attach` | per session | Take the exclusive interactive slot. Typing still needs `write` |
+| `watch` | per session | Read-only follow; does not take the attach slot |
+| `read` | per session | Paged output read by cursor; does not take the attach slot |
 | `write` | per session | Keyboard / stdin to PTY |
 | `resize` | per session | |
 | `signal` | per session | |
 | `close` | per session | |
 
-Owner caps after create: `attach`, `write`, `resize`, `signal`, `close`.
+Owner caps after create: `attach`, `watch`, `read`, `write`, `resize`, `signal`, `close`.
+
+A local role resolves to these capabilities: `list` gives `list`; `viewer` gives
+`list`, plus watch and read on any session; `operator` gives `list` and
+`create`; `admin` gives both. A viewer never holds `attach`, so it cannot block
+a send or a person's takeover.
 
 ## Connection topology payload
 

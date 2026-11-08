@@ -23,6 +23,7 @@ the binary. This page is the map plus the defaults.
 | Peers | `peer list` | List paired peers (id, alias, direction), newest pairing first; archived peers are hidden unless `--all` |
 | | `peer show <id\|alias>` | Show peer detail, endpoint, reachability, and whether the pairing record verifies |
 | | `peer alias <id\|nick> <name>` | Set a peer nickname (`peer alias rm <id\|nick>` clears it) |
+| | `peer role <id\|nick> <role>` | Set the peer's local role: `list`, `viewer`, `operator`, or `admin` |
 | | `peer restore` | Put an archived peer back in `peer list` |
 | | `revoke` | Revoke a paired peer (either side), with `--force` |
 | Pairing | `keygen` | Generate the Ed25519 identity (also created automatically) |
@@ -182,6 +183,7 @@ Everything lives under `~/.tyd`:
 | `id_ed25519`, `id_ed25519.pub` | Identity (private key mode `0600`) |
 | `trusted.json` | Bootstrap trust: public keys and capabilities |
 | `peers.json` | Paired peers; a cache of what the daemon already holds |
+| `policy.json` | Local role for each peer, beside `peers.json`; never read from the Control Panel |
 | `aliases.json` | Client-local session names |
 | `recent.json` | Last peer / session used by this client |
 | `sessions.json` | Client-local session catalog read by `session list` |

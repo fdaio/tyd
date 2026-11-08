@@ -11,6 +11,7 @@ import (
 	"tyd/internal/client"
 	"tyd/internal/cpclient"
 	"tyd/internal/peers"
+	"tyd/internal/policy"
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
@@ -32,6 +33,11 @@ func runPeer(opts options) error {
 		return runPeerShow(opts, args[0])
 	case "alias":
 		return runPeerAlias(opts, args)
+	case "role":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: tyd peer role <id|nick> <list|viewer|operator|admin>")
+		}
+		return runPeerRole(opts, args[0], args[1])
 	case "restore":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: tyd peer restore <id|nick>")
@@ -149,7 +155,7 @@ func runPeerShow(opts options, idOrNick string) error {
 		paired = p.PairedAt.UTC().Format(time.RFC3339)
 	}
 
-	writePeerShowFields(os.Stdout, p.ID, nick, dir, paired, shortKey(p.PublicKey))
+	writePeerShowFields(os.Stdout, p.ID, nick, dir, paired, shortKey(p.PublicKey), peerRole(opts, p.ID))
 	if loadArchive(opts).PeerArchived(p.ID) {
 		// A hidden peer that `peer list` does not show still has to be findable,
 		// and the line has to say that hiding it changed nothing else.
@@ -281,12 +287,54 @@ func runPeerAlias(opts options, args []string) error {
 	return nil
 }
 
-func writePeerShowFields(w io.Writer, id, nick, dir, paired, key string) {
+func writePeerShowFields(w io.Writer, id, nick, dir, paired, key, role string) {
 	fmt.Fprintf(w, "%-12s %s\n", "id:", id)
 	fmt.Fprintf(w, "%-12s %s\n", "alias:", nick)
 	fmt.Fprintf(w, "%-12s %s\n", "direction:", dir)
 	fmt.Fprintf(w, "%-12s %s\n", "paired:", paired)
 	fmt.Fprintf(w, "%-12s %s\n", "public key:", key)
+	fmt.Fprintf(w, "%-12s %s\n", "role:", role)
+}
+
+// peerRole is what policy says, without creating a file just to read it.
+func peerRole(opts options, id string) string {
+	pol, err := policy.Load(policy.PathFor(opts.peers))
+	if err != nil {
+		return "-"
+	}
+	return string(pol.RoleFor(id))
+}
+
+func runPeerRole(opts options, idOrNick, roleName string) error {
+	doc, err := peers.Load(opts.peers)
+	if err != nil {
+		return err
+	}
+	p, err := doc.Find(idOrNick)
+	if err != nil {
+		return err
+	}
+	role := policy.Role(strings.ToLower(strings.TrimSpace(roleName)))
+	if err := policy.Validate(role); err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(doc.Peers))
+	for _, peer := range doc.Peers {
+		ids = append(ids, peer.ID)
+	}
+	path := policy.PathFor(opts.peers)
+	pol, err := policy.Ensure(path, ids)
+	if err != nil {
+		return err
+	}
+	if err := pol.Set(p.ID, role); err != nil {
+		return err
+	}
+	if err := pol.Save(path); err != nil {
+		return err
+	}
+	fmt.Printf("%s (%s): role %s\n", p.ID, p.Nickname, role)
+	return nil
 }
 
 func shortKey(key string) string {
@@ -312,6 +360,7 @@ func writePeerHelp(w io.Writer, color bool) {
 		{"show", "Show peer detail, endpoint, reachability"},
 		{"alias", "Set a peer nickname (alias)"},
 		{"alias rm", "Clear a peer nickname"},
+		{"role", "Set a peer's local role: list|viewer|operator|admin"},
 		{"restore", "Put an archived peer back in the list"},
 	}, color)
 	fmt.Fprintln(w)

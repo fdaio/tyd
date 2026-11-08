@@ -79,6 +79,34 @@ func (s *Store) EnsurePeer(name string, pub ed25519.PublicKey, caps []Cap) *Prin
 	return &out
 }
 
+// SetPeer replaces a peer's global capabilities while keeping its per-session
+// grants. A role change therefore takes effect immediately, and a session the
+// peer already created is not torn away mid-use.
+func (s *Store) SetPeer(name string, pub ed25519.PublicKey, caps []Cap) *Principal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := EncodePublic(pub)
+	p, ok := s.principals[key]
+	if !ok {
+		p = &Principal{
+			Pub:      append(ed25519.PublicKey(nil), pub...),
+			Sessions: make(map[string]map[Cap]bool),
+		}
+		s.principals[key] = p
+		s.peerKeys[key] = struct{}{}
+	}
+	if name != "" {
+		p.Name = name
+	}
+	p.Global = make(map[Cap]bool, len(caps))
+	for _, c := range caps {
+		p.Global[c] = true
+	}
+	out := *p
+	out.Pub = append(ed25519.PublicKey(nil), p.Pub...)
+	return &out
+}
+
 // DropUnlistedPeers removes EnsurePeer principals whose keys are not in keep.
 func (s *Store) DropUnlistedPeers(keep []ed25519.PublicKey) {
 	keepSet := make(map[string]struct{}, len(keep))
@@ -139,11 +167,29 @@ func (s *Store) Allow(p *Principal, cap Cap, sessionID string) bool {
 	switch cap {
 	case CapList, CapCreate:
 		return cur.Global[cap]
+	case CapWatch, CapRead:
+		any := CapWatchAny
+		if cap == CapRead {
+			any = CapReadAny
+		}
+		if cur.Global[any] {
+			return true
+		}
+		fallthrough
 	default:
 		if sessionID == "" {
 			return false
 		}
-		return cur.Sessions[sessionID][cap]
+		if cur.Sessions[sessionID][cap] {
+			return true
+		}
+		// An attach grant from before watch and read were separate
+		// capabilities still covers the read-only views; it never implied
+		// write, and it still does not.
+		if cap == CapWatch || cap == CapRead {
+			return cur.Sessions[sessionID][CapAttach]
+		}
+		return false
 	}
 }
 
