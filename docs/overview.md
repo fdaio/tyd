@@ -67,7 +67,7 @@ After pairing, peers form a 1:1 data plane. Clients try the QUIC candidates the
 server published, then fall back to the `tyd-relay` rendezvous (default
 `https://app.getfda.dev/relay`) when every direct dial fails. Session bytes never
 pass through the Control Panel. Phase status — QUIC direct done, relay MVP done,
-WireGuard planned: [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
+WireGuard dropped: [requirements/dataplane-networking.md](requirements/dataplane-networking.md).
 
 ## Process model
 

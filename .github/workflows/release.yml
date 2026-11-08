@@ -174,7 +174,7 @@ jobs:
       # A build off main is a prerelease. GitHub's "latest release" excludes
       # prereleases, and install.sh downloads from that, so a merge does not
       # become what new installs get: .github/workflows/promote.yml runs the smoke
-      # test and promotes a build once it is verified. `tyd --channel edge` is how
+      # test and promotes a build once it is verified. `install.sh --channel edge` is how
       # to ask for the newest build before then.
       - uses: softprops/action-gh-release@v3
         with:

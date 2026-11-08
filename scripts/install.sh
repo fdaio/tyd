@@ -339,6 +339,37 @@ download() {
 	return 1
 }
 
+# verify_archive checks the downloaded archive against the release's
+# checksums.txt. Local paths are not verified: they are not a release.
+verify_archive() {
+	archive="$1"
+	url="$2"
+	case "$url" in
+	http://* | https://*) ;;
+	*)
+		log "local archive; checksum not verified"
+		return 0
+		;;
+	esac
+	base="${url%/*}"
+	name="${url##*/}"
+	sums="$TMP/checksums.txt"
+	if ! curl -fsSL --connect-timeout 15 --max-time 30 -o "$sums" "$base/checksums.txt"; then
+		die "checksums.txt is not available for $name; refusing to install an unverified archive"
+	fi
+	expected="$(awk -v f="$name" '$2 == f { print $1; exit }' "$sums")"
+	[ -n "$expected" ] || die "checksums.txt has no entry for $name"
+	if command -v sha256sum >/dev/null 2>&1; then
+		actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+	elif command -v shasum >/dev/null 2>&1; then
+		actual="$(shasum -a 256 "$archive" | awk '{ print $1 }')"
+	else
+		die "no sha256sum or shasum; cannot verify $name"
+	fi
+	[ "$actual" = "$expected" ] || die "checksum mismatch for $name: got $actual, want $expected"
+	log "checksum ok: $name"
+}
+
 if [ "$SERVICE_ONLY" -eq 1 ]; then
 	TYD="${BINDIR}/tyd"
 	[ -x "$TYD" ] || die "no binary at $TYD"
@@ -353,6 +384,7 @@ else
 	if ! download "$URL" "$ARCHIVE"; then
 		die "download failed: $URL ($(file_size "$ARCHIVE") bytes kept; GitHub Release asset tyd-${OS}-${ARCH}.tar.gz, or set TYD_RELEASE_URL, or build with make build)"
 	fi
+	verify_archive "$ARCHIVE" "$URL"
 	tar -xzf "$ARCHIVE" -C "$TMP"
 	SRC="$TMP/tyd"
 	[ -f "$SRC" ] || die "archive missing tyd (expected a tyd-<os>-<arch>.tar.gz built with make dist)"

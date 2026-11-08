@@ -84,10 +84,11 @@ Prefer to read it first? Fetch the script out of this repository:
 curl -fsSL https://raw.githubusercontent.com/fdaio/tyd/main/scripts/install.sh -o install.sh && less install.sh
 ```
 
-`app.getfda.dev/install.sh` serves that same file. The archives it downloads are
-not signed, but GitHub publishes a SHA-256 digest for each one on the
-[release page](https://github.com/fdaio/tyd/releases/latest) if you want to check
-what you got.
+`app.getfda.dev/install.sh` serves that same file. The installer verifies the
+archive against the release's `checksums.txt` and refuses a mismatch. The
+archives are not signed; the checksum is what the install path verifies, and
+GitHub publishes the same digest on the
+[release page](https://github.com/fdaio/tyd/releases/latest).
 
 > Saved `install.sh` from before 2026-09-28? Fetch it again: release archives are
 > now named per architecture, so an old copy asks for a name that no longer
