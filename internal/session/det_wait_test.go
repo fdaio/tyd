@@ -22,7 +22,7 @@ func TestDetWaitMatchWakesOnTime(t *testing.T) {
 	// return promptly after the marker appears — not at the full wait
 	// timeout (which would mean the condition was ignored and the
 	// driver fell back to waiting blindly).
-	reply, err := s.Send([]byte("sleep 1; echo punctual-marker\n"), false)
+	reply, err := s.Send([]byte("sleep 1; echo punctual-marker\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestDetWaitMaxBytesCapsData(t *testing.T) {
 	// The read must come back BECAUSE the cap was hit
 	// (Reason == "max-bytes") with at most MaxBytes of data —
 	// a declared bound, not a guess about "enough output".
-	reply, err := s.Send([]byte("seq 1 10000\n"), false)
+	reply, err := s.Send([]byte("seq 1 10000\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestDetWaitIdleDetectsQuiet(t *testing.T) {
 	_, s, _, cleanup := newLiveSession(t)
 	defer cleanup()
 
-	reply, err := s.Send([]byte("echo idle-probe; sleep 2\n"), false)
+	reply, err := s.Send([]byte("echo idle-probe; sleep 2\n"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -172,9 +172,8 @@ func (f *File) HasRegistration() bool {
 
 // ReservedNickname is the one nickname that may not be given to a peer.
 //
-// It is how `tyd mcp` is told to serve the daemon on this machine. A peer
-// holding it would turn `--peer local` into a choice between two machines, and
-// the operator who wrote it down believed they had scoped the model to one.
+// It is the name of this machine's own principal in trusted.json. A peer
+// holding it would make a peer reference ambiguous with this machine.
 const ReservedNickname = "local"
 
 // ValidateNickname matches session alias rules: no whitespace or '/'.
@@ -184,8 +183,8 @@ func ValidateNickname(name string) error {
 		return fmt.Errorf("empty nickname")
 	}
 	if name == ReservedNickname {
-		return fmt.Errorf("nickname %q is reserved: it names this machine's own daemon "+
-			"in `tyd mcp --peer %s`, so a peer cannot answer to it", ReservedNickname, ReservedNickname)
+		return fmt.Errorf("nickname %q is reserved: it names this machine's own principal, "+
+			"so a peer cannot answer to it", ReservedNickname)
 	}
 	if strings.ContainsAny(name, " \t\n/") {
 		return fmt.Errorf("nickname must not contain whitespace or '/'")

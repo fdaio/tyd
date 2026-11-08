@@ -14,30 +14,15 @@ import (
 
 	"github.com/creack/pty"
 
-	"tyd/internal/fileroot"
 	"tyd/internal/protocol"
-	"tyd/internal/ttyutil"
 )
 
 const ringMax = 64 << 10
 
 // Config is what an operator gave this agent at startup.
-type Config struct {
-	// FileRoot is the ceiling for the file operations. Empty means they do not
-	// exist, which is the default and is not the same as unrestricted.
-	//
-	// A path here is a claim by whoever ran the daemon, so it is opened here, in
-	// the process that owns the PTY, and the resulting descriptor is what every
-	// later request is checked against.
-	FileRoot string
-}
+type Config struct{}
 
 // Run starts a live-agent in dir (blocking). Expects meta.json already written.
-//
-// The ceiling is a parameter rather than something read from the directory on
-// purpose: a root that came out of the session directory would be a value the
-// session could have written, and the whole point is that this is the operator's
-// decision.
 func Run(dir string, cfg Config) error {
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -57,19 +42,6 @@ func Run(dir string, cfg Config) error {
 		return err
 	}
 
-	// Opened before the agent exists so a bad ceiling stops the process here,
-	// rather than leaving an agent running that answers every file request with
-	// "unavailable" for a reason nobody will read again.
-	var fileRoot *fileroot.Root
-	if cfg.FileRoot != "" {
-		root, err := fileroot.Open(cfg.FileRoot)
-		if err != nil {
-			return fmt.Errorf("file root %s: %w", cfg.FileRoot, err)
-		}
-		defer root.Close()
-		fileRoot = root
-	}
-
 	a := &agent{
 		dir:       dir,
 		meta:      meta,
@@ -78,7 +50,6 @@ func Run(dir string, cfg Config) error {
 		cmdDone:   make(chan struct{}),
 		sendQueue: make(chan *sendJob, 8),
 		outLog:    openOutputLog(dir, meta.OutputLogMax),
-		fileRoot:  fileRoot,
 	}
 	// The PTY does not exist until the shell starts, so the writer looks it up
 	// each time. Tests replace this with a writer that blocks for ever, which
@@ -251,15 +222,6 @@ type agent struct {
 	waitClosed  sync.Once
 	waiters     int // reads parked in ReadAtWait
 	outLog      *outputLog
-
-	// fileRoot is the operator's ceiling, opened by this process. It is nil when
-	// --file-root was not given, and nil means the file operations do not exist —
-	// not "unrestricted". A request that arrives anyway is refused.
-	//
-	// Held here rather than passed per request because the agent owns the PTY, so
-	// the agent is where the directory descriptor has to be, and a root that came
-	// in over the socket would be a claim rather than a fact.
-	fileRoot *fileroot.Root
 }
 
 func (a *agent) serve() error {
@@ -297,13 +259,11 @@ func (a *agent) handle(conn net.Conn) {
 		a.handleRead(conn, f)
 	case protocol.TypeSend:
 		a.handleSend(conn, f)
-	case protocol.TypeFileRead, protocol.TypeFileWrite:
-		fileOps(a.fileRoot, conn, f)
 	case protocol.TypeClose:
 		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeClosed})
 		a.closeSession()
 	default:
-		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, read, file_read, file_write, or close"})
+		_ = protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeError, Error: "expected attach, watch, read, send, or close"})
 	}
 }
 
@@ -420,28 +380,16 @@ func (a *agent) handleRead(conn net.Conn, f protocol.Frame) {
 	} else {
 		res = ReadResult{CursorNext: f.Cursor, AtEnd: true}
 	}
-	// Read here rather than inside the stream reader, because this is the state of
-	// the terminal at the moment the page was taken, which is the state a prompt
-	// on that page was asking in. One read for both bits: two reads could straddle
-	// a program that changes them and report a combination that never existed.
-	echo := a.echoState()
 	reply := protocol.Frame{
-		Type:         protocol.TypeReadResult,
-		Data:         res.Data,
-		CursorNext:   res.CursorNext,
-		Dropped:      res.Dropped,
-		AtEnd:        res.AtEnd,
-		Epoch:        res.Epoch,
-		CursorAhead:  res.CursorAhead,
-		Exited:       res.Exited,
-		Reason:       res.Reason,
-		AgentVersion: AgentVersion,
-	}
-	// No terminal means no bits, which is reported as absent rather than as off.
-	// A shell that has exited is the ordinary way to get here.
-	if echo != nil {
-		reply.Echo = boolPtr(echo.Echo)
-		reply.Icanon = boolPtr(echo.Icanon)
+		Type:        protocol.TypeReadResult,
+		Data:        res.Data,
+		CursorNext:  res.CursorNext,
+		Dropped:     res.Dropped,
+		AtEnd:       res.AtEnd,
+		Epoch:       res.Epoch,
+		CursorAhead: res.CursorAhead,
+		Exited:      res.Exited,
+		Reason:      res.Reason,
 	}
 	_ = protocol.WriteFrame(conn, reply)
 }
@@ -490,8 +438,6 @@ type sendJob struct {
 	data      []byte
 	done      chan struct{}
 	abandoned atomic.Bool
-	// secret asks that the write be refused unless the terminal is not echoing.
-	secret bool
 	// refuse carries why the job was not written. The writer sets it before it
 	// closes done, so the reader in awaitSend has it before the close returns.
 	refuse error
@@ -542,7 +488,7 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 	cursor, epoch := a.outCursor()
 	a.mu.Unlock()
 
-	written, err := a.awaitSend(f.Data, f.Secret)
+	written, err := a.awaitSend(f.Data)
 	if err != nil {
 		_ = protocol.WriteFrame(conn, protocol.Frame{
 			Type:       protocol.TypeError,
@@ -552,11 +498,10 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 		return
 	}
 	_ = protocol.WriteFrame(conn, protocol.Frame{
-		Type:         protocol.TypeOK,
-		CursorNext:   uint64(written),
-		Cursor:       cursor,
-		Epoch:        epoch,
-		AgentVersion: AgentVersion,
+		Type:       protocol.TypeOK,
+		CursorNext: uint64(written),
+		Cursor:     cursor,
+		Epoch:      epoch,
 	})
 }
 
@@ -566,15 +511,6 @@ func (a *agent) handleSend(conn net.Conn, f protocol.Frame) {
 func (a *agent) sendWriter() {
 	for job := range a.sendQueue {
 		gen := a.sendGen.Load()
-		if job.secret {
-			// Before the chunk loop, so nothing has been counted as written and
-			// nothing has reached the PTY.
-			if err := a.checkSecret(); err != nil {
-				job.refuse = err
-				close(job.done)
-				continue
-			}
-		}
 		for len(job.data) > 0 {
 			if a.sendGen.Load() != gen || job.abandoned.Load() {
 				break
@@ -598,79 +534,11 @@ func (a *agent) sendWriter() {
 	}
 }
 
-// Secret-write refusals. They are three distinct errors rather than one, because
-// the answer differs: a terminal that echoes means the bytes would be recorded, a
-// nested terminal means the state cannot be seen from here at all, and an
-// unreadable terminal means the same thing about something that should have been
-// readable.
-var (
-	errEchoOn = errors.New("refused: the terminal is echoing, so these bytes would be recorded " +
-		"in the session's scrollback and output log. Send without secret, or hand the session " +
-		"to a person")
-
-	errNestedTerminal = errors.New("refused: this session's terminal is in raw mode, which is what a " +
-		"full-screen program or a nested terminal produces. Whether anything echoes on the far " +
-		"end cannot be seen from here, so a secret cannot be promised. Hand the session to a person")
-
-	errEchoUnknown = errors.New("refused: the session's terminal state could not be read, so it is " +
-		"unknown whether these bytes would echo. Hand the session to a person")
-)
-
-// checkSecret reports whether a write asked to be secret may go ahead.
-//
-// It is called from the writer, at the last point before bytes reach the PTY and
-// under the single-send slot, so there is nothing between the check and the write.
-// Reading it earlier would leave a window in which the program changes the mode:
-// a prompt that times out and restores echo between a model's read and its send
-// would be written in the clear.
-//
-// Unknown is a refusal. A caller that read "could not tell" as "not echoing"
-// would promise something it cannot verify, and the whole point of asking is that
-// the promise is checkable.
-func (a *agent) checkSecret() error {
-	st := a.echoState()
-	if st == nil {
-		return errEchoUnknown
-	}
-	switch st.InputMode() {
-	case ttyutil.InputSecretLikely:
-		return nil
-	case ttyutil.InputEcho:
-		return errEchoOn
-	default:
-		return errNestedTerminal
-	}
-}
-
-func boolPtr(b bool) *bool { return &b }
-
-// echoState reads the line discipline of the session's terminal. The agent holds
-// the PTY master and no one else can: the daemon reaches it over this socket, so
-// this is the only place the state can be read, and the only place a write can be
-// refused with nothing between the check and the write.
-//
-// A terminal that cannot be read reports nil, meaning unknown. Callers must treat
-// unknown as refusal: a caller that read it as "not echoing" would allow a secret
-// it cannot verify.
-func (a *agent) echoState() *ttyutil.EchoState {
-	a.mu.Lock()
-	ptmx := a.pty
-	a.mu.Unlock()
-	if ptmx == nil {
-		return nil
-	}
-	st, err := ttyutil.ReadEchoState(int(ptmx.Fd()))
-	if err != nil {
-		return nil
-	}
-	return &st
-}
-
 // awaitSend owns the whole send: the single-send slot, the cancellation an
 // attach uses, and the wait. The caller's reply is produced by its own
 // deadline, so a PTY that will not accept input delays the writer, never the
 // caller and never an attach.
-func (a *agent) awaitSend(data []byte, secret bool) (written int, err error) {
+func (a *agent) awaitSend(data []byte) (written int, err error) {
 	if len(data) > sendQueueMax {
 		return 0, errSendTooLarge
 	}
@@ -692,7 +560,7 @@ func (a *agent) awaitSend(data []byte, secret bool) (written int, err error) {
 		a.sendMu.Unlock()
 	}()
 
-	job := &sendJob{data: data, done: make(chan struct{}), secret: secret}
+	job := &sendJob{data: data, done: make(chan struct{})}
 	a.sent.Store(0)
 	select {
 	case a.sendQueue <- job:

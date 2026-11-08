@@ -15,7 +15,6 @@ import (
 	"tyd/internal/audit"
 	"tyd/internal/auth"
 	"tyd/internal/controlpanel"
-	"tyd/internal/fileroot"
 	"tyd/internal/live"
 	"tyd/internal/procs"
 	"tyd/internal/protocol"
@@ -46,21 +45,6 @@ type Config struct {
 	Trust        *auth.Store
 	ApprovalMode string // full|pre|post; default full
 
-	// FileRoot is the operator's ceiling for file operations, absolute and already
-	// validated by resolveFileRoot. It is handed to every live-agent this daemon
-	// spawns, so the agent opens it itself and decides what a path means.
-	//
-	// Empty means the file operations do not exist on this machine, which is the
-	// default and is not the same as unrestricted.
-	FileRoot string
-	// AuditKey keys the content digest on file operations.
-	//
-	// Nil means no MAC is recorded, which is the honest answer when no key was
-	// configured — and it is **not** a fallback to a bare hash, because a bare hash of
-	// low-entropy content is an offline dictionary-attack verifier, which is the thing
-	// §7 exists to prevent. So the record simply has no ContentMAC, and a reader can
-	// see that it has none rather than being misled by a weaker one.
-	AuditKey *audit.Key
 	// Audit receives control events in every approval mode. Nil means stderr
 	// under post and no auditing otherwise.
 	Audit audit.Sink
@@ -757,193 +741,6 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 		op, describeRequest(op, sessionID, size), digest, sessionID)
 }
 
-// handleFile forwards one file operation to the session's agent.
-//
-// Two things are decided here and two things are forwarded.
-//
-// Decided: that the caller may attempt it, and that an approval covers **this**
-// operation — this root, this path, this mode, this size. That is the digest's whole
-// job, and without the root or the path an approval for reading one file is spent by
-// reading another.
-//
-// Forwarded: the frame itself, both directions, whole. The request copy cannot lose
-// the root claim or the mode, and the reply cannot lose the ID, because neither is
-// rebuilt from a list of fields — a list is only as complete as the last time
-// somebody remembered to update it. The read path below rebuilds its reply field by
-// field and carries a comment about exactly that hazard; this one does not have the
-// problem.
-//
-// Not decided here: anything about the path. The agent holds the root and is the only
-// party that can say what a path means.
-func (s *Server) handleFile(st *connState, f protocol.Frame) error {
-	if f.SessionID == "" {
-		return fmt.Errorf("session_id required")
-	}
-	if err := s.require(st, auth.CapFile, f.SessionID); err != nil {
-		return err
-	}
-	// The wire ceiling is checked before an approval is spent on a request that could
-	// not be answered. Checking it after would mean the operator approves something
-	// and then watches it fail on arithmetic.
-	if int64(len(f.Data)) > protocol.MaxDataBytes || int64(f.MaxBytes) > protocol.MaxDataBytes {
-		return fmt.Errorf("%s: %d bytes is above the %d ceiling of a single frame",
-			fileroot.CodeTooLarge, maxInt64(int64(len(f.Data)), int64(f.MaxBytes)), protocol.MaxDataBytes)
-	}
-
-	sess, err := s.cfg.Mgr.Get(f.SessionID)
-	if err != nil {
-		return err
-	}
-	op := opFileRead
-	if f.Type == protocol.TypeFileWrite {
-		op = opFileWrite
-	}
-	// The digest is built here, from the request being served, so it describes what
-	// will actually happen rather than what the peer claimed.
-	size := int64(len(f.Data))
-	if f.Type == protocol.TypeFileRead {
-		size = int64(f.MaxBytes)
-	}
-	digest := fileApprovalDigest(op, f.SessionID, f.Root, f.Path, f.Mode, size)
-	if !s.consumeApproval(approvalKey(f.SessionID, gatePub(st.principal), digest), digest) {
-		if err := s.requestApproval(st, f.SessionID, digest, describeFileRequest(f, size), op, size); err != nil {
-			return err
-		}
-		return fmt.Errorf("%s pending approval for %s [%s]; ask the operator to run: tyd session approve %s",
-			op, describeFileRequest(f, size), digest, f.SessionID)
-	}
-
-	res, err := sess.File(fileFrameForAgent(f))
-	if err != nil {
-		// Recorded before returning. A refusal that leaves no trace is worse than one
-		// recorded wrongly: the operation an operator most wants to see afterwards is
-		// the one that was turned down.
-		s.auditFileResult(st, f, "refused")
-		// The approval was spent before the operation ran and stays spent. A model has
-		// to be told that, or it reads the failure as "not now" and retries on its own,
-		// which cannot work — the retry has no approval behind it.
-		//
-		// Stated as a fact rather than as advice, because the reason varies: a blocked
-		// path will not be helped by a new approval, and telling the model to go and
-		// get one sends it to an operator with nothing to ask for. Refunding instead
-		// would be worse than either — see §5.
-		return fileFailure(err.Error(), "the approval for that request has been used; a new operation needs a new approval")
-	}
-	s.auditFile(st, f, res, digest)
-	// The agent's reply, sent as it arrived. Its ID is the request's, which the agent
-	// echoed and DialFile checked.
-	return st.send(res)
-}
-
-// fileFrameForAgent strips the fields the daemon owns before the frame crosses.
-//
-// The approval digest and the size are **not** stripped, because they are not frame
-// fields: the digest is computed here from the path and the mode, and the size is
-// derived from len(f.Data) or f.MaxBytes. A peer has nowhere to put either, which is
-// the #132 position — the digest describes the request this daemon is serving, not
-// something the far end asserted.
-//
-// The rest is the other half of forwarding a frame whole. Copying cannot drop a field,
-// which is why it is used; it also cannot stop a peer putting one there. Nothing
-// injectable is dangerous **today**, because the agent reads only the file fields and
-// ignores the rest — but that is a property of the agent's handler, and it changes the
-// moment someone adds a field to Frame that a file handler starts reading. So the
-// server-owned metadata is cleared here, and a test injects every field it can reach to
-// prove the clearing works rather than to prove the current handler ignores them.
-//
-// The list is short on purpose: it is "what the daemon owns", not "what a file
-// operation needs", so adding a frame field does not mean remembering to update it.
-func fileFrameForAgent(f protocol.Frame) protocol.Frame {
-	out := f
-	out.Version = 0
-	out.AgentVersion = 0
-	return out
-}
-
-// fileFailure is what a model reads when a file operation fails after its approval was
-// spent.
-//
-// The two halves are separate arguments so the guidance is in one place and cannot
-// drift into wording that contradicts the reason it is attached to.
-func fileFailure(reason, approvalNote string) error {
-	return fmt.Errorf("%s (%s)", reason, approvalNote)
-}
-
-// refusalResult is the result string a refusal carries. Named rather than inlined so
-// the audit and its test cannot drift apart, and so it is obvious at the call site that
-// a refusal is a recorded outcome and not a missing record.
-const refusalResult = "refused"
-
-// auditFileResult records a file operation that did not succeed. No ContentMAC: there is
-// no content to describe.
-func (s *Server) auditFileResult(st *connState, f protocol.Frame, result string) {
-	kind := audit.KindFileRead
-	if f.Type == protocol.TypeFileWrite {
-		kind = audit.KindFileWrite
-	}
-	e := s.connEvent(st, kind)
-	e.SessionID = f.SessionID
-	e.Op = string(f.Type)
-	e.Path = f.Path
-	e.FileRoot = f.Root
-	e.WriteMode = f.Mode
-	e.Result = result
-	s.audit(e)
-}
-
-// auditFile records what a file operation did: the metadata, never the content.
-func (s *Server) auditFile(st *connState, f protocol.Frame, res protocol.Frame, digest string) {
-	kind := audit.KindFileRead
-	if f.Type == protocol.TypeFileWrite {
-		kind = audit.KindFileWrite
-	}
-	e := s.connEvent(st, kind)
-	e.SessionID = f.SessionID
-	e.Op = string(f.Type)
-	e.Path = f.Path
-	e.FileRoot = f.Root
-	e.WriteMode = f.Mode
-	e.Size = res.Size
-	e.Result = "ok"
-	if f.Type == protocol.TypeFileWrite && s.cfg.AuditKey != nil {
-		// Keyed, and computed over the content **this server holds** — not over the
-		// digest the agent returned. res.SHA256 is a bare sha256, and §7 is explicit
-		// that a bare hash of low-entropy content is an offline dictionary-attack
-		// verifier; putting that in the log would reintroduce exactly what the key
-		// exists to prevent.
-		e.ContentMAC = s.cfg.AuditKey.MAC(kind, f.Data)
-	}
-	s.audit(e)
-}
-
-// describeFileRequest is the operator-facing summary. It names the root, the path
-// and the mode because those are what the digest binds, and an operator shown only
-// "file_write" cannot tell one pending request from another.
-//
-// The root and path come from the peer, so both are quoted: a newline or a terminal
-// escape in a path must not be able to forge another line in the approval prompt.
-func describeFileRequest(f protocol.Frame, size int64) string {
-	verb := "read"
-	if f.Type == protocol.TypeFileWrite {
-		verb = f.Mode
-	}
-	if f.Path == "" {
-		return fmt.Sprintf("%s (no path)", verb)
-	}
-	root := ""
-	if f.Root != "" {
-		root = fmt.Sprintf(" in root %q", f.Root)
-	}
-	return fmt.Sprintf("%s %q%s (%d bytes)", verb, f.Path, root, size)
-}
-
-func maxInt64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 // auditRead records a read that broke the client's view of the stream: the
 // cursor was reset, or the requested prefix was already gone. A plain page is
 // not recorded. Draining the disk cap is a thousand calls and the chain does
@@ -1009,7 +806,6 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			Cols:     f.Cols,
 			Shell:    f.Shell,
 			Cwd:      f.Cwd,
-			FileRoot: s.cfg.FileRoot,
 			Owner:    st.principal.Name,
 			OwnerPub: auth.EncodePublic(st.principal.Pub),
 			PeerID:   st.principal.Name,
@@ -1289,17 +1085,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 			CursorAhead: res.CursorAhead,
 			Exited:      res.Exited,
 			Reason:      res.Reason,
-			// Forwarded, not interpreted. This frame is rebuilt field by field, so
-			// anything the agent said that is not listed here is lost — and losing
-			// these is fail-open in the sense that matters: the model gets no
-			// terminal state, and a capable agent looks unknown.
-			Echo:         res.Echo,
-			Icanon:       res.Icanon,
-			AgentVersion: res.AgentVersion,
 		})
-
-	case protocol.TypeFileRead, protocol.TypeFileWrite:
-		return s.handleFile(st, f)
 
 	case protocol.TypeSend:
 		if f.SessionID == "" {
@@ -1324,10 +1110,7 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.gateAttach(st, f.SessionID, opSend, int64(len(f.Data))); err != nil {
 			return err
 		}
-		// The flag is forwarded, not interpreted here. The far agent holds the
-		// PTY, so it is the only place the terminal state can be read, and a
-		// proxy that dropped this would turn a refusal into a silent write.
-		rep, err := sess.Send(f.Data, f.Secret)
+		rep, err := sess.Send(f.Data)
 		if err != nil {
 			return err
 		}

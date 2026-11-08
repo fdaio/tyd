@@ -160,11 +160,8 @@ tyd --peer laptop session close "$SID"
 
 `send` writes and then reads on one connection, so a `send` already returns the
 output it caused. Use `read` for the next page, by cursor, and `watch` to follow
-along. `send` is refused while a person is attached, which is how a model and a
+along. `send` is refused while a person is attached, which is how an agent and a
 human avoid fighting over one shell.
-
-A model gets the same thing over MCP instead of a shell — see
-[Let a model drive it](#let-a-model-drive-it-mcp) below.
 
 Traps an agent should know about:
 
@@ -177,184 +174,26 @@ Traps an agent should know about:
 - If the socket path is too long for `AF_UNIX`, the daemon refuses to start. The
   limit is about 100 bytes; `tyd doctor` reports it.
 
-## Let a model drive it (MCP)
-
-`tyd mcp` speaks the Model Context Protocol over stdio, so a model uses a tyd
-session the way a person uses a terminal: open a shell, type into it, read what
-it printed, stop a command, close it.
-
-### Install — one line
-
-```bash
-claude mcp add tyd -- "$(command -v tyd)" mcp --peer laptop
-```
-
-**Use the absolute path `command -v tyd` prints.** Many MCP clients launch the
-command without a login shell, so `~/.local/bin` is not on `PATH` and a bare
-`tyd` is not found. That shows up as the client reporting the server failed to
-start. Substitute your own path; `/usr/local/bin/tyd` is not where tyd has to be.
-
-The same thing in the JSON most clients read:
-
-```json
-{
-  "mcpServers": {
-    "tyd": {
-      "command": "/usr/local/bin/tyd",   // whatever `command -v tyd` prints
-      "args": ["mcp", "--peer", "laptop"]
-    }
-  }
-}
-```
-
-### The target is always named
-
-`--peer <id|nick>` chooses the machine, and it is not optional by accident. With
-one paired peer it may be left off, because there is only one answer. With none,
-tyd **refuses to start** rather than fall back to the machine the model runs on:
-that daemon holds the shells you are sitting at, and it does not ask for
-approval the way a remote peer does. Pass `--peer local` for this machine.
-
-Every result names the machine it ran on:
-
-```
-[tyd: target=laptop reason=match state=running]
-```
-
-Startup prints the same thing on stderr, so a mistake is visible before the first
-tool call.
-
-### The tools
-
-| Tool | What it does |
-|------|--------------|
-| `session_open` | Creates a session **without** attaching, names it, returns its first output. `shell` picks the shell; `name` sets the alias a person attaches by |
-| `session_list` | The local catalog plus a probe read per session, so the state is what the target says rather than what a file remembers |
-| `session_send` | Types into a session nobody is attached to, and returns what those keystrokes printed |
-| `session_read` | Reads from the last cursor, or from one you name |
-| `session_interrupt` | Sends Ctrl-C to whatever is running |
-| `session_close` | Ends a session |
-
-`--read-only` registers only `session_list`, `session_read` and `file_read`.
-`--close-on-exit` closes what this process opened; without it the sessions outlive the
-server, so a model can come back to the same shell.
-
-### File tools
-
-`file_read` and `file_write` exist **only** where the operator gave the daemon a
-`--file-root`. Without it they are not registered at all — not registered and refused,
-which is a different thing: a model that cannot see a tool does not try it and cannot
-be surprised by a refusal.
-
-| Tool | What it does |
-|------|--------------|
-| `file_read` | Reads a file under the root, returning bytes as they are plus the size, the modification time and a digest of the **whole** file |
-| `file_write` | Creates or replaces one. `mode` is `create` or `replace`; there is no mode that does both |
-
-Both take an optional `root` to narrow the session's directory for one call, and
-`session_open {root}` narrows it for the session and everything later done on it. A
-root can only ever narrow — a path outside the operator's directory is refused by the
-agent, which is the only party that decides.
-
-`file_write` also takes `expected_sha256`, the digest `file_read` returned. Pass it and
-the write is refused if the content changed since, so two writers cannot silently undo
-each other. It is a concurrency guard, not a permission.
-
-**Each call is one operation and needs one approval**, where the shell equivalent of the
-same work would need two. The approval is spent when the operation runs, whether or not
-it succeeds — a refused write still uses it up. So a failed write is not worth retrying
-on its own: the reason says whether the content changed, the path was refused, or an
-operator has to approve the next attempt.
-
-The root is not a sandbox. A model with `session_send` has a shell and the shell reaches
-wherever the daemon's user reaches. What the root protects is narrower: the write that
-happens is the one that was approved.
-
 ### A person can always take over
 
-Every `session_open` returns a command the model can hand to you:
-
-```
-[tyd: target=laptop ...]
-[a human can take this session over with: tyd build.laptop]
-```
-
-You attach, the model's next `session_send` is refused with `session in use` and
-told to retry, and once you detach with `Ctrl-\ ` it works again. The refusal
-names the reason rather than failing silently, so a model reports "someone is
-attached" instead of "the target is broken".
+A session has one writer slot. While anyone is attached, `session send` is
+refused with `session in use`; the caller retries after the person detaches with
+`Ctrl-\`. Nothing silently drops the keystrokes, and nothing fights over the
+shell.
 
 ### Security boundaries — read these before exposing it
 
-- **`--read-only` is not a permission boundary.** It only stops the write tools
-  from being registered. The real boundary is the capability the daemon grants
-  that peer: re-pair with fewer capabilities, or approve mode `pre`, and the
-  daemon is what refuses.
 - **Terminal output is untrusted data.** Anything a session prints is data, not
-  instructions, and it is fenced in the result for that reason. A prompt can
-  contain text that looks like a command.
-- **A password typed into a session is in that session's log.** The result warns
-  when the last line looks like a password prompt, because the PTY's echo state
-  is not reported yet. Do not type secrets; hand the session to a person.
-- **While a person is attached, the model can still read** what the terminal
-  shows, including anything typed with echo off is *not* visible — but a password
-  prompt's surroundings are.
-- **A cancelled `send` is not a finished `send`.** If a call is withdrawn after
-  the bytes were written, the next call on that session says so: the keystrokes
-  are in and the command may already have run. Read before resending.
-- **A target in `pre` approval mode approves one request at a time, and a `send`
-  needs two.** The write is one gated request and the read that reports its
-  output is another, so a single approval buys the keystrokes and leaves the
-  model unable to see what they did. That is the daemon's rule rather than a
-  `tyd mcp` one, and it makes `pre` impractical for a model: pair a dedicated
-  identity and register that daemon `--approval full` instead. `session_list`
-  knows this and stops probing a target that has asked, so a list never spends
-  the approval you gave.
-
-- **An approval is for one request, not for a session.** On the target it names the
-  operation, the session and the byte count, so an approval you gave for one read
-  is not spent by a different read, and approving a create does not release a later
-  send. When several requests are waiting, `tyd session approve <id>` lists them and
-  refuses to pick one for you; `--digest HEX` names it, and the hex it prints **is**
-  the hex it accepts — the value shown is the value to pass, not a label for it. The
-  operator's line shows
-  the operation and the size and never the content. The trade is more prompts than
-  "approve the session once" would need — the prompts were already one per request,
-  and what changes is that each one now covers the request it named.
-
-  **Which rows a list gives up on is a choice.** The rows come back ordered most
-  recently active first, and that is the order they are probed in — so the first
-  row you read is the first one that was probed, and the rest came from the local
-  catalog. Ordering them by recent activity is a decision, not the catalog's
-  write order.
-
-  A row that was not probed says so, and says which of the two reasons applies:
-  the target is waiting for approval, and how long it has been, or another list is
-  already asking it. Those are different problems — one waits for a person, the
-  other waits for a moment — and the row does not conflate them.
-
-  **Several machines at once.** `session_list` takes `peers`, which probes the named
-  machines concurrently so one slow machine no longer holds up the others. Omitting
-  it is not the same as asking for all: it means the single default target, exactly
-  as before. A machine that cannot be reached is named and the rest of the answer
-  still comes back.
-
-  The speedup is **between machines and never within one.** Within a machine the
-  probes stay in sequence, because the approval gate is per machine and fifty
-  sessions on one host should not become fifty reads past it at once. So a list of
-  fifty sessions on a single box takes as long as it always did.
-
-  Only reading tools take `peers`. `send`, `interrupt`, `close` and `open` stay on
-  one machine, because broadcasting keystrokes is not something a parameter should
-  be able to do.
-
-  **The mark that stops the probing is per process, on purpose.** Restarting
-  `tyd mcp` forgets it, so the first list afterwards probes once more. That is
-  deliberate: the alternative is a remembered block after the operator has already
-  approved, which sends a model waiting for a gate that has closed. Spending one
-  approval again is cheaper than a stale refusal. Only one probe per target is ever
-  in flight, so eight lists running at once still cost the operator one approval
-  and not eight.
+  instructions. A program can print text that looks like a command.
+- **An approval is for one request, not for a session.** On the target it names
+  the operation, the session and the byte count, so an approval you gave for one
+  read is not spent by a different read, and approving a create does not release
+  a later send. When several requests are waiting, `tyd session approve <id>`
+  lists them and refuses to pick one for you; `--digest HEX` names it, and the
+  hex it prints **is** the hex it accepts.
+- **The target decides.** `--peer` chooses a machine; the target's approval mode
+  and capabilities decide whether a request runs, what it may read, and whether a
+  person has to approve it.
 
 ### Versions
 
@@ -363,25 +202,15 @@ side RPCs, so an old `tyd up` rejects them. Check the target with `tyd status`,
 and use a release that contains `send` / `read` — or build both sides from
 `main` until one does.
 
-A model that meets a `send` / `read` it does not recognise is told the target is
-too old and to upgrade, rather than being left to guess.
+### Sessions outlive the caller, and the target
 
-### Sessions outlive the model, and the target
-
-A session opened here outlives the server, which is what lets a model come back to
+A session opened here outlives the caller, which is what lets an agent come back to
 the same shell. It also means shells accumulate on the target: nothing closes
 them by default, and the daemon's `--session-idle-timeout` is off unless someone
-sets it. Two ways to keep the target tidy:
-
-- Set an idle timeout on the target daemon — `--session-idle-timeout 8h` closes
-  sessions nobody is attached to, which is the case a forgotten model's shells
-  fall into.
-- Start the server with `--close-on-exit` when the sessions are for one run. A
-  model that opens a shell to build something and then exits does not leave it
-  running.
-
-Both are the target's settings, not the client's. Which is why `tyd status` on the
-target is worth reading before pointing a model at a machine.
+sets it. Set an idle timeout on the target daemon — `--session-idle-timeout 8h`
+closes sessions nobody is attached to, which is the case a forgotten agent's
+shells fall into. That is the target's setting, not the client's. Which is why
+`tyd status` on the target is worth reading before pointing an agent at a machine.
 
 ### Giving an agent its own identity
 
@@ -389,7 +218,7 @@ Pair the agent separately, with a name you would recognise in `peer list` and th
 audit log, and revoke it when the work is done:
 
 ```bash
-tyd accept "$TOKEN" --as build-agent    # on the model machine
+tyd accept "$TOKEN" --as build-agent    # on the agent machine
 tyd revoke build-agent --force          # when it is finished
 ```
 
@@ -404,11 +233,7 @@ pairing you use yourself.
 | `session not found` | No such id/alias/recent | `tyd session list`; check the id and `--peer` |
 | `permission denied` | Session exists but this identity lacks the cap | Pair correctly; check `~/.tyd/trusted.json` and `peers.json` |
 | `untrusted public key` / `untrusted server certificate` | AuthN or TLS pin mismatch | Re-pair; or copy the server's `server.crt` and pass `--tls-cert` with `--addr` |
-| `attach pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>`. The approval covers **one request**, so a model needs one per `read` — and a `send` needs two, because the write and the read that reports it are separate requests |
-| `session_list` rows all say `unknown` on a peer, and the footer names it | The target asked for approval, so this server stopped probing it | Expected. A probe would spend the operator's one approval, so the rows come from the local catalog instead. Approve, then read the session directly; a call that gets through resumes probing |
-| `this machine has no outbound peers` | `tyd mcp` with no `--peer` and no paired peer | Pass `--peer local` for this machine, or `--peer <id|nick>` |
-| `not a paired peer on this machine, and not "local"` | `--peer` named something that is not paired here | `tyd peer list`; pair first, or use `--peer local` |
-| The MCP client reports the server failed to start | A bare `tyd` was not on the client's `PATH` | Use the absolute path: `claude mcp add tyd -- /usr/local/bin/tyd mcp --peer laptop` |
+| `pending approval` | Daemon is in `pre` approval mode | On the target (unix socket): `tyd session approve <id>`. The approval covers **one request**; a `send` and the `read` that reports its output are two requests |
 | `read is not supported on in-process sessions` | A session whose shell runs inside the daemon rather than as a live-agent | Restart the daemon so it adopts the session as a live-agent (`tyd up`) |
 | `send timed out` | The PTY did not accept the bytes in time | The error carries the written count. Read the session before resending; do not send the whole thing again |
 | `socket path too long` | The state directory is deep enough to overrun `AF_UNIX` | Move `~/.tyd` shallower (`--socket`, `--live`); `tyd doctor` reports it |
@@ -434,13 +259,11 @@ tyd --help; tyd session help; tyd peer help   # authoritative
 - Do not put TTY bytes through the Control Panel — the relay splices a WebSocket, and the two peers run TLS 1.3 inside it, so it carries ciphertext. It still sees connection metadata.
 - Do not treat `sessions.json` as server-side truth — it is client-local and advisory.
 - Do not use `tyd create` / `tyd list` — they are rejected; use `tyd session create` etc. (`tyd alias` still works but prints a deprecation note; prefer `tyd session alias`).
-- Do not give a model `tyd mcp` without `--peer` and expect it to be safe on its own — `--read-only` is a hint to the model, not a control on the daemon.
-- Do not type a password into a session a model can read. Hand it over with the attach command the result prints.
+- Do not type a password into a session another process can read. Hand the session to a person with `tyd session attach`.
 
 ## Where to read more
 
 - `connect.md` — install, pair, connect, detach/close, dual NAT
-- `cli.md` — `tyd mcp` flags and the full command reference
 - `session.md` — lifecycle, aliases, approval modes, audit log
 - `operations.md` — daemon flags, data plane, Docker/Compose, recovery, `tyd doctor`
 - `cli.md` — full command and flag reference (help is still authoritative)

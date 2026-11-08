@@ -138,116 +138,6 @@ the byte count and never the bytes. The output log does hold terminal bytes
 for `read`; treat the session dir as sensitive, the same way you treat the PTY
 itself.
 
-### A secret only stays secret if the terminal is not echoing
-
-The PTY's echo state is what decides this, and nothing in tyd reports it. A
-secret typed where the terminal **is** echoing is written to the terminal
-immediately, and from there into the shell's scrollback and the session's output
-log, which is mode `0600` and deleted when the session closes. A shell asked for
-a password switches the terminal to no-echo first, so the secret never appears —
-but a secret typed at an ordinary prompt, or pasted into one, is echoed like any
-other keystroke.
-
-So a session is not a place to type a secret unless the program in front of it
-turned echo off. `tyd mcp` warns when the last line of a result looks like a
-password prompt, and that warning is a regex over the text: it can miss a prompt
-that asks in other words, and it fires on a prompt that was never going to
-receive input. The reliable answer is to hand the session to a person with the
-attach command the result prints.
-
-### A secret only stays secret if the write is refused, not warned about
-
-The PTY echoes whatever is written to it unless the program in front turned echo
-off. So a secret typed into a session reaches the terminal, the shell's scrollback
-and the session's output log — and the output log cannot be redacted afterwards,
-because an echoed byte and ordinary program output are indistinguishable.
-
-`session_send` therefore takes `secret: true`, and the **target** decides: the write
-is refused unless the terminal is not echoing at the moment the bytes go in. The
-refusal is the point. A warning would leave the model holding a promise it cannot
-check, and the one thing a caller must never infer from a terminal it could not
-read is that it is safe.
-
-There are three refusals, because the answers differ:
-
-| State | What it means | What to do |
-|---|---|---|
-| echo on | the bytes would be recorded | do not send it as a model |
-| raw mode | a full-screen program or a nested terminal; the far end cannot be seen | hand the session to a person |
-| unreadable | the state could not be read at all | hand the session to a person |
-
-Raw mode is the common case on a real shell rather than an edge: a non-interactive
-`/bin/sh` reading commands from a PTY disables echo outright, so `secret: true` is
-refused against one. That is the accepted cost — the alternative is promising
-something unverifiable.
-
-`session_read` reports `tty: {echo, icanon}` and the `input_mode` derived from
-them. Both bits are reported raw as well as derived, so that a derivation found
-wrong is a change of derivation and not a change of contract. Where the target
-reported nothing, the result says so rather than carrying two false bits, which
-would read as "not echoing".
-
-**The write is refused unless the agent is known to honour the request.** The
-dataplane between a daemon and a live agent has no handshake, and an agent older
-than this flag would ignore it rather than refuse — so the bytes would land in the
-clear. The agent stamps its version on what it sends, and a `secret: true` write is
-refused until a reply has shown an agent new enough. An ordinary keystroke is never
-gated on this, so a rolling upgrade does not stop models typing at all.
-
-### A name is rendered into a command a person is asked to run
-
-`tyd mcp` puts a takeover command in every result that needs one — *"ask the user
-to run `tyd session attach build`"* — and a peer nickname becomes part of the same
-command. So an alias or nickname is not a label, it is text that will land in
-somebody's shell.
-
-Both accept letters and digits in any script, plus `-`, `_` and `.`, and refuse
-everything else. A backtick or `$( )` is one word to a shell's parser and still
-substitutes, so allowing them would let anything that can influence the model's
-choice of name — which includes anything whose output the model reads — reach a
-person's terminal as something to paste. Refusing whitespace and `/` alone is not
-enough: `id`, `whoami` and `env` need neither.
-
-The rule is one function, `strutil.ShellSafe`, because it is a security rule and
-two copies of one drift.
-
-### What a file operation puts in the log
-
-A `file_write` records the operation, the root-relative path, the byte count, whether
-it created or replaced, and a **keyed digest** of the content. **The content itself is
-never recorded** — not on success, not on failure. `audit.Event` has no field for it,
-which is structural rather than a promise.
-
-The digest is keyed, and that is the point. A bare sha256 of the content would be an
-offline dictionary-attack verifier: for a short password or a token — which is exactly
-what a model gets asked to write to a config file — whoever holds the log could confirm
-a guess without ever seeing the content. HMAC-SHA256 under a key the log does not carry
-does not allow that, and the daemon can still compare two records for equality.
-
-The key lives in `PATH.key` beside the log, mode `0600`, and the daemon **refuses to
-start** without it rather than fall back to recording nothing. See
-[operations.md](operations.md).
-
-## The file root is not a sandbox
-
-`--file-root DIR` bounds where `file_read` and `file_write` work, and `/` is refused
-with no switch that permits it.
-
-It is worth being exact about what that does and does not buy, because the two are
-easy to confuse:
-
-- **What it guarantees.** The file the operator approved is the file that changed, and
-  nothing above the root is reachable through these tools — unconditionally, and
-  enforced by the standard library's `os.Root` rather than by a prefix comparison.
-- **What it does not.** A model with `session_send` has a shell, and the shell reaches
-  wherever the daemon's user reaches. A root is not a chroot and not a capability
-  boundary. If the threat is a model reading `~/.ssh/id_rsa`, the answer is not
-  `--file-root`.
-
-The sensitive-path list — git hooks, shell startup files, `.ssh`, `.gnupg`, `.aws` — is
-defence in depth for the same reason. It is decided by name, before anything is opened,
-so a refusal does not reveal whether the path exists.
-
 ## Deployment tiers
 
 | Tier | What it contains | What it stops |
@@ -278,13 +168,13 @@ To go further — sessions as a genuinely different uid — the daemon needs
 `CAP_SETUID`, which contradicts the per-user, no-sudo install tyd is built
 around. That trade has not been made.
 
-## Reporting
-
-Security issues in tyd: open a private advisory on the repository rather than a
-public issue.
-
 A send is bounded and never blocks a takeover. `--session-send-timeout`
 (default `5s`, capped at `30s`) stops a send whose PTY will not accept input,
 and `attach` preempts a send that is still in progress. Neither path lets a
 stalled write hold the attach slot, so a client cannot pin a session by
 typing into a program that never reads.
+
+## Reporting
+
+Security issues in tyd: open a private advisory on the repository rather than a
+public issue.

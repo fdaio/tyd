@@ -48,4 +48,4 @@ absorb the input and the real block is not reproducible.
 
 ## Out of scope
 
-MCP, leases, terminal content in audit, changing `read`.
+Leases, terminal content in audit, changing `read`.
