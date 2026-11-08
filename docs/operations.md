@@ -164,6 +164,11 @@ load balancer, and no shared database — which is also why you cannot put sever
 replicas behind a round-robin proxy. Give each relay its own hostname and list
 them all.
 
+An active offer is not displaced. A second connection claiming the same daemon
+id is refused while the first is alive, because the id is public and the offer
+is unauthenticated. The daemon retries every two seconds, so a legitimate
+reconnect takes over as soon as the old connection closes.
+
 ```bash
 tyd up --relay https://relay-1.example,https://relay-2.example
 tyd status | rg relay                                     # shows the list

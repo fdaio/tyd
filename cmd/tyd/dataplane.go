@@ -648,12 +648,12 @@ func maintainRelayOne(opts options, state *peerstate.State, srv *server.Server, 
 				go func(ticket string) {
 					secure, binder, err := acceptRelayE2E(opts, url, ticket)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "tyd relay accept %s: %v\n", ticket[:8], err)
+						fmt.Fprintf(os.Stderr, "tyd relay accept %s: %v\n", shortTicket(ticket), err)
 						return
 					}
 					srv.ServeConn(transport.Wrap(secure, transport.Info{
 						Transport:  transport.KindRelay,
-						RemoteAddr: "relay:" + ticket[:8],
+						RemoteAddr: "relay:" + shortTicket(ticket),
 						TLS:        true,
 					}), binder)
 				}(ticket)
@@ -777,6 +777,16 @@ func injectPeerTrust(opts options, trust *auth.Store, doc *peers.File) {
 	if legacy > 0 {
 		fmt.Fprintf(os.Stderr, "tyd trust: %d peer(s) paired before pairing records; their trust still rests on the Control Panel\n", legacy)
 	}
+}
+
+// shortTicket is the ticket prefix used in logs and connection names. A ticket
+// comes from the relay, which is not trusted, so it may be shorter than the
+// eight bytes this prints.
+func shortTicket(ticket string) string {
+	if len(ticket) <= 8 {
+		return ticket
+	}
+	return ticket[:8]
 }
 
 // pairedPath is the local pairing record, which lives next to peers.json so a
