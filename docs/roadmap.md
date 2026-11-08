@@ -100,6 +100,13 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - `tyd doctor` reports the runtime, image, and workdir
 - A container is not a VM; the kernel is shared
 
+### Step 4c — Session quotas
+
+- `--max-sessions-per-peer` and `--max-sessions-total`; `0` is unlimited and the default; 8 and 32 are the agent-host recommendation
+- PENDING sessions count, because they already hold the slot
+- `--session-max-lifetime` closes an aged session and audits `lifetime_close`
+- Refusals are audited as `denied` and name the limit and the current count
+
 ### Step 5 — Revoke and hardening
 
 - `tyd revoke <peer-id|nickname>` — either side drops the pair on CP and locally

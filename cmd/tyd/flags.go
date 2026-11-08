@@ -12,6 +12,7 @@ import (
 	"tyd/internal/controlpanel"
 	"tyd/internal/live"
 	"tyd/internal/paths"
+	"tyd/internal/server"
 )
 
 type options struct {
@@ -61,6 +62,9 @@ type options struct {
 	sandboxCPUs        string
 	sandboxShell       string
 	sandboxPids        int
+	sessionMaxLifetime time.Duration
+	maxSessionsPerPeer int
+	maxSessionsTotal   int
 }
 
 // sessionSubcommandsOwningFlags are the `tyd session` subcommands that parse their
@@ -78,25 +82,27 @@ var sessionSubcommandsOwningFlags = map[string]bool{
 
 func parseArgs(args []string) (options, error) {
 	opts := options{
-		socket:       paths.DefaultSocket(),
-		listen:       paths.DefaultListen(),
-		dataListen:   paths.DefaultDataListen(),
-		advertise:    paths.DefaultAdvertise(),
-		identity:     paths.DefaultIdentity(),
-		trust:        paths.DefaultTrust(),
-		peers:        paths.DefaultPeers(),
-		recent:       paths.DefaultRecent(),
-		aliases:      paths.DefaultAliases(),
-		sessions:     paths.DefaultSessions(),
-		live:         paths.DefaultLive(),
-		platform:     paths.DefaultPlatform(),
-		relay:        paths.DefaultRelay(),
-		approval:     controlpanel.DefaultApproval,
-		cert:         paths.DefaultServerCert(),
-		key:          paths.DefaultServerKey(),
-		archive:      paths.Archive(),
-		archiveTTL:   DefaultArchiveTTL,
-		outputLogMax: live.DefaultOutputLogMax,
+		socket:             paths.DefaultSocket(),
+		listen:             paths.DefaultListen(),
+		dataListen:         paths.DefaultDataListen(),
+		advertise:          paths.DefaultAdvertise(),
+		identity:           paths.DefaultIdentity(),
+		trust:              paths.DefaultTrust(),
+		peers:              paths.DefaultPeers(),
+		recent:             paths.DefaultRecent(),
+		aliases:            paths.DefaultAliases(),
+		sessions:           paths.DefaultSessions(),
+		live:               paths.DefaultLive(),
+		platform:           paths.DefaultPlatform(),
+		relay:              paths.DefaultRelay(),
+		approval:           controlpanel.DefaultApproval,
+		cert:               paths.DefaultServerCert(),
+		key:                paths.DefaultServerKey(),
+		archive:            paths.Archive(),
+		archiveTTL:         DefaultArchiveTTL,
+		outputLogMax:       live.DefaultOutputLogMax,
+		maxSessionsPerPeer: server.DefaultMaxSessionsPerPeer,
+		maxSessionsTotal:   server.DefaultMaxSessionsTotal,
 	}
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -312,6 +318,60 @@ func parseArgs(args []string) (options, error) {
 				return options{}, fmt.Errorf("--session-send-timeout must not be negative")
 			}
 			opts.sessionSendTimeout = d
+		case a == "--max-sessions-per-peer":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a number", a)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("%s must be a non-negative number, got %q", a, args[i])
+			}
+			opts.maxSessionsPerPeer = n
+		case strings.HasPrefix(a, "--max-sessions-per-peer="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--max-sessions-per-peer="))
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("--max-sessions-per-peer must be a non-negative number")
+			}
+			opts.maxSessionsPerPeer = n
+		case a == "--max-sessions-total":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a number", a)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("%s must be a non-negative number, got %q", a, args[i])
+			}
+			opts.maxSessionsTotal = n
+		case strings.HasPrefix(a, "--max-sessions-total="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--max-sessions-total="))
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("--max-sessions-total must be a non-negative number")
+			}
+			opts.maxSessionsTotal = n
+		case a == "--session-max-lifetime":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a duration, e.g. 24h", a)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				return options{}, fmt.Errorf("%s: %w", a, err)
+			}
+			if d < 0 {
+				return options{}, fmt.Errorf("%s must not be negative", a)
+			}
+			opts.sessionMaxLifetime = d
+		case strings.HasPrefix(a, "--session-max-lifetime="):
+			d, err := time.ParseDuration(strings.TrimPrefix(a, "--session-max-lifetime="))
+			if err != nil {
+				return options{}, fmt.Errorf("--session-max-lifetime: %w", err)
+			}
+			if d < 0 {
+				return options{}, fmt.Errorf("--session-max-lifetime must not be negative")
+			}
+			opts.sessionMaxLifetime = d
 		case a == "--archive":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)

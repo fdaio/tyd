@@ -218,7 +218,10 @@ the same shell. It also means shells accumulate on the target: nothing closes
 them by default, and the daemon's `--session-idle-timeout` is off unless someone
 sets it. Set an idle timeout on the target daemon — `--session-idle-timeout 8h`
 closes sessions nobody is attached to, which is the case a forgotten agent's
-shells fall into. That is the target's setting, not the client's. Which is why
+shells fall into. `--session-max-lifetime 24h` is the harder bound: it closes a
+session regardless of use. `--max-sessions-per-peer 8` and
+`--max-sessions-total 32` are reasonable bounds for an agent host; both are
+unlimited by default. That is the target's setting, not the client's. Which is why
 `tyd status` on the target is worth reading before pointing an agent at a machine.
 
 ### Giving an agent its own identity

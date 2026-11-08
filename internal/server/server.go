@@ -34,6 +34,14 @@ const (
 	// MaxReadWait caps the server-side wait. A parked read holds a
 	// connection and a goroutine, so a client cannot ask for an open end.
 	MaxReadWait = 30 * time.Second
+
+	// DefaultMaxSessionsPerPeer bounds one principal's sessions. Zero is the
+	// default: an existing workflow is not silently capped. An operator running
+	// agents should set a number, for example 8.
+	DefaultMaxSessionsPerPeer = 0
+	// DefaultMaxSessionsTotal bounds the daemon's sessions. Zero is the
+	// default; 32 is a reasonable value for an agent host.
+	DefaultMaxSessionsTotal = 0
 )
 
 type Config struct {
@@ -57,6 +65,12 @@ type Config struct {
 	ApprovalTTL time.Duration
 	// Sandbox is where every session shell runs. Zero means the host.
 	Sandbox sandbox.Spec
+	// MaxSessionsPerPeer bounds one principal's sessions. Zero is unlimited.
+	MaxSessionsPerPeer int
+	// MaxSessionsTotal bounds the daemon's sessions. Zero is unlimited.
+	MaxSessionsTotal int
+	// SessionMaxLifetime closes a session older than this. Zero is off.
+	SessionMaxLifetime time.Duration
 }
 
 // PendingApproval is a remote request waiting for a local decision.
@@ -107,7 +121,13 @@ type pendingAttach struct {
 }
 
 func New(socket string, mgr *session.Manager, trust *auth.Store) *Server {
-	return NewWithConfig(Config{Socket: socket, Mgr: mgr, Trust: trust})
+	return NewWithConfig(Config{
+		Socket:             socket,
+		Mgr:                mgr,
+		Trust:              trust,
+		MaxSessionsPerPeer: DefaultMaxSessionsPerPeer,
+		MaxSessionsTotal:   DefaultMaxSessionsTotal,
+	})
 }
 
 func NewWithConfig(cfg Config) *Server {
@@ -448,7 +468,44 @@ func (s *Server) Start() error {
 	if s.cfg.SessionIdleTimeout > 0 && s.cfg.Mgr != nil {
 		go s.reapIdleLoop(s.cfg.SessionIdleTimeout)
 	}
+	if s.cfg.SessionMaxLifetime > 0 && s.cfg.Mgr != nil {
+		go s.reapLifetimeLoop(s.cfg.SessionMaxLifetime)
+	}
 	return nil
+}
+
+func reapLifetimeLoop(age time.Duration) time.Duration {
+	step := age / 4
+	if step > time.Minute {
+		step = time.Minute
+	}
+	if step < time.Second {
+		step = time.Second
+	}
+	return step
+}
+
+func (s *Server) reapLifetimeLoop(age time.Duration) {
+	tick := time.NewTicker(reapLifetimeLoop(age))
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.stopReaper:
+			return
+		case now := <-tick.C:
+			for _, id := range s.cfg.Mgr.OlderThan(age, now) {
+				if err := s.cfg.Mgr.Close(id); err != nil {
+					continue
+				}
+				s.audit(audit.Event{
+					Kind:      audit.KindLifetimeClose,
+					SessionID: id,
+					Reason:    fmt.Sprintf("lifetime exceeded %s", age),
+				})
+				fmt.Fprintf(os.Stderr, "tyd closed session %s (lifetime %s)\n", id, age)
+			}
+		}
+	}
 }
 
 func reapInterval(idle time.Duration) time.Duration {
@@ -798,10 +855,44 @@ func (s *Server) Connections() []protocol.ConnInfo {
 	return out
 }
 
+// checkSessionLimits refuses a create that would exceed a configured bound.
+// Pending sessions count: the slot is already held, and a peer that can queue
+// unbounded pending creates has not been bounded at all.
+func (s *Server) checkSessionLimits(st *connState) error {
+	if s.cfg.Mgr == nil {
+		return nil
+	}
+	total := s.cfg.Mgr.Count()
+	if s.cfg.MaxSessionsTotal > 0 && total >= s.cfg.MaxSessionsTotal {
+		return s.limitDenied(st, fmt.Sprintf(
+			"session limit: this daemon already holds %d sessions, the maximum is %d; close one with 'tyd session close <id>'",
+			total, s.cfg.MaxSessionsTotal))
+	}
+	if s.cfg.MaxSessionsPerPeer > 0 {
+		owner := st.principal.Name
+		if n := s.cfg.Mgr.CountByOwner(owner); n >= s.cfg.MaxSessionsPerPeer {
+			return s.limitDenied(st, fmt.Sprintf(
+				"session limit: %s already holds %d sessions, the maximum is %d; close one with 'tyd session close <id>'",
+				owner, n, s.cfg.MaxSessionsPerPeer))
+		}
+	}
+	return nil
+}
+
+func (s *Server) limitDenied(st *connState, reason string) error {
+	e := s.connEvent(st, audit.KindDenied)
+	e.Reason = reason
+	s.audit(e)
+	return fmt.Errorf("%s", reason)
+}
+
 func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 	switch f.Type {
 	case protocol.TypeCreate:
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
+			return err
+		}
+		if err := s.checkSessionLimits(st); err != nil {
 			return err
 		}
 		shell, cwd, err := s.cfg.Sandbox.ResolveSession(f.Shell, f.Cwd)

@@ -112,6 +112,9 @@ func runUp(opts options) error {
 		ApprovalMode:       approvalMode,
 		Audit:              auditSink,
 		SessionIdleTimeout: opts.sessionIdle,
+		SessionMaxLifetime: opts.sessionMaxLifetime,
+		MaxSessionsPerPeer: opts.maxSessionsPerPeer,
+		MaxSessionsTotal:   opts.maxSessionsTotal,
 		Sandbox:            sandboxSpec,
 	})
 	if err := srv.Start(); err != nil {
