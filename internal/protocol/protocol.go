@@ -57,6 +57,10 @@ type Frame struct {
 	// existed, which is older than every version there is.
 	Version int `json:"version,omitempty"`
 
+	// LeaseMS asks an approve to grant a reusable approval for this session and
+	// principal. Zero means the ordinary one-shot approval.
+	LeaseMS uint32 `json:"lease_ms,omitempty"`
+
 	Rows uint16 `json:"rows,omitempty"`
 	Cols uint16 `json:"cols,omitempty"`
 

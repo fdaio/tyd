@@ -698,7 +698,7 @@ func TestPreTLSCreatePendingThenUnixApprove(t *testing.T) {
 		t.Fatalf("attach want pending error, got %+v", f)
 	}
 
-	approved, err := client.Approve(unixEP, key, info.ID, "")
+	approved, err := client.Approve(unixEP, key, info.ID, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +795,7 @@ func TestPreReattachNeedsNewApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -846,7 +846,7 @@ func TestPreReattachNeedsNewApproval(t *testing.T) {
 		t.Fatalf("no attach_pending event: %+v", getAudits())
 	}
 
-	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, "", 0); err != nil {
 		t.Fatalf("approve waiting attach: %v", err)
 	}
 	third, err := client.Dial(tlsEP, key)
@@ -898,7 +898,7 @@ func TestApproveRejectedOverTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Approve(tlsEP, key, info.ID, ""); err == nil || !strings.Contains(err.Error(), "unix") {
+	if _, err := client.Approve(tlsEP, key, info.ID, "", 0); err == nil || !strings.Contains(err.Error(), "unix") {
 		t.Fatalf("approve over tls: %v", err)
 	}
 	if err := client.Reject(unixEP, key, info.ID); err != nil {

@@ -192,6 +192,7 @@ func writeSessionHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "                           digest the daemon printed. Without it, and with")
 	fmt.Fprintln(w, "                           more than one waiting, it refuses rather than")
 	fmt.Fprintln(w, "                           deciding requests you were not shown.")
+	fmt.Fprintln(w, "  approve --lease 15m       Also allow attach/watch/read/send for 15m.")
 	fmt.Fprintln(w, "  reject [id|alias]         Remove a PENDING session.")
 	fmt.Fprintln(w, "  close [id|alias]          Marks CLOSED; kept until daemon restart.")
 	fmt.Fprintln(w, "  rm [id|alias]             Forgets a CLOSED session here; needs --force.")

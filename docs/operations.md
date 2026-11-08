@@ -383,6 +383,12 @@ version. One built before approvals were bound to a request is refused with an
 upgrade message instead of quietly approving everything pending — which is the
 behaviour that made this necessary.
 
+An approval can carry a lease: `tyd session approve <id> --lease 15m`. The lease
+is reusable until it expires (maximum one hour) and covers attach, watch, read,
+and send for that session and principal. It is held in memory, cleared by
+`close`, `revoke`, and a daemon restart, and audited as `lease_grant` and
+`lease_expire`. Without `--lease`, each request still needs its own approval.
+
 ### A peer that takes a long time to answer
 
 A peer publishes several addresses — a LAN address, a tunnel endpoint, a stale one

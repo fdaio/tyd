@@ -100,6 +100,7 @@ type Server struct {
 	dataPlaneAddr string                    // data-plane actual listen addr
 	pending       map[string]*pendingAttach // gate key -> waiting request
 	approved      map[string]approval       // session|principal|digest -> one-shot approval
+	leases        map[string]lease          // session|principal -> reusable approval
 	createdBy     map[string]string         // gated session id -> requester public key
 	stopReaper    chan struct{}
 	reaperOnce    sync.Once
@@ -148,6 +149,7 @@ func NewWithConfig(cfg Config) *Server {
 		conns:      make(map[string]*connState),
 		pending:    make(map[string]*pendingAttach),
 		approved:   make(map[string]approval),
+		leases:     make(map[string]lease),
 		createdBy:  make(map[string]string),
 		stopReaper: make(chan struct{}),
 	}
@@ -360,6 +362,11 @@ func (s *Server) forgetSession(sessionID string) {
 	for key := range s.approved {
 		if strings.HasPrefix(key, sessionID+"|") {
 			delete(s.approved, key)
+		}
+	}
+	for key := range s.leases {
+		if strings.HasPrefix(key, sessionID+"|") {
+			delete(s.leases, key)
 		}
 	}
 }
@@ -788,6 +795,9 @@ func (s *Server) gateAttach(st *connState, sessionID, op string, size int64) err
 	if !s.gated(st) {
 		return nil
 	}
+	if s.hasLease(sessionID, st.principal.Name, op) {
+		return nil
+	}
 	// The digest is built here, from the request being served, so it describes
 	// what will actually happen rather than what the peer claimed.
 	digest := approvalDigest(op, sessionID, size)
@@ -965,6 +975,11 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 					return ambiguousApproval(f.SessionID, waiting)
 				}
 			}
+			// Resolved before decideOnePending deletes the record.
+			leasePrincipal := ""
+			if f.LeaseMS > 0 {
+				leasePrincipal = s.pendingPrincipal(f.SessionID, string(f.Data))
+			}
 			n := s.decideOnePending(f.SessionID, string(f.Data), true)
 			if n == 0 {
 				if len(f.Data) != 0 {
@@ -972,6 +987,9 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 						"run 'tyd session approve %s' to see what is", string(f.Data), f.SessionID, f.SessionID)
 				}
 				return fmt.Errorf("session %s has nothing waiting for approval", f.SessionID)
+			}
+			if f.LeaseMS > 0 {
+				s.grantLease(f.SessionID, leasePrincipal, time.Duration(f.LeaseMS)*time.Millisecond)
 			}
 			e := s.connEvent(st, audit.KindApprove)
 			e.SessionID = f.SessionID

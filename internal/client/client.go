@@ -641,12 +641,17 @@ func SendContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey, sessi
 // cannot tell which request is being approved, and refuses, because falling back to
 // "approve whatever is pending" would reinstate the defect for exactly the peers
 // that have not upgraded.
-func Approve(ep Endpoint, key ed25519.PrivateKey, id, digest string) (protocol.SessionInfo, error) {
+func Approve(ep Endpoint, key ed25519.PrivateKey, id, digest string, lease time.Duration) (protocol.SessionInfo, error) {
+	ms := uint32(0)
+	if lease > 0 {
+		ms = uint32(lease / time.Millisecond)
+	}
 	resp, err := rpc(ep, key, protocol.Frame{
 		Type:      protocol.TypeApprove,
 		SessionID: id,
 		Data:      []byte(digest),
 		Version:   auth.CurrentVersion,
+		LeaseMS:   ms,
 	})
 	if err != nil {
 		return protocol.SessionInfo{}, err

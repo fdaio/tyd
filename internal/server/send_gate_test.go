@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"strings"
 	"testing"
+	"time"
 
 	"tyd/internal/audit"
 	"tyd/internal/auth"
@@ -52,7 +53,7 @@ func TestPreModeGatesSendLikeRead(t *testing.T) {
 		t.Fatalf("unapproved remote send must be gated, got %q %q", typ, msg)
 	}
 
-	if _, err := client.Approve(unixEP, key, info.ID, ""); err != nil {
+	if _, err := client.Approve(unixEP, key, info.ID, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	typ, msg = sendOnce(t, tlsEP, key, info.ID, "echo hi\n")
@@ -63,6 +64,29 @@ func TestPreModeGatesSendLikeRead(t *testing.T) {
 	// Reaching that error is the point: the gate is no longer what stops it.
 	if typ == "error" && !strings.Contains(msg, "not supported") {
 		t.Fatalf("after approval, want the in-process refusal, got %q", msg)
+	}
+}
+
+// A lease covers repeated sends without another pending request.
+func TestApprovalLeaseCoversRepeatedSends(t *testing.T) {
+	unixEP, tlsEP, key, _ := startApprovalServer(t, "pre")
+	info, err := client.Create(unixEP, key, client.CreateOpts{Shell: "/bin/sh", Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.CloseSession(unixEP, key, info.ID) }()
+
+	if typ, msg := sendOnce(t, tlsEP, key, info.ID, "echo one\n"); typ != "error" || !strings.Contains(msg, "pending approval") {
+		t.Fatalf("first send must be gated, got %q %q", typ, msg)
+	}
+	if _, err := client.Approve(unixEP, key, info.ID, "", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		typ, msg := sendOnce(t, tlsEP, key, info.ID, "echo again\n")
+		if typ == "error" && strings.Contains(msg, "pending approval") {
+			t.Fatalf("lease did not cover send %d: %q", i, msg)
+		}
 	}
 }
 
