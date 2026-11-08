@@ -67,6 +67,42 @@ tyd up --session-output-log-max 64MB              # per-session output log cap (
 tyd up --session-send-timeout 5s                   # bound on one send to the PTY (max 30s)
 ```
 
+## Sandboxed sessions
+
+A session shell can run in a container while the daemon, live agents, keys,
+socket, and audit log stay on the host. Pull the image first; the daemon checks
+for it and does not pull on its own.
+
+```bash
+docker pull debian:bookworm
+tyd up --sandbox docker \
+  --sandbox-image debian:bookworm \
+  --sandbox-workdir "$HOME/work" \
+  --sandbox-network none
+```
+
+- The workdir is bind-mounted at the same path. A session's `cwd` must stay
+  inside it; the container does not see the rest of the host filesystem.
+- The root filesystem is read-only, all capabilities are dropped,
+  `no-new-privileges` is set, and `/tmp` is a 64MB tmpfs.
+- Docker maps the daemon's uid and gid into the container. Rootless podman uses
+  `--userns=keep-id`. Add `--sandbox-memory 2g`, `--sandbox-cpus 2`, and
+  `--sandbox-pids 512` to bound the session.
+- `--sandbox-network none` is the default. Use `bridge` on docker or
+  `slirp4netns` on podman when the session needs outbound network. `host` is
+  accepted but removes that isolation.
+- `--sandbox auto` prefers podman, then docker. `--sandbox-shell` selects the
+  shell inside the image; a client cannot override it.
+- `tyd doctor` reports the runtime, image, workdir, and whether the image is
+  present.
+- The daemon inherits its environment, so a non-default Docker context works as
+  long as its config is visible to the daemon's `HOME`. Otherwise set
+  `DOCKER_HOST` for the daemon.
+
+A container shares the host kernel. It protects the daemon's state and the rest
+of the filesystem from the session; it is not a VM and does not make a kernel
+escape impossible.
+
 ## Data plane and relay
 
 A registered `tyd up` starts a **QUIC** listener on all interfaces (`0.0.0.0:0`)

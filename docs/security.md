@@ -144,25 +144,25 @@ itself.
 |---|---|---|
 | **Same user** (default) | One account: daemon, sessions, keys, logs | A remote peer crossing the approval gate. **Not** local code in a session |
 | **Separate user** | `tyd up` as `tyd`, sessions as a lower-privileged user | A session reading the daemon's keys, socket or log |
-| **Container** | The session inside a container; the daemon outside it | Everything above, including edits to the log from inside the session |
+| **Container** | `tyd up --sandbox docker\|podman`; the shell inside a container, the daemon outside it | Everything above, including edits to the log from inside the session |
 
-The second and third need setup, and tyd does not do them for you today. What
-works today, with no privilege change:
+The container tier is built in:
 
 ```bash
-# The daemon stays as you. The session runs in a rootless container that
-# shares your uid, so it can read your files -- and cannot reach the daemon's
-# socket, key, or log.
-podman run --rm -it --userns=keep-id \
-  -v "$HOME/work:/work" \
-  registry.fedoraproject.org/fedora-toolbox:41 \
-  bash -l
+tyd up --sandbox docker \
+  --sandbox-image debian:bookworm \
+  --sandbox-workdir "$HOME/work"
 ```
 
-Inside that shell, `tyd` finds no socket, no identity and no log: the session is
-a container that happens to share your uid, and the daemon's state is outside
-it. That is the tier where "I do not trust this session" becomes a statement
-rather than a hope.
+The daemon stays as you. The shell runs in a container that shares your uid and
+sees only the bind-mounted workdir; `~/.tyd` is outside that mount, so it holds
+no key, socket, or audit log the session can reach. The root filesystem is
+read-only, capabilities are dropped, `no-new-privileges` is set, and the network
+is `none` unless the operator chooses otherwise. Memory, CPU, and PID limits are
+flags on `tyd up`; see [operations.md](operations.md#sandboxed-sessions).
+
+The container shares the host kernel. Use a VM when a kernel escape is in scope;
+a container is not that boundary.
 
 To go further — sessions as a genuinely different uid — the daemon needs
 `CAP_SETUID`, which contradicts the per-user, no-sudo install tyd is built

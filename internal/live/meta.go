@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tyd/internal/safefile"
+	"tyd/internal/sandbox"
 )
 
 const (
@@ -35,6 +36,9 @@ type Meta struct {
 	OutputLogMax int64 `json:"output_log_max,omitempty"`
 	// SendTimeout bounds one send to the PTY. Zero means the agent default.
 	SendTimeout time.Duration `json:"send_timeout,omitempty"`
+	// Sandbox is where the shell runs. Zero means host, which is what a meta
+	// file written before this field existed means too.
+	Sandbox sandbox.Spec `json:"sandbox,omitempty"`
 }
 
 const (

@@ -45,6 +45,9 @@ adds nothing: [docs/alternatives.md](docs/alternatives.md)
   modes and audit logs gate a *remote* peer, not code already running in a
   session. What that means, and what to do about it, is in
   [security.md](docs/security.md).
+- **Session isolation**: `tyd up --sandbox docker|podman` runs the shell in a
+  container that sees only the workdir; the daemon's keys, socket, and audit log
+  stay outside it. See [operations.md](docs/operations.md#sandboxed-sessions).
 - **Local by default**: the daemon listens only on `~/.tyd/tyd.sock` until you
   register; the QUIC data plane binds `0.0.0.0:0` (random port, every interface)
   when registered. `tyd up --data-listen 127.0.0.1:0` keeps that listener on

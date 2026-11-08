@@ -16,6 +16,7 @@ import (
 
 	"tyd/internal/live"
 	"tyd/internal/protocol"
+	"tyd/internal/sandbox"
 )
 
 type State string
@@ -41,6 +42,9 @@ type CreateOpts struct {
 	Owner    string
 	OwnerPub string // base64 ed25519 public key; restored after daemon restart
 	PeerID   string // optional; recorded for post-approval audit
+	// Sandbox is where the shell runs. Zero means the host, which keeps the
+	// behavior of every session created before this field existed.
+	Sandbox sandbox.Spec
 }
 
 // ClosedInfo is emitted when a live session transitions to CLOSED (not pending reject).
