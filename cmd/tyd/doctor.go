@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -120,7 +121,19 @@ func doctorChecks(opts options) (out []check, peersBroken bool) {
 
 	out = append(out, liveCheck(opts))
 	out = append(out, outputLogChecks(opts)...)
+	out = append(out, sandboxCheck(opts))
 	return out, peersBroken
+}
+
+func sandboxCheck(opts options) check {
+	spec, err := buildSandboxSpec(opts)
+	if err != nil {
+		return check{levelFail, "sandbox", err.Error()}
+	}
+	if err := checkSandbox(context.Background(), spec); err != nil {
+		return check{levelFail, "sandbox", err.Error()}
+	}
+	return check{levelOK, "sandbox", spec.Describe()}
 }
 
 func diskCheck(dir string) check {

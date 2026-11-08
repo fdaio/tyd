@@ -77,6 +77,8 @@ WireGuard planned: [requirements/dataplane-networking.md](requirements/dataplane
   `session list` or to dial a peer. Local `session create` / `attach` / `watch` /
   `close` start `tyd up` on demand when the unix socket is down.
 - Client disconnect or `Ctrl-\` detach does **not** kill the shell
+- `tyd up --sandbox docker|podman` runs the shell in a container while the
+  daemon, live agents, keys, socket, and audit log stay on the host
 - Daemon restart keeps sessions whose live-agent is still alive; it does not keep
   the client catalog authoritative (it is advisory and client-local)
 

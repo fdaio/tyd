@@ -42,6 +42,13 @@ func runUp(opts options) error {
 	if err != nil {
 		return err
 	}
+	sandboxSpec, err := buildSandboxSpec(opts)
+	if err != nil {
+		return err
+	}
+	if err := checkSandbox(context.Background(), sandboxSpec); err != nil {
+		return err
+	}
 	state := loadPeerState(opts)
 	approvalMode := controlpanel.DefaultApproval
 	if mode, err := controlpanel.NormalizeApproval(state.ApprovalMode("")); err == nil {
@@ -104,11 +111,15 @@ func runUp(opts options) error {
 		ApprovalMode:       approvalMode,
 		Audit:              auditSink,
 		SessionIdleTimeout: opts.sessionIdle,
+		Sandbox:            sandboxSpec,
 	})
 	if err := srv.Start(); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
+	if !sandboxSpec.IsHost() {
+		fmt.Fprintf(os.Stderr, "tyd sessions run in %s\n", sandboxSpec.Describe())
+	}
 	if approvalMode != controlpanel.ApprovalFull {
 		if approvalMode == controlpanel.ApprovalFull {
 			fmt.Fprintln(os.Stderr, "tyd approval mode full: remote peers are NOT asked before attaching or watching.")

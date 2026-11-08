@@ -194,6 +194,10 @@ shell.
 - **The target decides.** `--peer` chooses a machine; the target's approval mode
   and capabilities decide whether a request runs, what it may read, and whether a
   person has to approve it.
+- **The target decides where the shell runs.** `tyd up --sandbox docker|podman`
+  keeps the daemon and its state on the host and gives the session only the
+  bind-mounted workdir. `--sandbox host` is the default. See
+  [operations.md](operations.md#sandboxed-sessions).
 
 ### Versions
 

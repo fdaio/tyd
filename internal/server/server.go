@@ -18,6 +18,7 @@ import (
 	"tyd/internal/live"
 	"tyd/internal/procs"
 	"tyd/internal/protocol"
+	"tyd/internal/sandbox"
 	"tyd/internal/session"
 	"tyd/internal/transport"
 )
@@ -54,6 +55,8 @@ type Config struct {
 	// ApprovalTTL bounds pending attach requests and approvals.
 	// Zero uses DefaultApprovalTTL.
 	ApprovalTTL time.Duration
+	// Sandbox is where every session shell runs. Zero means the host.
+	Sandbox sandbox.Spec
 }
 
 // PendingApproval is a remote request waiting for a local decision.
@@ -801,19 +804,21 @@ func (s *Server) dispatch(st *connState, f protocol.Frame) error {
 		if err := s.require(st, auth.CapCreate, ""); err != nil {
 			return err
 		}
+		shell, cwd, err := s.cfg.Sandbox.ResolveSession(f.Shell, f.Cwd)
+		if err != nil {
+			return err
+		}
 		opts := session.CreateOpts{
 			Rows:     f.Rows,
 			Cols:     f.Cols,
-			Shell:    f.Shell,
-			Cwd:      f.Cwd,
+			Shell:    shell,
+			Cwd:      cwd,
 			Owner:    st.principal.Name,
 			OwnerPub: auth.EncodePublic(st.principal.Pub),
 			PeerID:   st.principal.Name,
+			Sandbox:  s.cfg.Sandbox,
 		}
-		var (
-			sess *session.Session
-			err  error
-		)
+		var sess *session.Session
 		gated := s.gated(st)
 		if gated {
 			sess, err = s.cfg.Mgr.CreatePending(opts)

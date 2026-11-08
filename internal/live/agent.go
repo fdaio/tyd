@@ -104,13 +104,27 @@ func (a *agent) startShell() error {
 // window size. The ring is deliberately not cleared: a respawned shell
 // replays whatever the previous one printed. The caller must hold a.mu.
 func (a *agent) startShellLocked() error {
-	cmd := exec.Command(a.meta.Shell)
-	if a.meta.Cwd != "" {
-		cmd.Dir = a.meta.Cwd
-	} else if home, err := os.UserHomeDir(); err == nil {
-		cmd.Dir = home
+	cwd := a.meta.Cwd
+	if cwd == "" {
+		if a.meta.Sandbox.IsHost() {
+			if home, err := os.UserHomeDir(); err == nil {
+				cwd = home
+			}
+		} else {
+			cwd = a.meta.Sandbox.Workdir
+		}
 	}
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	env := []string{"TERM=xterm-256color", "TYD_SESSION=" + a.meta.ID}
+	if a.meta.PeerID != "" {
+		env = append(env, "TYD_PEER="+a.meta.PeerID)
+	}
+	if a.meta.Sandbox.IsHost() {
+		env = append(os.Environ(), env...)
+	}
+	cmd, err := a.meta.Sandbox.Command(a.meta.Shell, cwd, env, os.Getuid(), os.Getgid())
+	if err != nil {
+		return fmt.Errorf("start shell: %w", err)
+	}
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: a.rows, Cols: a.cols})
 	if err != nil {

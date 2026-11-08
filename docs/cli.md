@@ -65,6 +65,30 @@ newer release exists. The check is cached for 24 hours, silent on failure,
 skipped when `CI` is set, and disabled by `TYD_NO_UPDATE_CHECK=1`. A source
 build does not check.
 
+## Sandboxed sessions
+
+`tyd up --sandbox docker|podman` runs each session shell in a container. The
+daemon, live agents, keys, socket, and audit log stay on the host; the container
+sees only the bind-mounted workdir.
+
+- `--sandbox-image` is required and must already be local. The daemon does not
+  pull it.
+- `--sandbox-workdir` is required. It is mounted at the same path inside the
+  container, and a client's `cwd` must stay inside it.
+- `--sandbox-network` is `none` by default. Docker also accepts `bridge`, and
+  podman accepts `slirp4netns`, when the session needs outbound network.
+- `--sandbox-shell` is `/bin/sh` by default. In this mode a client cannot choose
+  a different shell.
+- The container runs read-only, with all capabilities dropped,
+  `no-new-privileges`, a 64MB `tmpfs` at `/tmp`, and the daemon's uid (docker)
+  or `--userns=keep-id` (podman).
+- `--sandbox auto` prefers podman, then docker. `tyd doctor` checks the runtime,
+  the image, and the workdir.
+
+This is not a VM: the container shares the host kernel. Use a VM or a separate
+user when a kernel escape is in scope. The workdir is writable, and everything
+in it is visible to the session.
+
 ## Flags
 
 Accepted as `--flag value` or `--flag=value`, before or after the command.
@@ -104,6 +128,14 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--session-idle-timeout D` | `up`: close sessions idle this long, e.g. `8h` (default off) |
 | `--session-output-log-max SIZE` | `up`: per-session output log cap, e.g. `64MB` (default 64MB) |
 | `--session-send-timeout DURATION` | `up`: how long one send may wait for the PTY, max `30s` (default `5s`) |
+| `--sandbox MODE` | `up`: session runtime: `host`, `auto`, `docker`, or `podman` (default `host`) |
+| `--sandbox-image IMAGE` | `up`: container image; must already be local |
+| `--sandbox-workdir DIR` | `up`: host directory bind-mounted at the same path |
+| `--sandbox-network MODE` | `up`: `none` (default), `bridge` (docker), `slirp4netns` (podman), or `host` |
+| `--sandbox-memory SIZE` | `up`: container memory limit, e.g. `2g` |
+| `--sandbox-cpus N` | `up`: container CPU limit, e.g. `2` |
+| `--sandbox-pids N` | `up`: container PID limit |
+| `--sandbox-shell PATH` | `up`: shell inside the image (default `/bin/sh`) |
 | `--archive-ttl D` | Hide a peer, or a closed session, unused this long: `7d`, `168h`, `off` (default `7d`; env `TYD_ARCHIVE_TTL`) |
 | `--as NAME` | Peer nickname when accepting an invite |
 | `--no-wait` | `register` / `invite`: print the accept line and exit |

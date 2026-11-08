@@ -156,6 +156,7 @@ func spawnAgentWith(root, execPath string, starter live.Starter, id, owner strin
 		CreatedAt:    created.Format(time.RFC3339),
 		OutputLogMax: logMax,
 		SendTimeout:  sendTO,
+		Sandbox:      opts.Sandbox,
 	}
 	if err := live.SaveMeta(dir, meta); err != nil {
 		return "", nil, err
@@ -257,6 +258,7 @@ func (m *Manager) RestoreLive() ([]RestoredLive, error) {
 			Owner:    meta.Owner,
 			OwnerPub: meta.OwnerPub,
 			PeerID:   meta.PeerID,
+			Sandbox:  meta.Sandbox,
 		}
 		// A live agent with no shell pid outlived its shell: it is still a
 		// session, and attaching to it starts a new shell.

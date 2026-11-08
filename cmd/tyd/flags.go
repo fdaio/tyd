@@ -52,6 +52,14 @@ type options struct {
 	rest               []string
 	live               string
 	dir                string
+	sandboxBackend     string
+	sandboxImage       string
+	sandboxWorkdir     string
+	sandboxNetwork     string
+	sandboxMemory      string
+	sandboxCPUs        string
+	sandboxShell       string
+	sandboxPids        int
 }
 
 // sessionSubcommandsOwningFlags are the `tyd session` subcommands that parse their
@@ -329,6 +337,79 @@ func parseArgs(args []string) (options, error) {
 			}
 			opts.archiveTTL = d
 			opts.archiveTTLSet = true
+		case a == "--sandbox":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires host, auto, docker, or podman", a)
+			}
+			i++
+			opts.sandboxBackend = args[i]
+		case strings.HasPrefix(a, "--sandbox="):
+			opts.sandboxBackend = strings.TrimPrefix(a, "--sandbox=")
+		case a == "--sandbox-image":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires an image", a)
+			}
+			i++
+			opts.sandboxImage = args[i]
+		case strings.HasPrefix(a, "--sandbox-image="):
+			opts.sandboxImage = strings.TrimPrefix(a, "--sandbox-image=")
+		case a == "--sandbox-workdir":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a directory", a)
+			}
+			i++
+			opts.sandboxWorkdir = args[i]
+		case strings.HasPrefix(a, "--sandbox-workdir="):
+			opts.sandboxWorkdir = strings.TrimPrefix(a, "--sandbox-workdir=")
+		case a == "--sandbox-network":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a network mode", a)
+			}
+			i++
+			opts.sandboxNetwork = args[i]
+		case strings.HasPrefix(a, "--sandbox-network="):
+			opts.sandboxNetwork = strings.TrimPrefix(a, "--sandbox-network=")
+		case a == "--sandbox-memory":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a size", a)
+			}
+			i++
+			opts.sandboxMemory = args[i]
+		case strings.HasPrefix(a, "--sandbox-memory="):
+			opts.sandboxMemory = strings.TrimPrefix(a, "--sandbox-memory=")
+		case a == "--sandbox-cpus":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a number", a)
+			}
+			i++
+			opts.sandboxCPUs = args[i]
+		case strings.HasPrefix(a, "--sandbox-cpus="):
+			opts.sandboxCPUs = strings.TrimPrefix(a, "--sandbox-cpus=")
+		case a == "--sandbox-pids":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a number", a)
+			}
+			i++
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("%s must be a non-negative number, got %q", a, args[i])
+			}
+			opts.sandboxPids = n
+		case strings.HasPrefix(a, "--sandbox-pids="):
+			n, err := strconv.Atoi(strings.TrimPrefix(a, "--sandbox-pids="))
+			if err != nil || n < 0 {
+				return options{}, fmt.Errorf("--sandbox-pids must be a non-negative number, got %q",
+					strings.TrimPrefix(a, "--sandbox-pids="))
+			}
+			opts.sandboxPids = n
+		case a == "--sandbox-shell":
+			if i+1 >= len(args) {
+				return options{}, fmt.Errorf("%s requires a path", a)
+			}
+			i++
+			opts.sandboxShell = args[i]
+		case strings.HasPrefix(a, "--sandbox-shell="):
+			opts.sandboxShell = strings.TrimPrefix(a, "--sandbox-shell=")
 		case a == "--shell":
 			if i+1 >= len(args) {
 				return options{}, fmt.Errorf("%s requires a path", a)

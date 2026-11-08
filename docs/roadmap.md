@@ -91,6 +91,15 @@ Full requirements: [requirements/control-plane-pairing.md](requirements/control-
 - `status` shows CP registration, peers, recent, session aliases, and daemon connections
 - Create-then-attach (optional `--detach`); SSH-style `--verbose` connect debug; client-local session catalog for `list`
 
+### Step 4b — Sandboxed session runtime
+
+- `tyd up --sandbox host|auto|docker|podman`; host remains the default
+- The container sees only the bind-mounted workdir; the daemon, keys, socket, and audit log stay outside it
+- Read-only rootfs, all capabilities dropped, `no-new-privileges`, `--network=none` by default
+- Optional memory, CPU, and PID limits; image must be local and is checked at startup
+- `tyd doctor` reports the runtime, image, and workdir
+- A container is not a VM; the kernel is shared
+
 ### Step 5 — Revoke and hardening
 
 - `tyd revoke <peer-id|nickname>` — either side drops the pair on CP and locally
