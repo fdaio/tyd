@@ -24,14 +24,21 @@ GitHub Actions workflow `Release` runs every day at 23:00 Asia/Shanghai
 (`0 15 * * *` UTC), and can be started by hand. The version is the Shanghai
 calendar date plus the 7-character commit id, for example `2026.09.27-19d5e02`.
 
-It publishes one GitHub Release of `main` when that commit is not already tagged
-in this form. The install archives are `tyd-<os>-<arch>.tar.gz` — one per
-platform, each holding a single `tyd`, plus `tyd-relay-<os>-<arch>.tar.gz` for
-the relay. `install.sh` downloads the one asset that matches the machine it
-runs on (about 3.7MB; the per-OS archive it replaced was 12.4MB and carried the
-other architecture and the relay as well). A manual tag such as `v0.1.0` is not
-a daily version. If `main` has no new commit since the last daily tag, the
-workflow succeeds and skips the build and the release.
+It publishes one GitHub Release of `main`, marked as a prerelease, when that
+commit is not already tagged in this form. The install archives are
+`tyd-<os>-<arch>.tar.gz` — one per platform, each holding a single `tyd`, plus
+`tyd-relay-<os>-<arch>.tar.gz` for the relay. `install.sh` downloads the one
+asset that matches the machine it runs on (about 3.7MB; the per-OS archive it
+replaced was 12.4MB and carried the other architecture and the relay as well).
+A manual tag such as `v0.1.0` is not a daily version. If `main` has no new commit
+since the last daily tag, the workflow succeeds and skips the build and the
+release.
+
+Prereleases are not what installs fetch. `install.sh` and `tyd upgrade` read
+`/releases/latest`, which GitHub resolves to the newest release that is neither
+a draft nor a prerelease. A daily build therefore reaches users only after the
+manual `Promote` workflow runs its smoke test and marks it latest. Install a
+daily build on purpose by fetching its archive from the release page.
 
 Because the archive name now includes the architecture, an `install.sh` copied
 before this change asks for `tyd-<os>.tar.gz` and fails after the next daily

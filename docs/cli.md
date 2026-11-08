@@ -12,6 +12,8 @@ the binary. This page is the map plus the defaults.
 | | `session attach` | Attach interactively (exclusive); id, alias, or recent |
 | | `<session>.<peer>` | Attach shortcut: `tyd jammy.laptop` is `tyd --peer laptop session attach jammy` |
 | | `session watch` | Follow output read-only; id, alias, or recent |
+| | `session read` | Pull output by cursor: `--cursor`, `--epoch`, `--wait`, `--until-match`, `--until-idle`, `--max-bytes`, `--json`, `--follow`. Live-agent sessions only |
+| | `session send` | Type into a session nobody is attached to; refuses while a human holds the keyboard. `--stdin` reads raw bytes, `--json` reports the cursor |
 | | `session approve` | Approve a PENDING session, or one waiting request on it (local unix only) |
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
@@ -32,11 +34,37 @@ the binary. This page is the map plus the defaults.
 | | `status` | Show CP registration, peers, aliases, connections |
 | | `approval` | Show or set the approval mode: `full`, `pre`, `post` |
 | | `doctor` | Check state files and disk; `--fix` rebuilds `peers.json` |
+| | `audit` | Verify the audit log's hash chain (default `~/.tyd/audit.log`; `--audit-log PATH`) |
+| | `version` | Print the build version (`tyd dev` for a source build) |
+| | `upgrade` | Download and install the newest promoted release; refuses when no checksum is published |
 | | `serve` | Deprecated alias for `up` |
 
 Removed forms: `tyd create`, `tyd list`, and friends are rejected with a hint to
 use `tyd session …`. The top-level `tyd alias` still works but prints a
 deprecation note — prefer `tyd session alias`.
+
+## Self-upgrade
+
+`tyd version` prints the tag the binary was built with, or `tyd dev` for a
+source build.
+
+`tyd upgrade` installs the newest **promoted** release. Daily builds off `main`
+are prereleases, so it does not see them; see
+[operations.md](operations.md#daily-release). It:
+
+- downloads the archive that matches this platform, and refuses to install when
+  the release publishes no SHA-256 for it;
+- runs the extracted binary with `version` and checks that it reports the
+  expected tag;
+- swaps the binary atomically, and restores the previous one if the swap fails;
+- refuses when the binary lives under a package manager prefix (Homebrew),
+  because the manager owns the file.
+
+The daemon is not restarted: it keeps serving the old binary until `tyd up` runs
+again. After other commands on a terminal, tyd prints a one-line notice when a
+newer release exists. The check is cached for 24 hours, silent on failure,
+skipped when `CI` is set, and disabled by `TYD_NO_UPDATE_CHECK=1`. A source
+build does not check.
 
 ## Flags
 
