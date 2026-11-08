@@ -1220,7 +1220,14 @@ func ListenAndServe(addr string, s *Service) (net.Addr, *http.Server, error) {
 	if s.baseURL == "" {
 		s.SetBaseURL("http://" + ln.Addr().String())
 	}
-	srv := &http.Server{Handler: s.Handler()}
+	srv := &http.Server{
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr(), srv, nil
 }

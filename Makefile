@@ -30,6 +30,7 @@ test:
 	go test ./...
 	sh -n scripts/install.sh
 	sh scripts/release_plan_test.sh
+	sh scripts/install_verify_test.sh
 
 # Drives a real daemon through send and read. It starts its own daemon in a
 # temporary HOME, so it is separate from `test` and runs in CI on its own.

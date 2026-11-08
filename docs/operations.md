@@ -55,6 +55,10 @@ tyd up
 By default tyd listens on the Unix socket `~/.tyd/tyd.sock` and **nothing else** —
 TLS is opt-in, and the QUIC data plane only starts for a registered daemon.
 
+An unauthenticated connection is closed after 10 seconds, and one daemon accepts
+at most 256 concurrent connections. Both bounds apply to the TLS and QUIC
+listeners; the Unix socket is local.
+
 ```bash
 tyd up                                            # unix only (default)
 tyd up --listen 127.0.0.1:61211                   # enable TLS
@@ -301,7 +305,8 @@ Notes:
   `https://github.com/fdaio/tyd/releases/latest/download/tyd-<os>-<arch>.tar.gz`.
 - `--platform` is only needed for a custom or local Control Panel.
 - The container listens on `0.0.0.0:8080` with no TLS — terminate at the edge
-  (e.g. Cloudflare). Compose caps it at 0.5 CPU and 128 MB.
+  (e.g. Cloudflare). Compose caps it at 0.5 CPU and 128 MB. The HTTP server sets
+  header, read, write, and idle timeouts, and caps a JSON body at 1 MiB.
 - **Control Panel state is in-memory only.** A container restart drops
   registrations, invites, and peer pairs. Every daemon notices on its next round
   (within about 30 seconds), restores its own registration from its local

@@ -71,7 +71,22 @@ type Config struct {
 	MaxSessionsTotal int
 	// SessionMaxLifetime closes a session older than this. Zero is off.
 	SessionMaxLifetime time.Duration
+	// HandshakeTimeout bounds an unauthenticated connection. Zero uses the
+	// default; a negative value disables it (tests).
+	HandshakeTimeout time.Duration
+	// MaxConns caps concurrent connections. Zero uses the default; a negative
+	// value disables the cap.
+	MaxConns int
 }
+
+const (
+	// DefaultHandshakeTimeout is how long a connection may stay before it
+	// authenticates. The challenge is one frame and one reply.
+	DefaultHandshakeTimeout = 10 * time.Second
+	// DefaultMaxConns bounds one daemon's connections. Each one is a goroutine
+	// and a file descriptor; the data plane is reachable by any peer.
+	DefaultMaxConns = 256
+)
 
 // PendingApproval is a remote request waiting for a local decision.
 type PendingApproval struct {
@@ -143,6 +158,12 @@ func NewWithConfig(cfg Config) *Server {
 	}
 	if cfg.ApprovalTTL <= 0 {
 		cfg.ApprovalTTL = DefaultApprovalTTL
+	}
+	if cfg.HandshakeTimeout == 0 {
+		cfg.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	if cfg.MaxConns == 0 {
+		cfg.MaxConns = DefaultMaxConns
 	}
 	s := &Server{
 		cfg:        cfg,
@@ -628,6 +649,9 @@ func (c *connState) send(f protocol.Frame) error {
 }
 
 func (s *Server) handle(conn net.Conn, binder []byte, fromSession bool) {
+	if s.cfg.HandshakeTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(s.cfg.HandshakeTimeout))
+	}
 	info := transport.Info{Transport: transport.KindUnix}
 	if tc, ok := conn.(transport.Conn); ok {
 		info = tc.Info()
@@ -645,6 +669,11 @@ func (s *Server) handle(conn net.Conn, binder []byte, fromSession bool) {
 		started:     time.Now().UTC(),
 	}
 	s.mu.Lock()
+	if s.cfg.MaxConns > 0 && len(s.conns) >= s.cfg.MaxConns {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return
+	}
 	s.conns[st.id] = st
 	s.mu.Unlock()
 
@@ -664,8 +693,14 @@ func (s *Server) handle(conn net.Conn, binder []byte, fromSession bool) {
 	}()
 
 	if err := s.handshake(st); err != nil {
+		// The peer may have stopped reading; do not let the error reply hold
+		// the goroutine past the handshake deadline.
+		_ = conn.SetWriteDeadline(time.Now().Add(time.Second))
 		_ = st.send(protocol.Frame{Type: protocol.TypeError, Error: err.Error()})
 		return
+	}
+	if s.cfg.HandshakeTimeout > 0 {
+		_ = conn.SetDeadline(time.Time{})
 	}
 	st.state = "authenticated"
 

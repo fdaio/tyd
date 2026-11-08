@@ -2,6 +2,8 @@ package scripts_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -326,6 +328,13 @@ func releaseArchive(t *testing.T) (path string, size int) {
 	return out, len(b)
 }
 
+// serveChecksums answers the checksums.txt install.sh now fetches. Without
+// this the installer correctly refuses the archive.
+func serveChecksums(w http.ResponseWriter, name string, body []byte) {
+	sum := sha256.Sum256(body)
+	_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + "  " + name + "\n"))
+}
+
 // cutAfter aborts the response after n bytes, the way a throttled link gets
 // reset mid-transfer. http.ErrAbortHandler drops the connection without a
 // graceful close, so curl sees a partial body and a non-zero exit.
@@ -357,6 +366,10 @@ func TestInstallResumesAResetDownload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.URL.Path == "/checksums.txt" {
+			serveChecksums(w, "tyd.tar.gz", body)
+			return
+		}
 		start := 0
 		if rng := r.Header.Get("Range"); strings.HasPrefix(rng, "bytes=") {
 			n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(rng, "bytes="), "-"))
@@ -432,6 +445,10 @@ func TestInstallRestartsWhenServerIgnoresRange(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.URL.Path == "/checksums.txt" {
+			serveChecksums(w, "tyd.tar.gz", body)
+			return
+		}
 		if r.Header.Get("Range") != "" {
 			// No 206, no Accept-Ranges: curl reports 33.
 			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
