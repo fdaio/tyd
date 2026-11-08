@@ -236,6 +236,10 @@ func runSession(opts options) error {
 			return err
 		}
 		digest := approveDigestArg(args)
+		lease, err := approveLeaseArg(args)
+		if err != nil {
+			return err
+		}
 		sid, err := resolveSessionRef(opts, firstArg(args))
 		if err != nil {
 			return fmt.Errorf("usage: tyd session approve [session_id|alias]: %w", err)
@@ -248,7 +252,7 @@ func runSession(opts options) error {
 		if err := ensureLocalDaemon(opts, local); err != nil {
 			return err
 		}
-		info, err := client.Approve(local, key, sid, digest)
+		info, err := client.Approve(local, key, sid, digest, lease)
 		if err != nil {
 			return err
 		}
@@ -586,4 +590,33 @@ func approveDigestArg(args []string) string {
 		}
 	}
 	return ""
+}
+
+func approveLeaseArg(args []string) (time.Duration, error) {
+	for i := 0; i < len(args); i++ {
+		var raw string
+		switch {
+		case args[i] == "--lease":
+			if i+1 >= len(args) {
+				return 0, fmt.Errorf("--lease requires a duration, e.g. 15m")
+			}
+			raw = args[i+1]
+		case strings.HasPrefix(args[i], "--lease="):
+			raw = strings.TrimPrefix(args[i], "--lease=")
+		default:
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return 0, fmt.Errorf("--lease: %w", err)
+		}
+		if d <= 0 {
+			return 0, fmt.Errorf("--lease must be positive")
+		}
+		if d > time.Hour {
+			return 0, fmt.Errorf("--lease is capped at 1h")
+		}
+		return d, nil
+	}
+	return 0, nil
 }

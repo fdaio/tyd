@@ -14,7 +14,7 @@ the binary. This page is the map plus the defaults.
 | | `session watch` | Follow output read-only; id, alias, or recent |
 | | `session read` | Pull output by cursor: `--cursor`, `--epoch`, `--wait`, `--until-match`, `--until-idle`, `--max-bytes`, `--json`, `--follow`. Live-agent sessions only |
 | | `session send` | Type into a session nobody is attached to; refuses while a human holds the keyboard. `--stdin` reads raw bytes, `--json` reports the cursor |
-| | `session approve` | Approve a PENDING session, or one waiting request on it (local unix only) |
+| | `session approve` | Approve a PENDING session, or one waiting request on it (local unix only); `--lease D` also grants a reusable approval for attach/watch/read/send |
 | | `session reject` | Reject a PENDING session (local unix only) |
 | | `session close` | Close a session (kept as history) |
 | | `session rm` | Forget a **closed** session in the local catalog (`--force`); its aliases go with it |
@@ -169,6 +169,7 @@ Accepted as `--flag value` or `--flag=value`, before or after the command.
 | `--no-wait` | `register` / `invite`: print the accept line and exit |
 | `--shell PATH` | `session create`: shell to run; must be listed in the **daemon's** `/etc/shells` (default: the daemon's own shell) |
 | `--detach` | `session create`: print the id only |
+| `--lease D` | `session approve`: also grant a reusable approval for this session and principal, capped at `1h`; covers attach, watch, read, and send |
 | `--json` | `session create` / `list` / `close`: print one JSON object; `create` implies `--detach` |
 | `--all` | `peer list` / `session list`: include archived rows |
 | `--verbose` | `session create/attach/watch`: SSH-style connect debug on stderr; also reports a prune that could not write |

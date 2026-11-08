@@ -196,6 +196,10 @@ shell.
   a later send. When several requests are waiting, `tyd session approve <id>`
   lists them and refuses to pick one for you; `--digest HEX` names it, and the
   hex it prints **is** the hex it accepts.
+- **An agent that needs repeated access wants a lease.** `tyd session approve
+  <id> --lease 15m` grants attach, watch, read, and send for that principal and
+  session for up to an hour. It is not consumed per call. Create, close, and
+  everything else still need their own approval.
 - **The target decides.** `--peer` chooses a machine; the target's approval mode
   and capabilities decide whether a request runs, what it may read, and whether a
   person has to approve it.
