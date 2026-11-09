@@ -191,6 +191,8 @@ Everything lives under `~/.tyd`:
 | `policy.json` | Local role for each peer, beside `peers.json`; never read from the Control Panel |
 | `aliases.json` | Client-local session names |
 | `recent.json` | Last peer / session used by this client |
+| `endpoint-cache.json` | Peer endpoints that passed signature verification against `paired.json`; tried before the Control Panel (`0600`) |
+| `dataplane.json` | Last data-plane port this daemon listened on, reused on restart when free (`0600`) |
 | `sessions.json` | Client-local session catalog read by `session list` |
 | `archive.json` | Which peers and sessions are archived, and when each peer was last dialled. Kept out of `peers.json` on purpose: that file is rebuilt from the Control Panel on every sync, and `doctor --fix` replaces it outright |
 | `live/<id>/` | Per-session live-agent socket, metadata, PID, and sequenced output segments (`output.<seq>`, `0600`; deleted on close) |

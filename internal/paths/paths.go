@@ -67,6 +67,19 @@ func DefaultLive() string {
 	return filepath.Join(DefaultDir(), "live")
 }
 
+// EndpointCache is where a client keeps endpoints that passed signature
+// verification, so a dial can start locally instead of asking the Control
+// Panel every time.
+func EndpointCache() string {
+	return filepath.Join(DefaultDir(), "endpoint-cache.json")
+}
+
+// DataPlanePort remembers the last data-plane port a daemon listened on. A
+// restart that reuses it keeps endpoints clients already hold valid.
+func DataPlanePort() string {
+	return filepath.Join(DefaultDir(), "dataplane.json")
+}
+
 // DefaultRelay is the public rendezvous for dual-NAT fallback.
 // Served as WebSocket on the Control Panel (/relay) so Cloudflare HTTPS works.
 // Override with --relay; use --relay off to disable.

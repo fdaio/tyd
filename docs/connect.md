@@ -102,6 +102,28 @@ The **server** must stay up — `tyd status` should not report the local daemon 
 down. Published data-plane addresses expire on the Control Panel about every 90
 seconds, so a long-lived pairing keeps refreshing them only while `tyd up` runs.
 
+### Local-first dialing
+
+A dial does not have to start at the Control Panel. After a peer's signed
+endpoint passes verification against the local pairing record, the client keeps
+it in `~/.tyd/endpoint-cache.json` (mode `0600`) and tries that address first.
+The Control Panel is asked only when there is no verified copy or the cached
+address stops answering.
+
+- `--verbose` shows the cached address being dialled. A dead cached address
+  prints `Cached endpoint unreachable; refreshing from Control Panel.`, then the
+  refreshed record is stored and the dial retried once.
+- The cache is verified again on every read against `paired.json`. A tampered
+  entry, an entry naming another peer, or an entry for a peer this machine never
+  paired is ignored. Revoking a peer still removes its access: the pairing
+  record, not the cache, is the trust source.
+- With no verified copy and an unreachable Control Panel, `session create` fails
+  in three seconds or less with the Control Panel's reason. It does not start a
+  relay dial that could outlast that budget.
+- The server remembers its data-plane port in `~/.tyd/dataplane.json`, so a
+  restart keeps the addresses clients already hold valid. A port taken by
+  another process falls back to an ephemeral one.
+
 ## Detach and close
 
 | Action | Command / key |

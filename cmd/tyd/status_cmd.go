@@ -110,7 +110,10 @@ func runStatus(opts options) error {
 	}
 	ep, _, err := endpoint(opts)
 	if err != nil {
-		return err
+		// Status is a local view first; an unreachable peer must not hide the
+		// rest of it.
+		fmt.Printf("  (%v)\n", err)
+		return nil
 	}
 	items, err := client.Status(ep, key)
 	if err != nil {

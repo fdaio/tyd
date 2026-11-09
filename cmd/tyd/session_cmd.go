@@ -14,6 +14,7 @@ import (
 	"tyd/internal/catalog"
 	"tyd/internal/client"
 	"tyd/internal/peers"
+	"tyd/internal/protocol"
 	"tyd/internal/recent"
 	"tyd/internal/session"
 	"tyd/internal/transport"
@@ -62,7 +63,7 @@ func runSession(opts options) error {
 			opts.detach = true
 		}
 		st.Log("Resolving endpoint.")
-		ep, peerID, err := endpoint(opts)
+		ep, peerID, fromCache, err := endpointForDial(opts)
 		if err != nil {
 			st.Clear()
 			return err
@@ -71,7 +72,9 @@ func runSession(opts options) error {
 			st.Clear()
 			return err
 		}
-		bindSessionProgress(&ep, st)
+		if fromCache && peerID != "" {
+			st.Log(fmt.Sprintf("Using cached endpoint for %s (%s).", shortPeer(peerID), ep.Address))
+		}
 		if peerID != "" {
 			st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), ep.Kind))
 		} else {
@@ -82,7 +85,12 @@ func runSession(opts options) error {
 			st.Clear()
 			return err
 		}
-		info, err := client.Create(ep, key, client.CreateOpts{Shell: opts.shell})
+		var info protocol.SessionInfo
+		ep, err = withEndpointRetry(opts, st, "", peerID, ep, fromCache, isCreateDialError, func(ep client.Endpoint) error {
+			var createErr error
+			info, createErr = client.Create(ep, key, client.CreateOpts{Shell: opts.shell})
+			return createErr
+		})
 		if err != nil {
 			st.Clear()
 			return err
@@ -124,7 +132,7 @@ func runSession(opts options) error {
 			return fmt.Errorf("usage: tyd session attach [session_id|alias]: %w", err)
 		}
 		st.Log("Resolving endpoint.")
-		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+		ep, peerID, refreshable, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
 			return err
@@ -144,7 +152,7 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		err = withEndpointRetry(opts, st, sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+		_, err = withEndpointRetry(opts, st, sid, peerID, ep, refreshable, client.IsRetryableDial, func(ep client.Endpoint) error {
 			return client.Attach(ep, key, sid, os.Stdin, os.Stdout)
 		})
 		st.Clear()
@@ -159,7 +167,7 @@ func runSession(opts options) error {
 			return fmt.Errorf("usage: tyd session watch [session_id|alias]: %w", err)
 		}
 		st.Log("Resolving endpoint.")
-		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+		ep, peerID, refreshable, err := endpointForSession(opts, sid)
 		if err != nil {
 			st.Clear()
 			return err
@@ -179,7 +187,7 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		err = withEndpointRetry(opts, st, sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+		_, err = withEndpointRetry(opts, st, sid, peerID, ep, refreshable, client.IsRetryableDial, func(ep client.Endpoint) error {
 			bindWatchProgress(&ep, st)
 			return client.Watch(ep, key, sid, os.Stdin, os.Stdout)
 		})
@@ -194,7 +202,7 @@ func runSession(opts options) error {
 		if err != nil {
 			return fmt.Errorf("usage: tyd session close [session_id|alias]: %w", err)
 		}
-		ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+		ep, peerID, refreshable, err := endpointForSession(opts, sid)
 		if err != nil {
 			return err
 		}
@@ -206,7 +214,7 @@ func runSession(opts options) error {
 			return err
 		}
 		rememberPeerSession(opts, peerID, sid)
-		err = withEndpointRetry(opts, newConnectStatus(os.Stderr, false), sid, peerID, ep, fromCatalog, func(ep client.Endpoint) error {
+		_, err = withEndpointRetry(opts, newConnectStatus(os.Stderr, false), sid, peerID, ep, refreshable, client.IsRetryableDial, func(ep client.Endpoint) error {
 			return client.CloseSession(ep, key, sid)
 		})
 		if err != nil {

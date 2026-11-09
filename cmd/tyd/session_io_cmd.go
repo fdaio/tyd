@@ -98,7 +98,7 @@ func runSessionSend(opts options) error {
 		return fmt.Errorf("send needs at least one byte")
 	}
 
-	ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+	ep, peerID, _, err := endpointForSession(opts, sid)
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,6 @@ func runSessionSend(opts options) error {
 		return err
 	}
 	rememberPeerSession(opts, peerID, sid)
-	_ = fromCatalog
 	rep, err := client.Send(ep, key, sid, data)
 	if err != nil {
 		if strings.Contains(err.Error(), "session in use") {
@@ -199,7 +198,7 @@ func runSessionRead(opts options) error {
 		return fmt.Errorf("--until-idle must not be negative")
 	}
 
-	ep, peerID, fromCatalog, err := endpointForSession(opts, sid)
+	ep, peerID, _, err := endpointForSession(opts, sid)
 	if err != nil {
 		return err
 	}
@@ -286,6 +285,5 @@ func runSessionRead(opts options) error {
 		if !*follow {
 			return nil
 		}
-		_ = fromCatalog
 	}
 }

@@ -47,6 +47,17 @@ func New(baseURL string) *Client {
 	}
 }
 
+// NewWithTimeout is New with a different whole-request timeout. A daemon
+// maintenance round can wait; an interactive dial cannot hold a terminal while
+// an unreachable Control Panel times out.
+func NewWithTimeout(baseURL string, timeout time.Duration) *Client {
+	c := New(baseURL)
+	if timeout > 0 {
+		c.HTTPClient.Timeout = timeout
+	}
+	return c
+}
+
 func (c *Client) Register(publicKey, approvalMode string) (*controlpanel.RegisterResponse, error) {
 	return c.RegisterOpts(publicKey, approvalMode, false)
 }

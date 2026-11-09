@@ -45,14 +45,17 @@ const (
 )
 
 type Config struct {
-	Socket       string
-	Listen       string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
-	DataListen   string // empty/off = no data-plane QUIC; e.g. 127.0.0.1:0
-	CertPath     string
-	KeyPath      string
-	Mgr          *session.Manager
-	Trust        *auth.Store
-	ApprovalMode string // full|pre|post; default full
+	Socket     string
+	Listen     string // empty/off = no manual TLS; e.g. 127.0.0.1:61211
+	DataListen string // empty/off = no data-plane QUIC; e.g. 127.0.0.1:0
+	// DataListenFallback is tried when DataListen cannot bind, for example when
+	// a remembered port is now busy. Empty keeps the bind strict.
+	DataListenFallback string
+	CertPath           string
+	KeyPath            string
+	Mgr                *session.Manager
+	Trust              *auth.Store
+	ApprovalMode       string // full|pre|post; default full
 
 	// Audit receives control events in every approval mode. Nil means stderr
 	// under post and no auditing otherwise.
@@ -476,6 +479,13 @@ func (s *Server) Start() error {
 	}
 	if s.cfg.DataListen != "" && s.cfg.DataListen != "off" {
 		ln, fp, err := transport.ListenQUIC(s.cfg.DataListen, s.cfg.CertPath, s.cfg.KeyPath)
+		if err != nil && s.cfg.DataListenFallback != "" && s.cfg.DataListenFallback != s.cfg.DataListen {
+			if ln2, fp2, err2 := transport.ListenQUIC(s.cfg.DataListenFallback, s.cfg.CertPath, s.cfg.KeyPath); err2 == nil {
+				fmt.Fprintf(os.Stderr, "tyd data-plane: %s unavailable (%v); using %s\n",
+					s.cfg.DataListen, err, s.cfg.DataListenFallback)
+				ln, fp, err = ln2, fp2, nil
+			}
+		}
 		if err != nil {
 			_ = s.Close()
 			return err
