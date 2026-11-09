@@ -118,6 +118,14 @@ Panel (`transport=quic`, ephemeral signaling only, refreshed about every 30 seco
 and expiring after about 90). Clients try candidates in order, then fall back to the
 relay.
 
+In `auto` mode the daemon remembers the port it listened on in
+`~/.tyd/dataplane.json` and prefers it on the next start, so clients that already
+hold an endpoint are not forced back to the Control Panel by a restart. If
+another process owns that port, the daemon logs the fallback and listens on an
+ephemeral one instead. An explicit `--data-listen HOST:PORT` stays strict and
+neither reads nor writes the file. The first Control Panel round runs in the
+background, so a slow or unreachable Control Panel does not delay `tyd up`.
+
 A round spends **one** request: `PUT /v1/daemons/{id}/sync` publishes the endpoint
 and returns the peer list together, because a daemon needs both on every
 interval. The wait is 30 seconds with ±20% jitter, so a fleet started together

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -325,5 +326,91 @@ func TestJitteredWaitSpreadsTheInterval(t *testing.T) {
 		if got := jitteredWait(d, frac); got < lo || got > hi {
 			t.Errorf("jitteredWait(%v, %v) = %v, outside [%v, %v]", d, frac, got, lo, hi)
 		}
+	}
+}
+
+func registeredOpts(t *testing.T) options {
+	t.Helper()
+	dir := t.TempDir()
+	opts := options{peers: filepath.Join(dir, "peers.json")}
+	if err := peers.Save(opts.peers, &peers.File{Registration: &peers.Registration{
+		ID: "daemon-1", PublicKey: "pk", ApprovalMode: controlpanel.DefaultApproval,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return opts
+}
+
+func TestResolveDataListenPrefersRememberedPort(t *testing.T) {
+	opts := registeredOpts(t)
+	if err := saveDataPlanePort(dataPlanePortPath(opts), 41234); err != nil {
+		t.Fatal(err)
+	}
+	addr, fallback, remember, err := resolveDataListen(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "0.0.0.0:41234" {
+		t.Fatalf("addr=%q", addr)
+	}
+	if fallback != "0.0.0.0:0" {
+		t.Fatalf("fallback=%q", fallback)
+	}
+	if !remember {
+		t.Fatal("auto mode must remember the port it got")
+	}
+	st, err := os.Stat(dataPlanePortPath(opts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("perm=%o, want 600", perm)
+	}
+	if got := loadDataPlanePort(dataPlanePortPath(opts)); got != 41234 {
+		t.Fatalf("remembered port %d", got)
+	}
+}
+
+func TestResolveDataListenIgnoresUnusablePortFile(t *testing.T) {
+	opts := registeredOpts(t)
+	if err := os.WriteFile(dataPlanePortPath(opts), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	addr, fallback, remember, err := resolveDataListen(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "0.0.0.0:0" || fallback != "" || !remember {
+		t.Fatalf("addr=%q fallback=%q remember=%v", addr, fallback, remember)
+	}
+}
+
+func TestResolveDataListenExplicitPortIsStrict(t *testing.T) {
+	opts := registeredOpts(t)
+	opts.dataListen = "127.0.0.1:7777"
+	if err := saveDataPlanePort(dataPlanePortPath(opts), 41234); err != nil {
+		t.Fatal(err)
+	}
+	addr, fallback, remember, err := resolveDataListen(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "127.0.0.1:7777" || fallback != "" || remember {
+		t.Fatalf("addr=%q fallback=%q remember=%v", addr, fallback, remember)
+	}
+}
+
+func TestResolveDataListenUnregisteredIsOff(t *testing.T) {
+	dir := t.TempDir()
+	opts := options{peers: filepath.Join(dir, "peers.json")}
+	if err := peers.Save(opts.peers, &peers.File{}); err != nil {
+		t.Fatal(err)
+	}
+	addr, fallback, remember, err := resolveDataListen(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "off" || fallback != "" || remember {
+		t.Fatalf("addr=%q fallback=%q remember=%v", addr, fallback, remember)
 	}
 }

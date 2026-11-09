@@ -35,6 +35,12 @@ func TestDefaultSocketUsesHome(t *testing.T) {
 	if DefaultLive() != filepath.Join(home, ".tyd", "live") {
 		t.Fatalf("live %q", DefaultLive())
 	}
+	if EndpointCache() != filepath.Join(home, ".tyd", "endpoint-cache.json") {
+		t.Fatalf("endpoint cache %q", EndpointCache())
+	}
+	if DataPlanePort() != filepath.Join(home, ".tyd", "dataplane.json") {
+		t.Fatalf("dataplane port %q", DataPlanePort())
+	}
 	if DefaultListen() != "off" {
 		t.Fatalf("listen %q", DefaultListen())
 	}

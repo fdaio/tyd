@@ -36,6 +36,7 @@ test:
 # temporary HOME, so it is separate from `test` and runs in CI on its own.
 acceptance:
 	sh scripts/acceptance_send_read.sh
+	sh scripts/acceptance_local_first.sh
 
 # Drives a real container-backed session. The runtime and image must be local;
 # this is separate from `test` because it needs Docker or podman.

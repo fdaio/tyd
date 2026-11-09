@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -25,6 +26,7 @@ import (
 	"tyd/internal/peerstate"
 	"tyd/internal/policy"
 	"tyd/internal/relay"
+	"tyd/internal/safefile"
 	"tyd/internal/server"
 	"tyd/internal/session"
 	"tyd/internal/strutil"
@@ -39,7 +41,7 @@ func runUp(opts options) error {
 	if err != nil {
 		return fmt.Errorf("load trust %s: %w", opts.trust, err)
 	}
-	dataListen, err := resolveDataListen(opts)
+	dataListen, dataListenFallback, rememberDataPort, err := resolveDataListen(opts)
 	if err != nil {
 		return err
 	}
@@ -105,6 +107,7 @@ func runUp(opts options) error {
 		Socket:             opts.socket,
 		Listen:             opts.listen,
 		DataListen:         dataListen,
+		DataListenFallback: dataListenFallback,
 		CertPath:           opts.cert,
 		KeyPath:            opts.key,
 		Mgr:                mgr,
@@ -119,6 +122,13 @@ func runUp(opts options) error {
 	})
 	if err := srv.Start(); err != nil {
 		return err
+	}
+	if rememberDataPort {
+		if port := portFromAddr(srv.DataPlaneAddr()); port > 0 {
+			if err := saveDataPlanePort(dataPlanePortPath(opts), port); err != nil {
+				fmt.Fprintf(os.Stderr, "tyd data-plane: could not remember port %d: %v\n", port, err)
+			}
+		}
 	}
 	fmt.Fprintf(os.Stderr, "tyd listening unix %s\n", opts.socket)
 	if !sandboxSpec.IsHost() {
@@ -149,25 +159,32 @@ func runUp(opts options) error {
 	// it settled on, so the first round and every round after it talk to the
 	// Control Panel the same way.
 	poll := &cpPoll{}
-	if id, err := ensureCPRegistration(opts, state); err != nil {
-		fmt.Fprintf(os.Stderr, "cp registration restore skipped: %v\n", err)
-	} else if id != "" {
-		fmt.Fprintf(os.Stderr, "tyd restored CP registration %s\n", id)
+	restoreRegistration := func() {
+		if id, err := ensureCPRegistration(opts, state); err != nil {
+			fmt.Fprintf(os.Stderr, "cp registration restore skipped: %v\n", err)
+		} else if id != "" {
+			fmt.Fprintf(os.Stderr, "tyd restored CP registration %s\n", id)
+		}
 	}
 	if srv.DataPlaneAddr() != "" {
 		cands := transport.PreferNonLoopback(transport.ExpandCandidates(srv.DataPlaneAddr(), opts.advertise))
 		if len(cands) == 0 {
 			fmt.Fprintln(os.Stderr, "tyd data-plane: no dial candidates")
+			go restoreRegistration()
 		} else {
 			pubAddr := cands[0]
 			fmt.Fprintf(os.Stderr, "tyd data-plane quic %s (%d candidates published to CP)\n", pubAddr, len(cands))
+			// The first round runs in the background: `tyd up` must not wait
+			// for a slow or unreachable Control Panel, and dataPlaneMaintain
+			// runs that round at once before it schedules the next.
 			ep := dataEndpoint{addr: pubAddr, certFP: srv.TLSFingerprintFull(), candidates: cands}
-			if err := cpRound(poll, opts, state, trust, ep); err != nil {
-				fmt.Fprintf(os.Stderr, "cp sync skipped: %v\n", err)
-			}
-			go dataPlaneMaintain(poll, opts, state, trust, ep, stop)
+			go func() {
+				restoreRegistration()
+				dataPlaneMaintain(poll, opts, state, trust, ep, stop)
+			}()
 		}
 	} else {
+		restoreRegistration()
 		if err := syncPeersFromCP(opts, state); err != nil {
 			fmt.Fprintf(os.Stderr, "cp peer sync skipped: %v\n", err)
 		}
@@ -255,26 +272,85 @@ func recoverRegistration(opts options, state *peerstate.State) error {
 	return nil
 }
 
-func resolveDataListen(opts options) (string, error) {
+// resolveDataListen turns --data-listen into a listen address. In auto mode a
+// registered daemon prefers the port it listened on last, so endpoints peers
+// already hold stay valid across a restart; fallback lets a busy remembered
+// port degrade to an ephemeral one instead of stopping the daemon. remember
+// asks the caller to store the port it actually got.
+func resolveDataListen(opts options) (addr, fallback string, remember bool, err error) {
 	v := strings.TrimSpace(opts.dataListen)
 	if v == "" {
 		v = "auto"
 	}
 	switch strings.ToLower(v) {
 	case "off", "none", "false":
-		return "off", nil
+		return "off", "", false, nil
 	case "auto":
 		doc, err := peers.Load(opts.peers)
 		if err != nil {
-			return "", err
+			return "", "", false, err
 		}
-		if doc.HasRegistration() {
-			return "0.0.0.0:0", nil
+		if !doc.HasRegistration() {
+			return "off", "", false, nil
 		}
-		return "off", nil
+		if port := loadDataPlanePort(dataPlanePortPath(opts)); port > 0 {
+			return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), "0.0.0.0:0", true, nil
+		}
+		return "0.0.0.0:0", "", true, nil
 	default:
-		return v, nil
+		return v, "", false, nil
 	}
+}
+
+type dataPlanePortFile struct {
+	Port int `json:"port"`
+}
+
+// dataPlanePortPath keeps the remembered port beside peers.json, so a custom
+// state directory stays self-contained and a test never writes into the real
+// one.
+func dataPlanePortPath(opts options) string {
+	if strings.TrimSpace(opts.peers) != "" {
+		return filepath.Join(filepath.Dir(opts.peers), "dataplane.json")
+	}
+	return paths.DataPlanePort()
+}
+
+// loadDataPlanePort returns the remembered port, or 0 when the file is missing
+// or unusable. A bad port file is a cache miss, never a startup failure.
+func loadDataPlanePort(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var f dataPlanePortFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return 0
+	}
+	if f.Port < 1 || f.Port > 65535 {
+		return 0
+	}
+	return f.Port
+}
+
+func saveDataPlanePort(path string, port int) error {
+	b, err := json.Marshal(dataPlanePortFile{Port: port})
+	if err != nil {
+		return err
+	}
+	return safefile.WriteFile(path, append(b, '\n'), 0o600)
+}
+
+func portFromAddr(addr string) int {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func advertisedAddr(host, listenAddr string) string {
@@ -545,14 +621,7 @@ func jitteredWait(d time.Duration, frac float64) time.Duration {
 
 func dataPlaneMaintain(poll *cpPoll, opts options, state *peerstate.State, trust *auth.Store, ep dataEndpoint, stop <-chan struct{}) {
 	warned := false
-	timer := time.NewTimer(jitteredWait(cpBackoff[0], rand.Float64()))
-	defer timer.Stop()
-	for {
-		select {
-		case <-stop:
-			return
-		case <-timer.C:
-		}
+	round := func() bool {
 		roundErr := cpRound(poll, opts, state, trust, ep)
 		if roundErr != nil {
 			fmt.Fprintf(os.Stderr, "cp maintenance: %v\n", roundErr)
@@ -568,7 +637,21 @@ func dataPlaneMaintain(poll *cpPoll, opts options, state *peerstate.State, trust
 			fmt.Fprintln(os.Stderr, "peers file writable again")
 			warned = false
 		}
-		timer.Reset(jitteredWait(poll.next(roundErr == nil), rand.Float64()))
+		return roundErr == nil
+	}
+	// The first round belongs to this goroutine. The caller starts it after
+	// the daemon can serve, so a slow Control Panel costs a background request
+	// rather than daemon startup.
+	ok := round()
+	timer := time.NewTimer(jitteredWait(poll.next(ok), rand.Float64()))
+	defer timer.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-timer.C:
+		}
+		timer.Reset(jitteredWait(poll.next(round()), rand.Float64()))
 	}
 }
 

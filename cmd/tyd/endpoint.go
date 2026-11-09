@@ -2,8 +2,11 @@ package main
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,35 +15,122 @@ import (
 	"tyd/internal/client"
 	"tyd/internal/controlpanel"
 	"tyd/internal/cpclient"
+	"tyd/internal/endpointcache"
 	"tyd/internal/paths"
 	"tyd/internal/peers"
 	"tyd/internal/recent"
 	"tyd/internal/transport"
 )
 
+// dialControlPanelTimeout bounds the Control Panel lookup on an interactive
+// dial. A daemon maintenance round can wait for a slow Control Panel; a user
+// waiting on a terminal cannot.
+const dialControlPanelTimeout = 3 * time.Second
+
 func endpoint(opts options) (client.Endpoint, string, error) {
+	ep, peerID, _, err := endpointForDial(opts)
+	return ep, peerID, err
+}
+
+// endpointForDial resolves the address a remote dial starts from. A verified
+// endpoint cached from an earlier attempt is tried first; the Control Panel is
+// asked only when no usable copy exists or a refresh is needed. fromCache
+// reports that a dial failure is worth refreshing rather than reporting.
+func endpointForDial(opts options) (client.Endpoint, string, bool, error) {
 	if opts.addr != "" {
 		return client.Endpoint{
 			Kind:     transport.KindTLS,
 			Address:  opts.addr,
 			CertPath: opts.cert,
-		}, "", nil
+		}, "", false, nil
 	}
 	peerID, useLocal, err := resolvePeerTarget(opts)
 	if err != nil {
-		return client.Endpoint{}, "", err
+		return client.Endpoint{}, "", false, err
 	}
 	if useLocal || peerID == "" {
 		return client.Endpoint{
 			Kind:    transport.KindUnix,
 			Address: opts.socket,
-		}, "", nil
+		}, "", false, nil
 	}
-	ep, err := endpointFromCPPeer(opts, peerID)
+	cached, expired, ok := cachedEndpoint(opts, peerID)
+	if ok && !expired {
+		return cached, peerID, true, nil
+	}
+	fresh, err := endpointFromCPPeer(opts, peerID)
 	if err != nil {
-		return client.Endpoint{}, "", err
+		if ok {
+			// The record is still the peer's own signed word; only its
+			// freshness is uncertain. An unreachable Control Panel makes that
+			// the best address available.
+			fmt.Fprintf(os.Stderr, "tyd: Control Panel unavailable (%v); using the expired cached endpoint for %s\n", err, peerID)
+			return cached, peerID, true, nil
+		}
+		return client.Endpoint{}, "", false, err
 	}
-	return ep, peerID, nil
+	return fresh, peerID, false, nil
+}
+
+// endpointCachePath keeps the cache beside the pairing record. A custom state
+// directory therefore stays self-contained, and a test never writes into the
+// real one.
+func endpointCachePath(opts options) string {
+	if strings.TrimSpace(opts.paired) != "" {
+		return filepath.Join(filepath.Dir(opts.paired), "endpoint-cache.json")
+	}
+	return paths.EndpointCache()
+}
+
+// cachedEndpoint returns the last verified endpoint for peerID, and whether its
+// signed record has expired. The entry is verified again against the local
+// pairing record, so a tampered cache, an entry for another peer, or an entry
+// for a peer this machine never paired is ignored.
+func cachedEndpoint(opts options, peerID string) (client.Endpoint, bool, bool) {
+	pub, _, exists, err := pinnedEndpointKey(opts, peerID)
+	if err != nil || !exists || len(pub) == 0 {
+		return client.Endpoint{}, false, false
+	}
+	f, err := endpointcache.Load(endpointCachePath(opts))
+	if err != nil {
+		return client.Endpoint{}, false, false
+	}
+	entry, ok := f.Lookup(peerID)
+	if !ok {
+		return client.Endpoint{}, false, false
+	}
+	rec, ok := entry.Verified(pub)
+	if !ok {
+		return client.Endpoint{}, false, false
+	}
+	// paired.json remembers the highest sequence accepted for this peer. A
+	// signed record older than that is a replay, even when it sits in the cache.
+	seen, err := seenEndpointSeq(opts, peerID)
+	if err != nil {
+		return client.Endpoint{}, false, false
+	}
+	if rec.Seq < seen {
+		return client.Endpoint{}, false, false
+	}
+	addrs := endpointDialOrder(&cpclient.Endpoint{Addr: rec.Addr, Candidates: rec.Candidates})
+	if len(addrs) == 0 {
+		return client.Endpoint{}, false, false
+	}
+	kind := transport.KindTLS
+	if strings.EqualFold(rec.Transport, "quic") {
+		kind = transport.KindQUIC
+	}
+	relays := relayURLs(opts)
+	return client.Endpoint{
+		Kind:       kind,
+		Address:    addrs[0],
+		CertFP:     rec.CertFP,
+		Candidates: addrs[1:],
+		RelayURL:   firstOrEmpty(relays),
+		RelayURLs:  relays,
+		PeerID:     peerID,
+		PeerPublic: pub,
+	}, rec.Expired(time.Now()), true
 }
 
 func firstOrEmpty(v []string) string {
@@ -339,8 +429,8 @@ func endpointForSession(opts options, sessionID string) (client.Endpoint, string
 			opts.peer = rec.PeerID
 		}
 	}
-	ep, peerID, err := endpoint(opts)
-	return ep, peerID, false, err
+	ep, peerID, fromCache, err := endpointForDial(opts)
+	return ep, peerID, fromCache, err
 }
 
 // verifyEndpointRecord checks a published endpoint against the peer key this
@@ -463,9 +553,17 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 	if err != nil {
 		return client.Endpoint{}, err
 	}
-	cli := cpclient.New(platform)
+	cli := cpclient.NewWithTimeout(platform, dialControlPanelTimeout)
 	ep, err := cli.GetEndpointFull(peerID)
 	if err != nil {
+		// A Control Panel that could not be reached is reported inside the
+		// interactive budget instead of starting a relay dial that can outlast
+		// it. A Control Panel that answered without an endpoint keeps the relay
+		// fallback it always had.
+		var transportErr *url.Error
+		if errors.As(err, &transportErr) {
+			return client.Endpoint{}, fmt.Errorf("peer %s: Control Panel: %w", peerID, err)
+		}
 		if len(relays) > 0 {
 			return relayEndpoint(opts, relays, peerID), nil
 		}
@@ -488,6 +586,7 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		// Panel reported, which is the pre-signing behaviour.
 		rec.Addr, rec.CertFP, rec.Transport, rec.Candidates = ep.Addr, ep.CertFP, ep.Transport, ep.Candidates
 	}
+	cacheVerifiedEndpoint(opts, peerID, rec, ep)
 	kind := transport.KindTLS
 	if strings.EqualFold(rec.Transport, "quic") {
 		kind = transport.KindQUIC
@@ -509,6 +608,45 @@ func endpointFromCPPeer(opts options, peerID string) (client.Endpoint, error) {
 		PeerID:     peerID,
 		PeerPublic: peerPublicKey(opts, peerID),
 	}, nil
+}
+
+// cacheVerifiedEndpoint keeps a record that passed verification so the next
+// dial can start locally. It never stores an unverified record: the cache is a
+// convenience, and paired.json stays the only trust source.
+func cacheVerifiedEndpoint(opts options, peerID string, rec auth.EndpointRecord, ep *cpclient.Endpoint) {
+	if ep == nil || ep.Proof == nil || rec.Addr == "" {
+		return
+	}
+	pub, _, exists, err := pinnedEndpointKey(opts, peerID)
+	if err != nil || !exists || len(pub) == 0 {
+		return
+	}
+	entry := endpointcache.Entry{PeerID: peerID, Record: rec, Sig: ep.Proof.Sig}
+	if err := endpointcache.Store(endpointCachePath(opts), entry, pub); err != nil {
+		fmt.Fprintf(os.Stderr, "tyd: could not cache the endpoint for %s: %v\n", peerID, err)
+	}
+}
+
+// isCreateDialError reports whether a failed create certainly did not reach
+// the peer. A reset or broken pipe can arrive after the server created the
+// session, so create must not retry those: a retry would leave a second
+// session behind.
+func isCreateDialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"connection refused",
+		"no route to host",
+		"network is unreachable",
+		"direct dial failed",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func updateCatalogEndpoint(opts options, sessionID, peerID string, ep client.Endpoint) {
@@ -533,23 +671,29 @@ func updateCatalogEndpoint(opts options, sessionID, peerID string, ep client.End
 	rememberSession(opts, rec)
 }
 
-// withEndpointRetry runs op; if it fails on a catalog-cached dial and peerID is
-// set, refreshes the endpoint from CP, updates the catalog, and retries once.
-func withEndpointRetry(opts options, st *connectStatus, sessionID, peerID string, ep client.Endpoint, fromCatalog bool, op func(client.Endpoint) error) error {
+// withEndpointRetry runs op; if it fails on a locally remembered dial and
+// peerID is set, refreshes the endpoint from the Control Panel, updates the
+// catalog, and retries once. It returns the endpoint the final attempt used.
+// retryable decides which failures may be retried; nil uses the dial predicate.
+func withEndpointRetry(opts options, st *connectStatus, sessionID, peerID string, ep client.Endpoint, refreshable bool, retryable func(error) bool, op func(client.Endpoint) error) (client.Endpoint, error) {
 	bindSessionProgress(&ep, st)
 	err := op(ep)
-	if err == nil || !fromCatalog || peerID == "" || !client.IsRetryableDial(err) {
-		return err
+	if err == nil || !refreshable || peerID == "" {
+		return ep, err
+	}
+	if retryable == nil {
+		retryable = client.IsRetryableDial
+	}
+	if !retryable(err) {
+		return ep, err
 	}
 	st.Log("Cached endpoint unreachable; refreshing from Control Panel.")
 	fresh, rerr := endpointFromCPPeer(opts, peerID)
 	if rerr != nil {
-		return fmt.Errorf("%w\n(also failed to refresh endpoint: %v)", err, rerr)
+		return ep, fmt.Errorf("%w\n(also failed to refresh endpoint: %v)", err, rerr)
 	}
 	updateCatalogEndpoint(opts, sessionID, peerID, fresh)
-	if peerID != "" {
-		st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), fresh.Kind))
-	}
+	st.Log(fmt.Sprintf("Peer %s via %s.", shortPeer(peerID), fresh.Kind))
 	bindSessionProgress(&fresh, st)
-	return op(fresh)
+	return fresh, op(fresh)
 }
