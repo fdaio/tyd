@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/creack/pty"
 )
 
 func installScriptPath(t *testing.T) string {
@@ -617,6 +619,77 @@ func TestInstallScriptPrintsBootstrapOnce(t *testing.T) {
 			if total != tc.wantTotal {
 				t.Errorf("command shown %d times, want %d\nstdout: %s\nstderr: %s",
 					total, tc.wantTotal, stdout, stderr)
+			}
+		})
+	}
+}
+
+// The archive download shows a progress bar on a terminal and stays quiet on a
+// pipe. A fake curl records the flags it was called with, so the check does not
+// depend on curl's rendering or on the size of the fixture.
+func TestInstallDownloadProgressOnlyOnTerminal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix only")
+	}
+	for _, terminal := range []bool{true, false} {
+		name := "pipe"
+		if terminal {
+			name = "terminal"
+		}
+		t.Run(name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			logPath := filepath.Join(t.TempDir(), "curl.log")
+			fake := filepath.Join(fakeBin, "curl")
+			body := "#!/bin/sh\n" +
+				"printf '%s\\n' \"$*\" >>\"$CURL_LOG\"\n" +
+				"dest=\n" +
+				"while [ $# -gt 0 ]; do\n" +
+				"  case \"$1\" in\n" +
+				"    -o) dest=\"$2\"; shift 2 ;;\n" +
+				"    *) shift ;;\n" +
+				"  esac\n" +
+				"done\n" +
+				"[ -n \"$dest\" ] && : >\"$dest\"\n" +
+				"exit 0\n"
+			if err := os.WriteFile(fake, []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			home := t.TempDir()
+			cmd := exec.Command("sh", installScriptPath(t), "--client", "--accept", "not-a-real-token")
+			cmd.Env = append(os.Environ(),
+				"HOME="+home,
+				"TYD_BINDIR="+filepath.Join(home, "bin"),
+				"TYD_RELEASE_URL=http://example.invalid/tyd.tar.gz",
+				"CURL_LOG="+logPath,
+				"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+			)
+			if terminal {
+				ptmx, tty, err := pty.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer ptmx.Close()
+				cmd.Stderr = tty
+				if err := cmd.Start(); err != nil {
+					tty.Close()
+					t.Fatal(err)
+				}
+				// The parent copy has to go, or the child never sees EOF.
+				tty.Close()
+				_ = cmd.Wait()
+			} else {
+				cmd.Stderr = &bytes.Buffer{}
+				_ = cmd.Run()
+			}
+
+			log, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("curl was not called: %v", err)
+			}
+			got := strings.Contains(string(log), "--progress-bar")
+			if got != terminal {
+				t.Fatalf("progress bar on terminal = %v, want %v; curl args:\n%s", got, terminal, log)
 			}
 		})
 	}

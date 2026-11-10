@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
+
+	"golang.org/x/term"
 
 	"tyd/internal/version"
 )
@@ -37,12 +40,21 @@ func runUpgrade(opts options) error {
 	fmt.Printf("latest:  %s\n", info.Tag)
 	fmt.Printf("downloading %s\n", info.URL)
 
-	tag, err := version.Upgrade(info)
+	tag, err := version.Upgrade(info, upgradeProgress())
 	if err != nil {
 		return fmt.Errorf("upgrade: %w", err)
 	}
 	fmt.Printf("upgraded to %s\n", tag)
 	fmt.Println("restart the daemon with `tyd up` to run the new version")
+	return nil
+}
+
+// upgradeProgress returns stderr when it is a terminal, and nil otherwise, so a
+// piped or logged upgrade prints only the lines it always has.
+func upgradeProgress() io.Writer {
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		return os.Stderr
+	}
 	return nil
 }
 
