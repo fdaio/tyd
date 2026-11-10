@@ -10,7 +10,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -673,4 +675,102 @@ func TestReadContextCancellationEndsAParkedRead(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the parked read did not end when its context was cancelled")
 	}
+}
+
+// A direct connection reports the attempt and the path it took, and never
+// reports a relay fallback.
+func TestDialReportsDirectConnection(t *testing.T) {
+	ep, key := startTestServer(t)
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	ep.OnDial = func(a string) { record("dial:" + a) }
+	ep.OnFallback = func() { record("fallback") }
+	ep.OnConnected = func(via string) { record("connected:" + via) }
+
+	c, err := Dial(ep, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(events, "connected:direct") {
+		t.Fatalf("no direct success reported: %v", events)
+	}
+	if slices.Contains(events, "fallback") {
+		t.Fatalf("relay fallback reported for a direct connection: %v", events)
+	}
+}
+
+// When every direct candidate fails, the client says so once and reports the
+// relay attempt. The error keeps naming what it tried.
+func TestDialReportsRelayFallback(t *testing.T) {
+	old := dialAttemptTimeout
+	dialAttemptTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { dialAttemptTimeout = old })
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := ln.Addr().String()
+	_ = ln.Close()
+
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	ep := Endpoint{
+		Kind:       transport.KindTLS,
+		Address:    closed,
+		RelayURLs:  []string{"ws://127.0.0.1:1"},
+		PeerID:     "peer1234",
+		OnDial:     func(a string) { record("dial:" + a) },
+		OnFallback: func() { record("fallback") },
+		OnConnected: func(via string) {
+			record("connected:" + via)
+		},
+	}
+	_, err = Dial(ep, keyForTest(t))
+	if err == nil {
+		t.Fatal("expected a dial error")
+	}
+	if !strings.Contains(err.Error(), "direct dial failed") {
+		t.Fatalf("error should name the failure: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(events, "fallback") {
+		t.Fatalf("no fallback reported: %v", events)
+	}
+	if !slices.Contains(events, "dial:relay ws://127.0.0.1:1") {
+		t.Fatalf("no relay attempt reported: %v", events)
+	}
+	for _, e := range events {
+		if strings.HasPrefix(e, "connected:") {
+			t.Fatalf("a failed dial reported a connection: %v", events)
+		}
+	}
+	if i := slices.Index(events, "fallback"); i < 0 || i > slices.Index(events, "dial:relay ws://127.0.0.1:1") {
+		t.Fatalf("fallback should come before the relay attempt: %v", events)
+	}
+}
+
+func keyForTest(t *testing.T) ed25519.PrivateKey {
+	t.Helper()
+	_, key, err := auth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }

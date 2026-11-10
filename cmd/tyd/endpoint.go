@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"tyd/internal/auth"
@@ -237,6 +238,48 @@ func platformFor(opts options) (string, error) {
 	return opts.platform, nil
 }
 
+// bindDialEvents reports each dial step on a terminal. A verbose run keeps the
+// SSH-style debug lines instead, so its output does not gain a second copy. A
+// local unix socket has no direct-versus-relay choice, so it gets no lines.
+func bindDialEvents(ep *client.Endpoint, st *connectStatus, kind string) {
+	remote := kind != "unix"
+	var connected atomic.Bool
+	ep.OnDial = func(event string) {
+		switch {
+		case strings.HasPrefix(event, "connected "):
+			st.Log(dialDebugMsg(kind, strings.TrimPrefix(event, "connected ")))
+		case strings.HasPrefix(event, "relay "):
+			url := strings.TrimPrefix(event, "relay ")
+			st.Log("Connecting to relay " + url + ".")
+			if remote && !connected.Load() {
+				st.NoticeProgress("relay: " + url)
+			}
+		default:
+			st.Log(dialDebugMsg(kind, event))
+			if remote && !connected.Load() {
+				st.NoticeProgress("direct: " + event)
+			}
+		}
+	}
+	ep.OnFallback = func() {
+		st.Log("Direct candidates failed; falling back to the relay.")
+		if remote && !connected.Load() {
+			st.NoticeProgress("direct failed; trying the relay…")
+		}
+	}
+	ep.OnConnected = func(via string) {
+		connected.Store(true)
+		if !remote {
+			return
+		}
+		if via == "relay" {
+			st.NoticeProgress("connected via the relay.")
+			return
+		}
+		st.NoticeProgress("connected directly.")
+	}
+}
+
 func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 	if ep == nil {
 		return
@@ -245,9 +288,7 @@ func bindSessionProgress(ep *client.Endpoint, st *connectStatus) {
 	if kind == "" {
 		kind = "unix"
 	}
-	ep.OnDial = func(addr string) {
-		st.Log(dialDebugMsg(kind, addr))
-	}
+	bindDialEvents(ep, st, kind)
 	ep.OnObserved = observedLogger(st.Log)
 	ep.OnAttach = func() {
 		st.Log("Connection established.")
@@ -277,9 +318,7 @@ func bindWatchProgress(ep *client.Endpoint, st *connectStatus) {
 	if kind == "" {
 		kind = "unix"
 	}
-	ep.OnDial = func(addr string) {
-		st.Log(dialDebugMsg(kind, addr))
-	}
+	bindDialEvents(ep, st, kind)
 	ep.OnObserved = observedLogger(st.Log)
 	ep.OnAttach = func() {
 		st.Log("Connection established.")

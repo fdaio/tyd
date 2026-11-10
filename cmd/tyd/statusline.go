@@ -58,6 +58,15 @@ func (s *connectStatus) Log(msg string) {
 	s.writeln("debug1: " + msg)
 }
 
+// NoticeProgress writes a progress line unless verbose, where the debug lines
+// already report the same steps.
+func (s *connectStatus) NoticeProgress(msg string) {
+	if s == nil || s.verbose {
+		return
+	}
+	s.Progress(msg)
+}
+
 // Progress writes a status line while a connection is being set up, and reports
 // whether it wrote. It stays silent when the output is not a terminal, so a pipe
 // or a log sees only the result.
