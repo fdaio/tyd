@@ -241,6 +241,15 @@ trap 'rm -rf "$TMP"' EXIT INT HUP
 # instead of an install that hangs forever.
 DOWNLOAD_ATTEMPTS="${TYD_DOWNLOAD_ATTEMPTS:-8}"
 
+# A progress bar belongs on a terminal only: a piped or logged stderr must stay
+# quiet, and stdout is the installer's contract for scripts. --silent would
+# suppress the bar, so the terminal form drops it and keeps --show-error.
+if [ -t 2 ]; then
+	CURL_FLAGS="-fL --show-error --progress-bar"
+else
+	CURL_FLAGS="-fsSL"
+fi
+
 file_size() {
 	[ -f "$1" ] || {
 		printf '0\n'
@@ -312,12 +321,13 @@ download() {
 	while [ "$attempt" -le "$DOWNLOAD_ATTEMPTS" ]; do
 		st=0
 		if [ "$resume" -eq 1 ]; then
-			curl -fsSL -C - \
+			# Unquoted on purpose: the flags are words, not one argument.
+			curl $CURL_FLAGS -C - \
 				--connect-timeout 15 \
 				--speed-limit 1024 --speed-time 30 \
 				-o "$dest" "$url" || st=$?
 		else
-			curl -fsSL --connect-timeout 15 -o "$dest" "$url" || st=$?
+			curl $CURL_FLAGS --connect-timeout 15 -o "$dest" "$url" || st=$?
 		fi
 		if [ "$st" -eq 0 ]; then
 			return 0

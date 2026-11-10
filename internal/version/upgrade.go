@@ -27,7 +27,7 @@ import (
 // Replacement: download to temp → verify → extract → rename current
 // aside to .old → rename new into place → remove .old. If the swap
 // fails, .old is renamed back (rollback).
-func Upgrade(info *Info) (string, error) {
+func Upgrade(info *Info, progress io.Writer) (string, error) {
 	if info == nil {
 		return "", fmt.Errorf("no release info")
 	}
@@ -49,8 +49,11 @@ func Upgrade(info *Info) (string, error) {
 	defer os.RemoveAll(tmpDir)
 
 	tarball := filepath.Join(tmpDir, "tyd.tar.gz")
-	if err := downloadFile(info.URL, tarball); err != nil {
+	if err := downloadFile(info.URL, tarball, progress); err != nil {
 		return "", fmt.Errorf("download: %w", err)
+	}
+	if progress != nil {
+		fmt.Fprintln(progress, "  verifying checksum…")
 	}
 	if err := verifyTarball(info, tarball); err != nil {
 		return "", fmt.Errorf("verify: %w", err)
@@ -101,7 +104,7 @@ func isManagedInstall(exe string) bool {
 	return false
 }
 
-func downloadFile(url, dest string) error {
+func downloadFile(url, dest string, progress io.Writer) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -116,8 +119,16 @@ func downloadFile(url, dest string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+	p := newProgressWriter(progress, resp.ContentLength)
+	var dst io.Writer = f
+	if p != nil {
+		dst = io.MultiWriter(f, p)
+	}
+	if _, err := io.Copy(dst, resp.Body); err != nil {
+		return err
+	}
+	p.Finish()
+	return nil
 }
 
 // verifyTarball checks the SHA-256 against the release's checksums.
