@@ -38,7 +38,16 @@ type Endpoint struct {
 	// Panel's peer record carries no daemon id), so the peer is authenticated
 	// by its channel-binding signature over the inner TLS session instead.
 	PeerPublic ed25519.PublicKey
-	OnDial     func(addr string)
+	// OnDial reports each address as the dial starts, "relay <url>" for a relay
+	// attempt, and "connected <addr>" for the winning direct candidate.
+	OnDial func(addr string)
+	// OnFallback reports that every direct candidate failed and the relay list
+	// is next. It runs once, before the first relay attempt, and only when a
+	// direct candidate was tried.
+	OnFallback func()
+	// OnConnected reports which path carried the connection: "direct" or
+	// "relay".
+	OnConnected func(via string)
 	// OnObserved reports the peer address the relay observed for the server,
 	// e.g. "203.0.113.7:41234" -- post-NAT ground truth rather than the
 	// self-reported interface IPs in Candidates. Diagnostic only: the observed
@@ -108,6 +117,9 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 
 	c, errs, err := dialCandidates(ctx, ep, key, addrs)
 	if err == nil {
+		if ep.OnConnected != nil {
+			ep.OnConnected("direct")
+		}
 		return c, nil
 	}
 	if ctx.Err() != nil || errors.Is(err, errInterrupted) {
@@ -116,6 +128,9 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 
 	peerID := strings.TrimSpace(ep.PeerID)
 	if len(relays) > 0 && peerID != "" {
+		if len(addrs) > 0 && ep.OnFallback != nil {
+			ep.OnFallback()
+		}
 		for _, relayURL := range relays {
 			if err := ctx.Err(); err != nil {
 				return nil, errInterrupted
@@ -128,6 +143,9 @@ func DialContext(ctx context.Context, ep Endpoint, key ed25519.PrivateKey) (*Con
 			try.RelayURLs = nil
 			c, err := dialViaRelay(ctx, try, key)
 			if err == nil {
+				if ep.OnConnected != nil {
+					ep.OnConnected("relay")
+				}
 				return c, nil
 			}
 			if ctx.Err() != nil || errors.Is(err, errInterrupted) {

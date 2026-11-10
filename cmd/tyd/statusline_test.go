@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
+
+	"tyd/internal/client"
 )
 
 func TestConnectStatusNoticeAlways(t *testing.T) {
@@ -108,5 +112,124 @@ func TestShortTransport(t *testing.T) {
 	}
 	if got := shortTransport("tls"); got != "tls" {
 		t.Errorf("shortTransport(%q) = %q, want tls", "tls", got)
+	}
+}
+
+// captureTerminal runs fn with a terminal as its writer and returns what the
+// terminal received.
+func captureTerminal(t *testing.T, fn func(*os.File)) string {
+	t.Helper()
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Skip(err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	fn(tty)
+	// A read on a pty with nothing written blocks, and macOS ignores read
+	// deadlines on ptys, so read in a goroutine and stop waiting on our own.
+	done := make(chan []byte, 1)
+	go func() {
+		buf := make([]byte, 8192)
+		n, _ := ptmx.Read(buf)
+		done <- buf[:n]
+	}()
+	select {
+	case b := <-done:
+		return string(b)
+	case <-time.After(500 * time.Millisecond):
+		return ""
+	}
+}
+
+// The dial path is spelled out on a terminal: direct first, then the relay.
+func TestBindDialEventsOnTerminal(t *testing.T) {
+	var ep client.Endpoint
+	got := captureTerminal(t, func(tty *os.File) {
+		st := newConnectStatus(tty, false)
+		bindDialEvents(&ep, st, "tls")
+		ep.OnDial("203.0.113.7:443")
+		ep.OnFallback()
+		ep.OnDial("relay wss://relay.example")
+		ep.OnConnected("relay")
+	})
+	for _, want := range []string{
+		"direct: 203.0.113.7:443",
+		"direct failed; trying the relay…",
+		"relay: wss://relay.example",
+		"connected via the relay.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("terminal did not show %q: %q", want, got)
+		}
+	}
+	if strings.Index(got, "direct: ") > strings.Index(got, "connected via the relay.") {
+		t.Fatalf("paths are out of order: %q", got)
+	}
+}
+
+func TestBindDialEventsDirectOnTerminal(t *testing.T) {
+	var ep client.Endpoint
+	got := captureTerminal(t, func(tty *os.File) {
+		st := newConnectStatus(tty, false)
+		bindDialEvents(&ep, st, "quic")
+		ep.OnDial("203.0.113.7:443")
+		ep.OnConnected("direct")
+	})
+	for _, want := range []string{"direct: 203.0.113.7:443", "connected directly."} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("terminal did not show %q: %q", want, got)
+		}
+	}
+}
+
+// --verbose already reports each step as a debug line; it must not get a second
+// set of friendly lines.
+func TestBindDialEventsSilentWhenVerbose(t *testing.T) {
+	var ep client.Endpoint
+	got := captureTerminal(t, func(tty *os.File) {
+		st := newConnectStatus(tty, true)
+		bindDialEvents(&ep, st, "tls")
+		ep.OnDial("203.0.113.7:443")
+		ep.OnFallback()
+		ep.OnDial("relay wss://relay.example")
+		ep.OnConnected("relay")
+	})
+	if !strings.Contains(got, "debug1:") {
+		t.Fatalf("verbose should keep its debug lines: %q", got)
+	}
+	for _, unwanted := range []string{"direct: ", "relay: ", "connected via the relay.", "connected directly."} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("verbose gained %q: %q", unwanted, got)
+		}
+	}
+}
+
+func TestBindDialEventsSilentOnPipe(t *testing.T) {
+	var buf bytes.Buffer
+	st := newConnectStatus(nil, false)
+	st.w = &buf
+	var ep client.Endpoint
+	bindDialEvents(&ep, st, "tls")
+	ep.OnDial("203.0.113.7:443")
+	ep.OnFallback()
+	ep.OnDial("relay wss://relay.example")
+	ep.OnConnected("relay")
+	if buf.Len() != 0 {
+		t.Fatalf("pipe got %q", buf.String())
+	}
+}
+
+// A unix socket is local: there is no direct-versus-relay choice to report.
+func TestBindDialEventsSilentForLocalSocket(t *testing.T) {
+	var ep client.Endpoint
+	got := captureTerminal(t, func(tty *os.File) {
+		st := newConnectStatus(tty, false)
+		bindDialEvents(&ep, st, "unix")
+		ep.OnDial("/tmp/tyd.sock")
+		ep.OnConnected("direct")
+	})
+	if strings.TrimSpace(got) != "" {
+		t.Fatalf("local socket got %q", got)
 	}
 }
