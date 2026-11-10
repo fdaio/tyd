@@ -567,6 +567,7 @@ func runAccept(opts options) error {
 	}
 	pub := auth.EncodePublic(key.Public().(ed25519.PublicKey))
 	cli := cpclient.New(opts.platform)
+	terminalLine(os.Stderr, "contacting the Control Panel…")
 	acc, err := cli.Accept(tok.InviteID, pub, opts.as)
 	if err != nil {
 		return err
@@ -587,6 +588,7 @@ func runAccept(opts options) error {
 	// The Control Panel just told us who the inviter is. Check it against the
 	// hash the inviter put in the token the operator carried over: a Control
 	// Panel that substituted its own key is caught here and nowhere else.
+	terminalLine(os.Stderr, "verifying the invite…")
 	inviter, err := auth.DecodePublic(acc.PeerPublicKey)
 	if err != nil {
 		return fmt.Errorf("accept: Control Panel returned an unusable inviter key: %w", err)
@@ -603,6 +605,7 @@ func runAccept(opts options) error {
 	if err := proof.SignAcceptor(key, tok.Secret); err != nil {
 		return fmt.Errorf("accept: pairing record: %w", err)
 	}
+	terminalLine(os.Stderr, "recording the pairing…")
 	if err := cli.SubmitAcceptProof(cpclient.AcceptProof{
 		InviteID:    tok.InviteID,
 		PublicKey:   pub,
