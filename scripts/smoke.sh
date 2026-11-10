@@ -237,6 +237,16 @@ done
 [ -f "$CLIENT/paired.json" ] || die "client wrote no pairing record"
 say "server and client both hold a pairing record"
 
+step "give the peer the operator role"
+# A new pair starts at the list role, so the target decides what the peer may do.
+# Without this the create below is refused. The role is keyed by the peer id the
+# server sees, which is not the id accept printed: that one names this server.
+INBOUND=$("$TYD_BINDIR/tyd" peer list 2>/dev/null | tail -n +2 | grep . | head -1 | awk '{print $1}')
+[ -n "$INBOUND" ] || die "peer list showed no peer id"
+"$TYD_BINDIR/tyd" peer role "$INBOUND" operator >"$WORK/role.out" 2>"$WORK/role.err" ||
+	die "peer role failed: $(cat "$WORK/role.err")"
+say "$(tr -d '\r' <"$WORK/role.out" | tail -1)"
+
 # ---- 4. a session -----------------------------------------------------------
 
 # A session is opened from the client, against the server it just paired with --
@@ -258,8 +268,18 @@ client_tyd() {
 }
 
 step "open a session from the client and see it"
-client_tyd session create --peer "$PEER" --detach >"$WORK/create.out" 2>"$WORK/create.err" ||
-	die "session create failed: $(cat "$WORK/create.err" 2>/dev/null)$(cat "$WORK/create.out" 2>/dev/null)"
+# The daemon applies a role change on its next trust refresh, every 30 seconds.
+# A refused create changes nothing, so a retry is safe. Any other error fails
+# the gate at once.
+i=0
+while ! client_tyd session create --peer "$PEER" --detach >"$WORK/create.out" 2>"$WORK/create.err"; do
+	if ! grep -q "permission denied" "$WORK/create.err"; then
+		die "session create failed: $(cat "$WORK/create.err" 2>/dev/null)$(cat "$WORK/create.out" 2>/dev/null)"
+	fi
+	i=$((i + 1))
+	[ "$i" -lt 400 ] || die "session create was still refused after 100s: $(cat "$WORK/create.err")"
+	sleep 0.25
+done
 SID=$(tr -d '\r' <"$WORK/create.out" | tail -1)
 [ -n "$SID" ] || die "session create printed no id"
 client_tyd session list 2>/dev/null | grep -q "$SID" ||
