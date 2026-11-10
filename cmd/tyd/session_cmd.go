@@ -80,6 +80,7 @@ func runSession(opts options) error {
 		} else {
 			st.Log(fmt.Sprintf("Local %s.", ep.Kind))
 		}
+		st.connecting(peerID, string(ep.Kind))
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			st.Clear()
@@ -104,7 +105,11 @@ func runSession(opts options) error {
 				writeCreatedJSON(os.Stdout, info.ID, info.State, peerID)
 				return nil
 			}
-			fmt.Fprintln(os.Stderr, "pending approval")
+			// A terminal gets the clearer line; a pipe keeps the line it
+			// always had, which scripts may match on.
+			if !st.Progress("waiting for approval…") {
+				fmt.Fprintln(os.Stderr, "pending approval")
+			}
 			fmt.Println(info.ID)
 			return nil
 		}
@@ -146,6 +151,7 @@ func runSession(opts options) error {
 		} else {
 			st.Log(fmt.Sprintf("Local %s.", ep.Kind))
 		}
+		st.connecting(peerID, string(ep.Kind))
 		key, err := loadIdentity(opts.identity)
 		if err != nil {
 			st.Clear()

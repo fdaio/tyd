@@ -6,6 +6,8 @@ import (
 	"net"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 )
 
 // connectStatus prints SSH-style verbose connect logs on stderr when enabled.
@@ -54,6 +56,48 @@ func (s *connectStatus) Log(msg string) {
 		return
 	}
 	s.writeln("debug1: " + msg)
+}
+
+// Progress writes a status line while a connection is being set up, and reports
+// whether it wrote. It stays silent when the output is not a terminal, so a pipe
+// or a log sees only the result.
+func (s *connectStatus) Progress(msg string) bool {
+	if s == nil {
+		return false
+	}
+	return terminalLine(s.w, msg)
+}
+
+// connecting reports that a remote connection is starting. A local session gets
+// no line: the call returns at once.
+func (s *connectStatus) connecting(peerID, kind string) {
+	if peerID == "" {
+		return
+	}
+	s.Progress("connecting to " + shortPeer(peerID) + " over " + shortTransport(kind) + "…")
+}
+
+// terminalLine writes one status line when w is a terminal. A pipe, a log, and
+// machine-readable output get nothing.
+func terminalLine(w io.Writer, msg string) bool {
+	f, ok := w.(*os.File)
+	if !ok || !term.IsTerminal(int(f.Fd())) {
+		return false
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return false
+	}
+	fmt.Fprintf(w, "%s\r\n", msg)
+	return true
+}
+
+// shortTransport names an endpoint's transport for a status line.
+func shortTransport(kind string) string {
+	if strings.TrimSpace(kind) == "" {
+		return "unix"
+	}
+	return kind
 }
 
 // Clear is a no-op for line-oriented verbose logs (kept for call sites).
