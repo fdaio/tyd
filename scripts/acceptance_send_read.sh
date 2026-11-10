@@ -198,24 +198,41 @@ check "idle fires after the output stops" "idle" "$(jget "$out" reason)"
 
 # --- 2b: max_bytes stops on a character boundary --------------------------
 # The cut is a byte count, but a reply must never split a UTF-8 character, so
-# a request landing mid-character backs off. This needs the page to start on
-# multibyte output: with ASCII, or with a page that begins on the shell's
-# prompt, the check passes even when the boundary is dropped entirely.
+# a request landing mid-character backs off. The bytes come from the output of
+# an ASCII command, not from the echo of typed input: readline inserts redraw
+# escapes into a long echo, and it mangles multibyte input under a non-UTF-8
+# locale, so the echo is not a clean byte stream.
 sidmb=$(new_session)
-# send --json reports the cursor from before the write, so the page starts on
-# the echoed payload rather than on the prompt.
-mbjson=$(python3 -c "import sys; sys.stdout.write('你'*2000)" \
-	| "$bin" session send "$sidmb" --stdin --json 2>/dev/null | head -1)
+# The format writes 2000 copies of one three-byte character. The input is ASCII,
+# so the echo is plain bytes in any locale.
+mbcmd="printf '\\344\\275\\240%.0s' \$(seq 2000)"
+mbjson=$(printf '%s\n' "$mbcmd" | "$bin" session send "$sidmb" --stdin --json 2>/dev/null | head -1)
 mbcur=$(jget "$mbjson" cursor)
 mbep=$(jget "$mbjson" epoch)
 sleep 1
 python3 - "$bin" "$sidmb" "$mbcur" "$mbep" <<'MBPY'
-import base64, json, subprocess, sys
+import base64, json, subprocess, sys, time
 bin_, sid, cur, ep = sys.argv[1:5]
-out = subprocess.run([bin_, "session", "read", sid, "--cursor", cur, "--epoch", ep,
-                      "--wait", "10s", "--max-bytes", "100", "--json"],
-                     capture_output=True, text=True).stdout
-d = json.loads(out.splitlines()[0])
+
+def read(cursor, max_bytes):
+    out = subprocess.run([bin_, "session", "read", sid, "--cursor", cursor, "--epoch", ep,
+                          "--wait", "10s", "--max-bytes", str(max_bytes), "--json"],
+                         capture_output=True, text=True).stdout
+    return json.loads(out.splitlines()[0])
+
+# The first page also holds the echoed command, so skip to the first byte the
+# command printed. That byte starts a character, so a 100 byte cut must split it.
+for _ in range(40):
+    d = read(cur, 8000)
+    data = base64.b64decode(d["data"])
+    start = next((i for i, b in enumerate(data) if b >= 0x80), None)
+    if start is not None and len(data) - start >= 100:
+        break
+    time.sleep(0.25)
+else:
+    sys.exit("the command printed no multibyte output")
+cur = str(int(cur) + start)
+d = read(cur, 100)
 data = base64.b64decode(d["data"])
 if not data:
     sys.exit("no data returned")
