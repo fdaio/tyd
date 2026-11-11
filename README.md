@@ -115,6 +115,7 @@ tyd approval pre                      # set the mode before tyd up reads it
 tyd up                                # daemon
 tyd invite                            # mint a pairing token, wait 10 minutes
 tyd invite --no-wait                  # mint it and exit immediately
+tyd down                              # stop the daemon; live sessions keep running
 ```
 
 Both forms wait for the peer to accept, counting the token's remaining life down

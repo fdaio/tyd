@@ -35,6 +35,7 @@ var controlCommands = map[string]bool{
 	"accept":          true,
 	"register":        true,
 	"up":              true,
+	"down":            true,
 	"serve":           true,
 }
 

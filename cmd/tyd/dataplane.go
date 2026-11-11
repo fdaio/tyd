@@ -123,6 +123,12 @@ func runUp(opts options) error {
 	if err := srv.Start(); err != nil {
 		return err
 	}
+	pidPath := pidPathFor(opts.socket)
+	if err := safefile.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "tyd pid: %v\n", err)
+	} else {
+		defer removePIDFile(pidPath, os.Getpid())
+	}
 	if rememberDataPort {
 		if port := portFromAddr(srv.DataPlaneAddr()); port > 0 {
 			if err := saveDataPlanePort(dataPlanePortPath(opts), port); err != nil {

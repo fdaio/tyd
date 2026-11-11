@@ -25,7 +25,7 @@ func inSessionEnv(t *testing.T, sessionID string, fn func()) {
 func TestControlCommandsAreRefusedInsideASession(t *testing.T) {
 	refused := []string{
 		"session approve", "session reject", "approval", "revoke",
-		"invite", "accept", "register", "up", "serve",
+		"invite", "accept", "register", "up", "down", "serve",
 	}
 	for _, cmd := range refused {
 		t.Run(cmd, func(t *testing.T) {
