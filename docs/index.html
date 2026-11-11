@@ -217,17 +217,17 @@ setTimeout(function(){var b=document.getElementById('termBody'); if(b && getComp
     <div class="term">
       <div class="term-head">
         <span class="dot" style="background:#f47067"></span><span class="dot" style="background:#e3b341"></span><span class="dot" style="background:#3ddc74"></span>
-        <span class="term-title">demo — real run · tyd 2026.11.10-e5a5970 · session a8c17803bb3b3f91</span>
+        <span class="term-title">demo — real run · tyd 2026.11.11-0c26e2f · session dcd4b2440a75cf11</span>
         <div class="term-controls">
           <button class="chip" id="btnPause" type="button">❚❚ Pause</button>
           <button class="chip" id="btnReplay" type="button">↺ Replay</button>
         </div>
       </div>
       <div class="progress"><i id="prog" style="width:100%"></i></div>
-      <div class="term-body" id="termBody" aria-live="off" aria-label="Terminal transcript"><div class="line note"># 1 · Start the daemon</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line out dim">tyd tls listen off</div><div class="line note"># 2 · Create a session — detached, it keeps running when you leave</div><div class="line cmd">tyd session create --detach</div><div class="line out ok">a8c17803bb3b3f91</div><div class="line cmd">tyd session send a8c1… &#x27;echo hello-from-tyd\n&#x27;</div><div class="line cmd">tyd session read a8c1…</div><div class="line out ok">hello-from-tyd</div><div class="line note"># 3 · Stop the daemon and start it again</div><div class="line cmd">kill &lt;daemon-pid&gt;</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE     CREATED             </div><div class="line out ok">a8c17803bb3b3f91         -     DETACHED  2026-11-11T06:39:35Z</div><div class="line note">→ same session, same id — it survived the restart</div><div class="line cmd">tyd session send a8c1… &#x27;echo still-alive-after-restart\n&#x27;</div><div class="line cmd">tyd session read a8c1…</div><div class="line out ok">still-alive-after-restart</div><div class="line note"># 4 · Close it when you are actually done</div><div class="line cmd">tyd session close a8c1…</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE   CREATED             </div><div class="line out ok">a8c17803bb3b3f91         -     CLOSED  2026-11-11T06:39:35Z</div><div class="line out ok">✓ Sessions outlive the client — and the daemon.</div></div>
+      <div class="term-body" id="termBody" aria-live="off" aria-label="Terminal transcript"><div class="line note"># 1 · Start the daemon</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line out dim">tyd tls listen off</div><div class="line note"># 2 · Create a session — detached, it keeps running when you leave</div><div class="line cmd">tyd session create --detach</div><div class="line out ok">dcd4b2440a75cf11</div><div class="line cmd">tyd session send dcd4… &#x27;echo hello-from-tyd\n&#x27;</div><div class="line cmd">tyd session read dcd4…</div><div class="line out ok">hello-from-tyd</div><div class="line note"># 3 · Stop the daemon from another terminal</div><div class="line cmd">tyd down</div><div class="line out ok">daemon stopped</div><div class="line out">live sessions keep running; run &#x27;tyd up&#x27; to adopt them again</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE     CREATED             </div><div class="line out ok">dcd4b2440a75cf11         -     DETACHED  2026-11-11T08:29:31Z</div><div class="line note">→ same session, same id — it survived the restart</div><div class="line cmd">tyd session send dcd4… &#x27;echo still-alive-after-restart\n&#x27;</div><div class="line cmd">tyd session read dcd4…</div><div class="line out ok">still-alive-after-restart</div><div class="line note"># 4 · Close it when you are actually done</div><div class="line cmd">tyd session close dcd4…</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE   CREATED             </div><div class="line out ok">dcd4b2440a75cf11         -     CLOSED  2026-11-11T08:29:31Z</div><div class="line out ok">✓ Sessions outlive the client — and the daemon.</div></div>
       <div class="term-foot"><span>Status: <b id="termStatus" aria-live="polite">Finished — verified transcript</b></span><span>Verified 2026-11-11 · No video file — this terminal is the demo</span></div>
     </div>
-    <p style="color:var(--dim);font-size:13.5px;margin:12px 2px 0;font-family:'JetBrains Mono',monospace">↑ This is a real run: same commands, session id, and output as verified on 2026-11-11 — including stopping and restarting the daemon. The stop step uses the daemon's pid; a service install can use systemctl/launchctl instead.</p>
+    <p style="color:var(--dim);font-size:13.5px;margin:12px 2px 0;font-family:'JetBrains Mono',monospace">↑ This is a real run: same commands, session id, and output as verified on 2026-11-11 — including tyd down and the restart. Sessions keep running under their live agents; the next tyd up adopts them again.</p>
   </div>
 
   <!-- FEATURES -->
@@ -380,26 +380,28 @@ tyd session list / watch / close</pre>
     {"type": "out", "text": "tyd tls listen off", "cls": "dim"},
     {"type": "note", "text": "# 2 · Create a session — detached, it keeps running when you leave"},
     {"type": "cmd", "text": "tyd session create --detach"},
-    {"type": "out", "text": "a8c17803bb3b3f91", "cls": "ok"},
-    {"type": "cmd", "text": "tyd session send a8c1… 'echo hello-from-tyd\\n'"},
-    {"type": "cmd", "text": "tyd session read a8c1…"},
+    {"type": "out", "text": "dcd4b2440a75cf11", "cls": "ok"},
+    {"type": "cmd", "text": "tyd session send dcd4… 'echo hello-from-tyd\\n'"},
+    {"type": "cmd", "text": "tyd session read dcd4…"},
     {"type": "out", "text": "hello-from-tyd", "cls": "ok"},
-    {"type": "note", "text": "# 3 · Stop the daemon and start it again"},
-    {"type": "cmd", "text": "kill <daemon-pid>"},
+    {"type": "note", "text": "# 3 · Stop the daemon from another terminal"},
+    {"type": "cmd", "text": "tyd down"},
+    {"type": "out", "text": "daemon stopped", "cls": "ok"},
+    {"type": "out", "text": "live sessions keep running; run 'tyd up' to adopt them again"},
     {"type": "cmd", "text": "tyd up"},
     {"type": "out", "text": "tyd listening unix ~/.tyd/tyd.sock"},
     {"type": "cmd", "text": "tyd session list"},
     {"type": "out", "text": "SESSION           ALIAS  PEER  STATE     CREATED             ", "cls": "dim"},
-    {"type": "out", "text": "a8c17803bb3b3f91         -     DETACHED  2026-11-11T06:39:35Z", "cls": "ok"},
+    {"type": "out", "text": "dcd4b2440a75cf11         -     DETACHED  2026-11-11T08:29:31Z", "cls": "ok"},
     {"type": "note", "text": "→ same session, same id — it survived the restart"},
-    {"type": "cmd", "text": "tyd session send a8c1… 'echo still-alive-after-restart\\n'"},
-    {"type": "cmd", "text": "tyd session read a8c1…"},
+    {"type": "cmd", "text": "tyd session send dcd4… 'echo still-alive-after-restart\\n'"},
+    {"type": "cmd", "text": "tyd session read dcd4…"},
     {"type": "out", "text": "still-alive-after-restart", "cls": "ok"},
     {"type": "note", "text": "# 4 · Close it when you are actually done"},
-    {"type": "cmd", "text": "tyd session close a8c1…"},
+    {"type": "cmd", "text": "tyd session close dcd4…"},
     {"type": "cmd", "text": "tyd session list"},
     {"type": "out", "text": "SESSION           ALIAS  PEER  STATE   CREATED             ", "cls": "dim"},
-    {"type": "out", "text": "a8c17803bb3b3f91         -     CLOSED  2026-11-11T06:39:35Z", "cls": "ok"},
+    {"type": "out", "text": "dcd4b2440a75cf11         -     CLOSED  2026-11-11T08:29:31Z", "cls": "ok"},
     {"type": "out", "text": "✓ Sessions outlive the client — and the daemon.", "cls": "ok"}
   ];
   var body=document.getElementById('termBody');
