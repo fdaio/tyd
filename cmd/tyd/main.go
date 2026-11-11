@@ -50,6 +50,8 @@ func run(opts options) error {
 			return err
 		}
 		return runUp(opts)
+	case "down":
+		return runDown(opts)
 	case "serve":
 		fmt.Fprintln(os.Stderr, "note: 'tyd serve' is deprecated; prefer 'tyd up'")
 		if err := refuseIfInSession("serve"); err != nil {

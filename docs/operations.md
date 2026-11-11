@@ -52,6 +52,21 @@ tyd up
 
 `tyd serve` is a deprecated alias for `tyd up`.
 
+## Stop the daemon
+
+```bash
+tyd down
+```
+
+`tyd down` stops the local daemon. Sessions run under their own live agents, so
+they keep running; the next `tyd up` adopts them again. When the daemon was
+installed as a user service, down stops the service (`systemctl --user stop
+tyd.service`, or `launchctl unload` for the LaunchAgent), so launchd's KeepAlive
+cannot restart it. Start it again with `tyd up` or the service manager.
+
+`tyd down` is a control command: it is refused inside a tyd session, for the
+same reason as `tyd approve`.
+
 By default tyd listens on the Unix socket `~/.tyd/tyd.sock` and **nothing else** —
 TLS is opt-in, and the QUIC data plane only starts for a registered daemon.
 

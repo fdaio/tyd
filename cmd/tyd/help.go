@@ -75,6 +75,7 @@ func writeRootHelp(w io.Writer, color bool) {
 	fmt.Fprintln(w, "Daemon:")
 	writeHelpRows(w, []helpRow{
 		{"up", "Start the tyd daemon (unix socket; TLS off by default)"},
+		{"down", "Stop the local daemon (sessions keep running)"},
 		{"status", "Show CP registration, peers, aliases, and connections"},
 		{"approval", "Show or set approval mode (full|pre|post)"},
 		{"audit", "Verify the audit log's hash chain"},
@@ -235,7 +236,7 @@ func sessionCommands() []string {
 }
 
 func rootCommands() []string {
-	return []string{"keygen", "up", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "version", "upgrade", "help"}
+	return []string{"keygen", "up", "down", "serve", "register", "invite", "accept", "revoke", "status", "alias", "session", "peer", "approval", "doctor", "version", "upgrade", "help"}
 }
 
 func peerCommands() []string {
