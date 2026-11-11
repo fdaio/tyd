@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#080a09">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23080a09'/%3E%3Crect x='10' y='8' width='12' height='16' rx='2' fill='%233ddc74'/%3E%3C/svg%3E">
+<title>tyd — Persistent, remotely attachable terminal sessions</title>
+<meta name="description" content="tyd maintains persistent, remotely attachable terminal sessions on a machine. Sessions outlive both the client and the daemon.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="tyd — Persistent, remotely attachable terminal sessions">
+<meta property="og:description" content="A daemon holds shell sessions on a machine. They outlive the client and the daemon. Pair by token; reattach from anywhere.">
+<!-- Absolute URLs: adjust when the site moves to a custom domain. -->
+<meta property="og:url" content="https://fdaio.github.io/tyd/">
+<meta property="og:image" content="https://fdaio.github.io/tyd/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://fdaio.github.io/tyd/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#080a09; --bg2:#0c100e; --panel:#101512; --panel2:#141a16;
+  --line:#232b25; --line2:#2e3830;
+  --text:#e6ede8; --muted:#9aa79d; --dim:#8b978e;
+  --green:#3ddc74; --green-dim:#1a3a26; --green-bright:#5cff96;
+  --amber:#e3b341; --red:#f47067; --cyan:#79c0ff;
+  --radius:14px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+@media(max-width:600px){.wrap{padding:0 18px}}
+
+/* NAV */
+.nav{position:sticky;top:0;z-index:20;background:rgba(8,10,9,.88);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;justify-content:space-between;height:60px;gap:16px}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none;font-family:"JetBrains Mono",monospace;font-weight:800;font-size:22px;letter-spacing:-.04em}
+.logo i{width:9px;height:18px;background:var(--green);display:inline-block;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.nav-links{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.nav-links a{text-decoration:none;color:var(--muted);font-size:14px;padding:9px 12px;border-radius:8px;min-height:40px;display:inline-flex;align-items:center}
+.nav-links a:hover{color:var(--text);background:var(--panel)}
+@media(max-width:640px){
+  .nav-in{height:56px}
+  .nav-links a:not(.btn){display:none}
+  .nav-links .btn{min-height:40px;padding:0 14px;font-size:14px}
+  .logo{font-size:20px}
+  .hero{padding:44px 0 20px}
+  .term-title{display:none}
+  .term-controls{margin-left:auto}
+}
+.btn{display:inline-flex;align-items:center;gap:8px;min-height:44px;padding:0 18px;border-radius:10px;font-weight:600;font-size:15px;text-decoration:none;border:1px solid transparent;cursor:pointer;font-family:inherit}
+.btn-green{background:var(--green);color:#04140a}
+.btn-green:hover{background:var(--green-bright)}
+.btn-ghost{background:transparent;color:var(--text);border-color:var(--line2)}
+.btn-ghost:hover{border-color:var(--green);color:var(--green)}
+.btn-sm{min-height:40px;padding:0 14px;font-size:14px}
+
+/* HERO */
+.hero{padding:72px 0 28px;text-align:left;position:relative;overflow:hidden}
+.hero::before{content:"";position:absolute;inset:0;background:radial-gradient(600px 300px at 15% 0%,rgba(61,220,116,.09),transparent 65%);pointer-events:none}
+.eyebrow{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line2);background:var(--panel);color:var(--muted);font-size:13px;padding:6px 12px;border-radius:999px;font-family:"JetBrains Mono",monospace}
+.eyebrow b{width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 0 4px rgba(61,220,116,.15)}
+.wordmark{font-family:"JetBrains Mono",monospace;font-size:clamp(88px,18vw,168px);line-height:.9;letter-spacing:-.07em;font-weight:800;margin:22px 0 6px}
+.wordmark span{color:var(--green)}
+.hero h1{font-size:clamp(26px,4.5vw,42px);line-height:1.15;letter-spacing:-.03em;margin:10px 0 14px;max-width:760px;font-weight:700}
+.hero p.lead{color:var(--muted);font-size:18px;line-height:1.65;max-width:680px;margin:0}
+.hero p.lead strong{color:var(--text)}
+.not{margin-top:14px;color:var(--dim);font-size:14px;font-family:"JetBrains Mono",monospace}
+.hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}
+.install-bar{margin-top:22px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 6px 6px 16px;display:flex;align-items:center;gap:12px;max-width:720px}
+.install-bar code{font-family:"JetBrains Mono",monospace;font-size:14px;color:#c9d8cc;overflow:auto;white-space:nowrap;flex:1;min-width:0;padding:8px 0}
+.install-bar button{flex-shrink:0}
+.meta-row{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;color:var(--dim);font-size:13px;font-family:"JetBrains Mono",monospace}
+.meta-row span::before{content:"✓ ";color:var(--green)}
+
+/* TERMINAL */
+.term-section{padding:18px 0 10px;scroll-margin-top:76px}
+.term{border:1px solid var(--line2);border-radius:16px;overflow:hidden;background:#0a0d0b;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.term-head{display:flex;align-items:center;gap:10px;padding:13px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+.dot{width:12px;height:12px;border-radius:50%}
+.term-title{margin-left:6px;color:var(--muted);font-size:13px;font-family:"JetBrains Mono",monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.term-controls{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
+.chip{border:1px solid var(--line2);background:var(--bg2);color:var(--text);border-radius:8px;min-height:44px;padding:0 12px;font-size:13px;cursor:pointer;font-family:"JetBrains Mono",monospace}
+.chip:hover{border-color:var(--green);color:var(--green)}
+.term-body{padding:20px 20px 8px;min-width:0;min-height:430px;font-family:"JetBrains Mono",monospace;font-size:14.5px;line-height:1.85;overflow-x:auto}
+@media(max-width:600px){.term-body{font-size:12.8px;min-height:480px;padding:16px 14px 6px}}
+.line{white-space:pre;word-break:normal;overflow-wrap:normal}
+.line.cmd{color:#fff}
+.line.cmd::before{content:"$ ";color:var(--green);font-weight:700}
+.line.out{color:#a8b8ab}
+.line.ok{color:var(--green);font-weight:600}
+.line.note{color:var(--amber)}
+.line.dim{color:var(--dim)}
+.cursor{display:inline-block;width:8px;height:16px;background:var(--green);vertical-align:-2px;animation:blink 1s steps(1) infinite;margin-left:2px}
+.term-foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;border-top:1px solid var(--line);background:var(--panel);color:var(--dim);font-size:12.5px;font-family:"JetBrains Mono",monospace}
+.term-foot b{color:var(--green);font-weight:600}
+.progress{height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:0}
+.progress i{display:block;height:100%;background:var(--green);width:0%;transition:width .3s}
+
+/* SECTIONS */
+section.block{padding:64px 0 8px;scroll-margin-top:76px}
+.kicker{font-family:"JetBrains Mono",monospace;color:var(--green);font-size:13px;letter-spacing:.08em;text-transform:uppercase;margin:0 0 10px}
+h2{font-size:clamp(26px,4vw,36px);letter-spacing:-.03em;line-height:1.15;margin:0 0 12px}
+.sub{color:var(--muted);max-width:680px;margin:0;font-size:16.5px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:28px}
+@media(max-width:900px){.grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+.card:hover{border-color:var(--line2)}
+.card .ic{width:40px;height:40px;border-radius:10px;background:var(--green-dim);display:grid;place-items:center;font-size:20px;margin-bottom:14px}
+.card h3{margin:0 0 8px;font-size:17px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--muted);font-size:14.5px;line-height:1.65}
+.card code{font-family:"JetBrains Mono",monospace;font-size:12.5px;background:#0a0d0b;border:1px solid var(--line);padding:1px 6px;border-radius:6px;color:#c9d8cc}
+
+/* HOW IT WORKS */
+.flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;gap:12px;align-items:stretch;margin-top:28px}
+@media(max-width:800px){.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg);justify-self:center}}
+.flow-box{background:var(--panel2);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
+.flow-box .step{font-family:"JetBrains Mono",monospace;color:var(--green);font-size:12px;letter-spacing:.1em}
+.flow-box h3{margin:8px 0 8px;font-size:18px}
+.flow-box p{margin:0;color:var(--muted);font-size:14.5px}
+.flow-box code{font-family:"JetBrains Mono",monospace;font-size:12.5px;color:#c9d8cc}
+.arrow{align-self:center;font-size:22px;color:var(--green);font-family:"JetBrains Mono",monospace}
+
+/* QUICKSTART */
+.qs{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px}
+@media(max-width:800px){.qs{grid-template-columns:1fr}}
+.codebox{background:#0a0d0b;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.codebox-head{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--panel);border-bottom:1px solid var(--line);font-family:"JetBrains Mono",monospace;font-size:13px;color:var(--muted)}
+.codebox pre{margin:0;padding:18px;overflow-x:auto;font-family:"JetBrains Mono",monospace;font-size:13.5px;line-height:1.9;color:#d6e4d8}
+.codebox .c{color:var(--dim)} .codebox .g{color:var(--green)}
+.keys{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+.key{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:10px 14px;font-size:13.5px;color:var(--muted)}
+.key b{color:var(--text);font-family:"JetBrains Mono",monospace;font-weight:600}
+
+/* COMPARE + SECURITY */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px}
+@media(max-width:800px){.two{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:24px}
+.panel h3{margin:0 0 12px;font-size:18px}
+.panel p,.panel li{color:var(--muted);font-size:14.5px}
+.panel ul{margin:0;padding-left:18px}
+.panel li{margin:8px 0}
+.panel li::marker{color:var(--green)}
+.panel code{font-family:"JetBrains Mono",monospace;font-size:12.5px;background:#0a0d0b;border:1px solid var(--line);padding:1px 6px;border-radius:6px;color:#c9d8cc}
+.compare-table{width:100%;border-collapse:collapse;margin-top:16px;font-size:14px}
+.compare-table th,.compare-table td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.compare-table th{color:var(--text);font-weight:600}
+.compare-table td{color:var(--muted)}
+.compare-table td:first-child{font-family:"JetBrains Mono",monospace;color:var(--text);white-space:nowrap}
+
+/* DOCS TABLE */
+.docs{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-top:28px}
+.docs a{display:flex;justify-content:space-between;gap:16px;padding:16px 18px;text-decoration:none;border-bottom:1px solid var(--line);background:var(--panel);align-items:center;min-height:56px}
+.docs a:last-child{border-bottom:0}
+.docs a:hover{background:var(--panel2)}
+.docs a b{font-family:"JetBrains Mono",monospace;font-size:14px;font-weight:600}
+.docs a span{color:var(--muted);font-size:14px;text-align:right}
+.docs a em{font-style:normal;color:var(--green);flex-shrink:0}
+@media(max-width:600px){.docs a span{display:none}}
+
+footer{margin-top:72px;border-top:1px solid var(--line);padding:28px 0 36px;color:var(--dim);font-size:14px}
+.foot{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:center}
+.foot a{color:var(--muted);text-decoration:none}
+.foot a:hover{color:var(--green)}
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%) translateY(20px);background:#e6ede8;color:#0a0d0b;padding:10px 16px;border-radius:999px;font-size:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:50}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--green);outline-offset:3px;border-radius:8px}
+.js #termBody{visibility:hidden}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;scroll-behavior:auto!important}}
+</style>
+<noscript><style>#btnPause,#btnReplay{display:none}</style></noscript>
+<script>
+document.documentElement.classList.add('js');
+setTimeout(function(){var b=document.getElementById('termBody'); if(b && getComputedStyle(b).visibility==='hidden' && !window.__tydStarted){b.style.visibility='visible'}},2500);
+</script>
+</head>
+<body>
+
+<header class="nav"><div class="wrap nav-in">
+  <a class="logo" href="#top">tyd<i></i></a>
+  <nav class="nav-links">
+    <a href="#demo">Demo</a><a href="#features">Features</a><a href="#security">Security</a><a href="#docs">Docs</a>
+    <a class="btn btn-green btn-sm" href="https://github.com/fdaio/tyd" target="_blank" rel="noopener">★ GitHub</a>
+  </nav>
+</div></header>
+
+<main id="top">
+<div class="wrap">
+  <!-- HERO -->
+  <div class="hero">
+    <div class="eyebrow"><b></b> fdaio / tyd &nbsp;·&nbsp; Apache-2.0 &nbsp;·&nbsp; Go · single binary</div>
+    <div class="wordmark">tyd<span>.</span></div>
+    <h1>Persistent, remotely attachable<br>terminal sessions.</h1>
+    <p class="lead">A daemon holds PTY / shell sessions on a machine. A client pairs by token, then creates or attaches. <strong>Sessions outlive both the client and the daemon</strong> — close your laptop, kill the daemon, come back from another device, and the shell is still there.</p>
+    <p class="not">// not an AI agent &nbsp;·&nbsp; not a VPN &nbsp;·&nbsp; not a file-transfer tool &nbsp;·&nbsp; not related to ttyd</p>
+    <div class="hero-actions">
+      <a class="btn btn-green" href="https://github.com/fdaio/tyd" target="_blank" rel="noopener">View on GitHub →</a>
+      <a class="btn btn-ghost" href="#demo">Watch the demo ↓</a>
+    </div>
+    <div class="install-bar">
+      <code id="installCmd">curl -fsSL https://app.getfda.dev/install.sh | sh</code>
+      <button class="btn btn-green btn-sm" id="copyInstall" type="button">Copy</button>
+    </div>
+    <div class="meta-row"><span>Per-user, no sudo</span><span>~4 MB download</span><span>Linux · macOS · FreeBSD</span><span>amd64 &amp; arm64</span></div>
+  </div>
+
+  <!-- TERMINAL DEMO -->
+  <div class="term-section" id="demo">
+    <div class="term">
+      <div class="term-head">
+        <span class="dot" style="background:#f47067"></span><span class="dot" style="background:#e3b341"></span><span class="dot" style="background:#3ddc74"></span>
+        <span class="term-title">demo — real run · tyd 2026.11.10-e5a5970 · session a8c17803bb3b3f91</span>
+        <div class="term-controls">
+          <button class="chip" id="btnPause" type="button">❚❚ Pause</button>
+          <button class="chip" id="btnReplay" type="button">↺ Replay</button>
+        </div>
+      </div>
+      <div class="progress"><i id="prog" style="width:100%"></i></div>
+      <div class="term-body" id="termBody" aria-live="off" aria-label="Terminal transcript"><div class="line note"># 1 · Start the daemon</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line out dim">tyd tls listen off</div><div class="line note"># 2 · Create a session — detached, it keeps running when you leave</div><div class="line cmd">tyd session create --detach</div><div class="line out ok">a8c17803bb3b3f91</div><div class="line cmd">tyd session send a8c1… &#x27;echo hello-from-tyd\n&#x27;</div><div class="line cmd">tyd session read a8c1…</div><div class="line out ok">hello-from-tyd</div><div class="line note"># 3 · Stop the daemon and start it again</div><div class="line cmd">kill &lt;daemon-pid&gt;</div><div class="line cmd">tyd up</div><div class="line out">tyd listening unix ~/.tyd/tyd.sock</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE     CREATED             </div><div class="line out ok">a8c17803bb3b3f91         -     DETACHED  2026-11-11T06:39:35Z</div><div class="line note">→ same session, same id — it survived the restart</div><div class="line cmd">tyd session send a8c1… &#x27;echo still-alive-after-restart\n&#x27;</div><div class="line cmd">tyd session read a8c1…</div><div class="line out ok">still-alive-after-restart</div><div class="line note"># 4 · Close it when you are actually done</div><div class="line cmd">tyd session close a8c1…</div><div class="line cmd">tyd session list</div><div class="line out dim">SESSION           ALIAS  PEER  STATE   CREATED             </div><div class="line out ok">a8c17803bb3b3f91         -     CLOSED  2026-11-11T06:39:35Z</div><div class="line out ok">✓ Sessions outlive the client — and the daemon.</div></div>
+      <div class="term-foot"><span>Status: <b id="termStatus" aria-live="polite">Finished — verified transcript</b></span><span>Verified 2026-11-11 · No video file — this terminal is the demo</span></div>
+    </div>
+    <p style="color:var(--dim);font-size:13.5px;margin:12px 2px 0;font-family:'JetBrains Mono',monospace">↑ This is a real run: same commands, session id, and output as verified on 2026-11-11 — including stopping and restarting the daemon. The stop step uses the daemon's pid; a service install can use systemctl/launchctl instead.</p>
+  </div>
+
+  <!-- FEATURES -->
+  <section class="block" id="features">
+    <p class="kicker">Why tyd</p>
+    <h2>The shell survives. You just reattach.</h2>
+    <p class="sub">Most remote shells die with the connection, the client, or the daemon. tyd is built around the opposite assumption.</p>
+    <div class="grid">
+      <article class="card"><div class="ic">♾️</div><h3>Outlives client &amp; daemon</h3><p>Each session runs in its own process under <code>~/.tyd/live/</code>. It keeps running across a <code>tyd up</code> restart — the next daemon adopts it again.</p></article>
+      <article class="card"><div class="ic">🔑</div><h3>Pairs by token, not account</h3><p>No account to create. The host mints a single-use invite, the peer runs <code>tyd accept TOKEN</code>. Invites expire after 10 minutes.</p></article>
+      <article class="card"><div class="ic">📦</div><h3>One binary, both ends</h3><p>The same binary is daemon and client. No SSH / VPN stack to configure — it layers on the network you already trust.</p></article>
+      <article class="card"><div class="ic">🏠</div><h3>Self-hostable control plane</h3><p>Control Panel and relay are both self-hostable, and <code>--relay</code> takes a list — you're not tied to one rendezvous point.</p></article>
+      <article class="card"><div class="ic">👁️</div><h3>Watch without touching</h3><p><code>tyd session watch</code> follows a session read-only. Name sessions with aliases and reattach with a shortcut like <code>tyd jammy.laptop</code>.</p></article>
+      <article class="card"><div class="ic">🌐</div><h3>Works over what you have</h3><p>LAN, WireGuard, or Tailscale — tyd layers on top. Direct when it can, relay as a dual-NAT fallback when it can't.</p></article>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="block" id="how">
+    <p class="kicker">How it works</p>
+    <h2>Daemon → Session → Client</h2>
+    <p class="sub">Three pieces, one idea: the shell's lifetime is independent of everything that connects to it.</p>
+    <div class="flow">
+      <div class="flow-box"><div class="step">01 — HOST</div><h3>Daemon</h3><p><code>tyd up</code> listens on <code>~/.tyd/tyd.sock</code> locally by default. It holds the sessions and gates remote peers.</p></div>
+      <div class="arrow">→</div>
+      <div class="flow-box"><div class="step">02 — HOST</div><h3>Session</h3><p>Each shell lives in its own process under <code>~/.tyd/live/</code>. Detach, disconnect, or restart the daemon — it keeps running.</p></div>
+      <div class="arrow">→</div>
+      <div class="flow-box"><div class="step">03 — ANYWHERE</div><h3>Client</h3><p>Pair once with a token, then create or attach from any paired device. <code>Ctrl-\</code> detaches and leaves the shell running.</p></div>
+    </div>
+
+    <div class="qs">
+      <div class="codebox">
+        <div class="codebox-head"><span>On the host — holds the shells</span><button class="chip" data-copy="host" type="button">Copy</button></div>
+        <pre id="code-host"><span class="c"># after install — the installer registers this host</span>
+tyd approval pre        <span class="c"># read by the daemon at start</span>
+tyd up
+tyd invite              <span class="c"># mint a token (10 min); waits for the peer</span>
+tyd invite --no-wait    <span class="c"># mint &amp; exit immediately</span></pre>
+      </div>
+      <div class="codebox">
+        <div class="codebox-head"><span>On the peer — your laptop, another machine</span><button class="chip" data-copy="peer" type="button">Copy</button></div>
+        <pre id="code-peer">tyd accept TOKEN --as laptop
+tyd --peer laptop session create
+tyd session alias jammy
+<span class="g">tyd jammy.laptop</span>        <span class="c"># reattach, from anywhere</span>
+tyd session list / watch / close</pre>
+      </div>
+    </div>
+    <div class="keys">
+      <div class="key"><b>Ctrl-\</b> &nbsp;detach — shell keeps running</div>
+      <div class="key"><b>session close</b> &nbsp;actually ends the session</div>
+      <div class="key"><b>EXITED ≠ gone</b> &nbsp;a shell that exits on its own is still attachable</div>
+    </div>
+  </section>
+
+  <!-- COMPARE + SECURITY -->
+  <section class="block" id="security">
+    <p class="kicker">Honest positioning · Security</p>
+    <h2>Not a replacement. A different trade-off.</h2>
+    <p class="sub">tyd doesn't claim to replace tmux + ssh, mosh, or Tailscale SSH. Read the full comparison — including where tyd adds nothing — in the docs.</p>
+
+    <div class="panel" style="margin-top:28px">
+      <h3>vs. the tools you already know</h3>
+      <div style="overflow-x:auto">
+      <table class="compare-table">
+        <tr><th>Tool</th><th>What it's great at</th><th>Where tyd differs</th></tr>
+        <tr><td>tmux + ssh</td><td>Battle-tested multiplexing inside an SSH session you already have.</td><td>Sessions also survive a daemon restart, and pairing is by token — no SSH stack to configure.</td></tr>
+        <tr><td>mosh</td><td>Roaming, high-latency, flaky networks.</td><td>tyd is about session lifetime &amp; remote attach, not link resilience.</td></tr>
+        <tr><td>Tailscale SSH</td><td>Identity &amp; access inside a tailnet.</td><td>tyd layers <em>on</em> Tailscale / WireGuard / LAN instead of replacing the network.</td></tr>
+      </table>
+      </div>
+      <p style="margin:14px 0 0"><a href="https://github.com/fdaio/tyd/blob/main/docs/alternatives.md" target="_blank" rel="noopener" style="color:var(--green)">Read docs/alternatives.md — including where tyd adds nothing →</a></p>
+    </div>
+
+    <div class="two">
+      <div class="panel">
+        <h3>🔒 Identity &amp; transport</h3>
+        <ul>
+          <li><strong style="color:var(--text)">Ed25519 keys</strong> in <code>~/.tyd</code>; every connection runs challenge-response against the peer's <code>trusted.json</code>. A new key needs explicit pairing.</li>
+          <li><strong style="color:var(--text)">TLS 1.3 minimum</strong> — pinned certificate fingerprint direct, or TLS 1.3 negotiated <em>through</em> the relay. The relay relays ciphertext and never sees session bytes.</li>
+          <li><strong style="color:var(--text)">Control Panel sees no TTY bytes</strong> — only daemon ids, public keys, and dial metadata.</li>
+        </ul>
+      </div>
+      <div class="panel">
+        <h3>🛂 Approval &amp; audit</h3>
+        <ul>
+          <li>Approval modes: <code>full</code> (default), <code>pre</code> (approve each request — start here for a new peer), <code>post</code>.</li>
+          <li>Invites are <strong style="color:var(--text)">single-use and expire in 10 minutes</strong>. Pressing Ctrl-C revokes.</li>
+          <li>Audit log (<code>--audit-log FILE</code>) records control events only — <strong style="color:var(--text)">never terminal content</strong>.</li>
+          <li>Optional sandbox: <code>tyd up --sandbox docker --sandbox-image IMAGE --sandbox-workdir DIR</code> runs the shell in a container that sees only the workdir.</li>
+        </ul>
+      </div>
+    </div>
+    <p style="color:var(--dim);font-size:14px;margin-top:14px">Local boundary, stated plainly in the README: a session runs as the same user as the daemon, so approval modes gate a <em>remote</em> peer — not code already running inside a session.</p>
+  </section>
+
+  <!-- INSTALL + DOCS -->
+  <section class="block" id="docs">
+    <p class="kicker">Install · Docs</p>
+    <h2>One line. No sudo. Then read the docs.</h2>
+    <p class="sub">Per-user install to <code class="mono" style="font-size:14px">~/.local/bin/tyd</code>, state in <code class="mono" style="font-size:14px">~/.tyd</code>. The installer verifies the archive against the release <code class="mono" style="font-size:14px">checksums.txt</code> and refuses a mismatch. Windows is not supported.</p>
+    <div class="install-bar" style="margin-top:20px;max-width:100%">
+      <code>curl -fsSL https://app.getfda.dev/install.sh | sh</code>
+      <button class="btn btn-green btn-sm" data-copy-install type="button">Copy</button>
+    </div>
+    <div class="meta-row"><span>--agent for non-interactive</span><span>--client --accept TOKEN for peers</span><span>Prefer to read it first? Fetch scripts/install.sh from the repo</span></div>
+
+    <div class="docs">
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/agent.md" target="_blank" rel="noopener"><b>docs/agent.md</b><span>Agent handbook — one-line install, --agent / --client recipes, troubleshooting</span><em>→</em></a>
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/connect.md" target="_blank" rel="noopener"><b>docs/connect.md</b><span>Install, pair, connect, detach, close — plus dual-NAT &amp; network details</span><em>→</em></a>
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/session.md" target="_blank" rel="noopener"><b>docs/session.md</b><span>Session lifecycle, aliases, approval modes, audit log</span><em>→</em></a>
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/operations.md" target="_blank" rel="noopener"><b>docs/operations.md</b><span>Running the daemon, data plane, relay, Docker, recovery</span><em>→</em></a>
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/protocol.md" target="_blank" rel="noopener"><b>docs/protocol.md</b><span>Frame protocol, auth handshake, capabilities</span><em>→</em></a>
+      <a href="https://github.com/fdaio/tyd/blob/main/docs/overview.md" target="_blank" rel="noopener"><b>docs/overview.md</b><span>What tyd is, architecture, and non-goals — start here</span><em>→</em></a>
+    </div>
+  </section>
+</div>
+</main>
+
+<footer><div class="wrap foot">
+  <span class="mono">tyd — <a href="https://github.com/fdaio/tyd" target="_blank" rel="noopener">github.com/fdaio/tyd</a></span>
+  <span>Apache License 2.0 · Build from source: <span class="mono">make test &amp;&amp; make build</span></span>
+  <span>Not related to ttyd.</span>
+</div></footer>
+
+<div class="toast" id="toast">Copied to clipboard</div>
+
+<script>
+(function(){
+  var toast=document.getElementById('toast');
+  function showToast(msg){toast.textContent=msg;toast.classList.add('show');setTimeout(function(){toast.classList.remove('show')},1800)}
+  function copyText(t,msg){
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(function(){showToast(msg||'Copied to clipboard')}).catch(function(){fallback()})}else{fallback()}
+    function fallback(){var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');showToast(msg||'Copied to clipboard')}catch(e){showToast('Copy failed — select the text manually')}document.body.removeChild(ta)}
+  }
+  var installText='curl -fsSL https://app.getfda.dev/install.sh | sh';
+  document.getElementById('copyInstall').addEventListener('click',function(){copyText(installText,'Install command copied')});
+  document.querySelectorAll('[data-copy-install]').forEach(function(b){b.addEventListener('click',function(){copyText(installText,'Install command copied')})});
+  var snippets={
+    host:"tyd approval pre\ntyd up\ntyd invite\ntyd invite --no-wait",
+    peer:"tyd accept TOKEN --as laptop\ntyd --peer laptop session create\ntyd session alias jammy\ntyd jammy.laptop\ntyd session list"
+  };
+  document.querySelectorAll('[data-copy]').forEach(function(b){b.addEventListener('click',function(){copyText(snippets[b.getAttribute('data-copy')],'Commands copied')})});
+
+  // --- Animated terminal: REAL verified transcript ---
+  var steps=[
+    {"type": "note", "text": "# 1 · Start the daemon"},
+    {"type": "cmd", "text": "tyd up"},
+    {"type": "out", "text": "tyd listening unix ~/.tyd/tyd.sock"},
+    {"type": "out", "text": "tyd tls listen off", "cls": "dim"},
+    {"type": "note", "text": "# 2 · Create a session — detached, it keeps running when you leave"},
+    {"type": "cmd", "text": "tyd session create --detach"},
+    {"type": "out", "text": "a8c17803bb3b3f91", "cls": "ok"},
+    {"type": "cmd", "text": "tyd session send a8c1… 'echo hello-from-tyd\\n'"},
+    {"type": "cmd", "text": "tyd session read a8c1…"},
+    {"type": "out", "text": "hello-from-tyd", "cls": "ok"},
+    {"type": "note", "text": "# 3 · Stop the daemon and start it again"},
+    {"type": "cmd", "text": "kill <daemon-pid>"},
+    {"type": "cmd", "text": "tyd up"},
+    {"type": "out", "text": "tyd listening unix ~/.tyd/tyd.sock"},
+    {"type": "cmd", "text": "tyd session list"},
+    {"type": "out", "text": "SESSION           ALIAS  PEER  STATE     CREATED             ", "cls": "dim"},
+    {"type": "out", "text": "a8c17803bb3b3f91         -     DETACHED  2026-11-11T06:39:35Z", "cls": "ok"},
+    {"type": "note", "text": "→ same session, same id — it survived the restart"},
+    {"type": "cmd", "text": "tyd session send a8c1… 'echo still-alive-after-restart\\n'"},
+    {"type": "cmd", "text": "tyd session read a8c1…"},
+    {"type": "out", "text": "still-alive-after-restart", "cls": "ok"},
+    {"type": "note", "text": "# 4 · Close it when you are actually done"},
+    {"type": "cmd", "text": "tyd session close a8c1…"},
+    {"type": "cmd", "text": "tyd session list"},
+    {"type": "out", "text": "SESSION           ALIAS  PEER  STATE   CREATED             ", "cls": "dim"},
+    {"type": "out", "text": "a8c17803bb3b3f91         -     CLOSED  2026-11-11T06:39:35Z", "cls": "ok"},
+    {"type": "out", "text": "✓ Sessions outlive the client — and the daemon.", "cls": "ok"}
+  ];
+  var body=document.getElementById('termBody');
+  var prog=document.getElementById('prog');
+  var statusEl=document.getElementById('termStatus');
+  var btnPause=document.getElementById('btnPause');
+  var idx=0, timer=null, paused=false, currentLine=null, charIdx=0, currentStep=null;
+  var reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function addLine(cls){
+    var div=document.createElement('div'); div.className='line '+(cls||''); body.appendChild(div); return div;
+  }
+  function renderAll(){
+    body.innerHTML='';
+    steps.forEach(function(s){
+      if(s.type==='cmd'){var d=addLine('cmd');d.textContent=s.text}
+      else if(s.type==='note'){var d2=addLine('note');d2.textContent=s.text}
+      else{var d3=addLine('out '+(s.cls||''));d3.textContent=s.text}
+    });
+    prog.style.width='100%'; statusEl.textContent='Finished — hit Replay to watch again'; body.style.visibility='visible'; window.__tydStarted=true;
+  }
+  if(reduced){renderAll(); btnPause.style.display='none';}
+
+  function clearTimer(){if(timer){clearTimeout(timer);timer=null}}
+  function schedule(fn,ms){clearTimer(); if(paused){timer=setTimeout(function(){schedule(fn,ms)},200); return} timer=setTimeout(fn,ms)}
+
+  function playStep(){
+    if(paused){schedule(playStep,300);return}
+    if(idx>=steps.length){prog.style.width='100%';statusEl.textContent='Finished — hit Replay to watch again';btnPause.textContent='▶ Play';paused=true;return}
+    var s=steps[idx]; currentStep=s;
+    prog.style.width=Math.round((idx/steps.length)*100)+'%';
+    if(s.type==='note'){var d=addLine('note');d.textContent=s.text;idx++;schedule(playStep,650)}
+    else if(s.type==='out'){var d2=addLine('out '+(s.cls||''));d2.textContent=s.text;idx++;schedule(playStep, s.cls==='ok'?800:420)}
+    else if(s.type==='cmd'){
+      currentLine=addLine('cmd'); charIdx=0;
+      var cur=document.createElement('span');cur.className='cursor';currentLine.appendChild(cur);
+      statusEl.textContent='Typing…';
+      (function typeChar(){
+        if(paused){schedule(typeChar,200);return}
+        if(charIdx<=s.text.length){
+          currentLine.textContent=s.text.slice(0,charIdx);
+          var c=document.createElement('span');c.className='cursor';currentLine.appendChild(c);
+          charIdx++; schedule(typeChar, 34+Math.random()*36);
+        }else{
+          currentLine.textContent=s.text; idx++; statusEl.textContent='Running…'; schedule(playStep,520);
+        }
+      })();
+    }
+    body.scrollTop=body.scrollHeight;
+    var wrap=body.parentElement; if(wrap) wrap.scrollTop=wrap.scrollHeight;
+  }
+  function start(){clearTimer(); body.innerHTML=''; body.style.visibility='visible'; window.__tydStarted=true; idx=0; paused=false; btnPause.textContent='❚❚ Pause'; statusEl.textContent='Playing — daemon restart survival test'; prog.style.width='0%'; playStep()}
+  if(!reduced){ setTimeout(start,500); }
+  btnPause.addEventListener('click',function(){
+    if(idx>=steps.length){start();return}
+    paused=!paused; btnPause.textContent=paused?'▶ Resume':'❚❚ Pause'; statusEl.textContent=paused?'Paused':'Playing — daemon restart survival test'; if(!paused) playStep();
+  });
+  document.getElementById('btnReplay').addEventListener('click',start);
+})();
+</script>
+</body>
+</html>
