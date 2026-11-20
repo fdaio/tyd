@@ -174,10 +174,13 @@ func TestInstallBinaryReplacesBusyExecutable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Direct cp should fail with ETXTBSY on Linux when the file is busy.
+	// A direct cp onto a running binary fails with ETXTBSY only on the kernels
+	// that refuse a write to a running image. Newer kernels allow the write, so
+	// this reports what the kernel does and does not fail the test. The install
+	// script has to work on both.
 	if runtime.GOOS == "linux" {
 		if err := exec.Command("cp", newBin, dest).Run(); err == nil {
-			t.Fatal("expected direct cp onto busy binary to fail on linux")
+			t.Log("this kernel allows a write to a running binary; direct cp did not fail")
 		}
 	}
 
